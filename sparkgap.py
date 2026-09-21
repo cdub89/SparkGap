@@ -6478,7 +6478,7 @@ class SparkGap:
         if record_wav:
             import wave as _wave, datetime as _dt
             ts = _dt.datetime.utcnow().strftime('%Y%m%d_%H%M%SZ')
-            band_khz = self.cfg.get('bands', [0])[0] // 1000
+            band_khz = self._resolve_band(self.cfg.get('bands', [0])[0])[1] // 1000
             rec_path = record_wav.format(ts=ts, band=band_khz)
             self._wav_record = _wave.open(rec_path, 'wb')
             self._wav_record.setnchannels(2)
@@ -6791,13 +6791,9 @@ class SparkGap:
             with self._iq_lock:
                 buf['raw'].append(iq_samples)
             if self._wav_record and rx_index == 0:
-                import struct as _struct
-                frames = bytearray()
-                for i_val, q_val in iq_samples:
-                    i16 = max(-32768, min(32767, int(i_val * 32767)))
-                    q16 = max(-32768, min(32767, int(q_val * 32767)))
-                    frames += _struct.pack('<hh', i16, q16)
-                self._wav_record.writeframes(bytes(frames))
+                iq = np.asarray(iq_samples, dtype=np.float64) * 32767
+                pcm = np.clip(np.trunc(iq), -32768, 32767).astype('<i2')
+                self._wav_record.writeframes(pcm.tobytes())
         except Exception:
             pass  # Don't let errors kill the receiver thread
 
