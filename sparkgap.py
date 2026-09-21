@@ -6576,6 +6576,7 @@ class SparkGap:
             flex_port = self.cfg.get('flex_udp_port', 7791)
             self.receiver = FlexIQReceiver(device_ip, freq_hz=int(center_hz),
                                            sample_rate=rx_sample_rate,
+                                           daxiq_channel=self.cfg.get('flex_daxiq_channel', 1),
                                            udp_port=flex_port,
                                            control_port=sdr_port)
             log.info("Using FlexRadio DAX-IQ receiver at %s", device_ip)
