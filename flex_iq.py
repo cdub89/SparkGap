@@ -37,6 +37,9 @@ DAXIQ_PACKET_SIZE = VITA_HEADER_SIZE + SAMPLES_PER_PACKET * 8  # 4124
 
 VALID_RATES = (24000, 48000, 96000, 192000)
 
+# DAX-IQ floats are int16 full scale; FlexLib VitaIFDataPacket divides by 2**15.
+DAXIQ_FULL_SCALE = 32768.0
+
 
 class FlexIQReceiver:
     """DAX-IQ receiver for a FlexRadio 6000/8000 series.
@@ -312,7 +315,8 @@ class FlexIQReceiver:
             except struct.error:
                 continue
 
-            iq_pairs = list(zip(samples[0::2], samples[1::2]))
+            iq_pairs = [(i / DAXIQ_FULL_SCALE, q / DAXIQ_FULL_SCALE)
+                        for i, q in zip(samples[0::2], samples[1::2])]
             callback(0, iq_pairs)
 
             pkt_count += 1
