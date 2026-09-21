@@ -7566,9 +7566,7 @@ class SparkGap:
 
 def load_config(path):
     defaults = {
-        'callsign': 'WF8Z-2',
         'node_call': 'SPARK-2',
-        'sdr_ip': '192.168.1.54',
         'bands': ['20m'],
         'lna_gain': 20,
         'decoder_bin': './uhsdr_cw',
@@ -8011,7 +8009,7 @@ def main():
         description='SparkGap — Open Source Linux CW Skimmer',
         epilog='One JSON file. One process. Zero Windows.',
     )
-    parser.add_argument('--config', default='skimmer.json', help='Config JSON')
+    parser.add_argument('--config', required=True, help='Config JSON')
     parser.add_argument('--ip', help='SDR IP override')
     parser.add_argument('--band', help='Band override (e.g., 20m)')
     parser.add_argument('--port', type=int, help='Telnet port override')
@@ -8028,7 +8026,11 @@ def main():
         datefmt='%H:%M:%S',
     )
 
-    config = load_config(args.config if os.path.exists(args.config) else None)
+    if not os.path.exists(args.config):
+        sys.exit(f"Config not found: {args.config}")
+    config = load_config(args.config)
+    if not config.get('callsign'):
+        sys.exit(f"{args.config} sets no callsign")
     if args.ip:
         config['sdr_ip'] = args.ip
     if args.band:
