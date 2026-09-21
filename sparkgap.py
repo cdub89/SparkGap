@@ -6764,8 +6764,10 @@ class SparkGap:
             if getattr(self, '_use_c_receiver', False):
                 self.receiver.stop()
                 self.receiver.destroy()
-            else:
+            elif hasattr(self.receiver, 'close'):
                 self.receiver.close()
+            else:
+                self.receiver.stop()
         for mgr in self.managers:
             mgr.kill_all()
         if self.telnet:
@@ -6838,6 +6840,32 @@ class SparkGap:
                             self.receiver._h, rx_idx, scanner._sc._h,
                             feed_ptr, _ct.c_double(8388608.0))
             # Start worker thread once all scanners are registered
+                else:
+                    # Python receiver path: drain from callback buffers
+                    with self._iq_lock:
+                        buf = self._band_bufs[rx_idx]
+                        raw_chunks = buf['raw']
+                        buf['raw'] = []
+                    if raw_chunks:
+                        chunk_size = len(raw_chunks[0])
+                        max_chunks = max(1, live_rate // 5 // chunk_size)
+                        if len(raw_chunks) > max_chunks:
+                            raw_chunks = raw_chunks[-max_chunks:]
+                        feed_i = []
+                        feed_q = []
+                        for chunk in raw_chunks:
+                            iq_arr = np.asarray(chunk, dtype=np.float64)
+                            feed_i.append(iq_arr[:, 0] * 8388608.0)
+                            feed_q.append(iq_arr[:, 1] * 8388608.0)
+                        max_iq_buf = live_rate * 10
+                        iq_deq = buf['iq']
+                        for chunk in raw_chunks:
+                            iq_deq.extend(chunk)
+                        while len(iq_deq) > max_iq_buf:
+                            iq_deq.popleft()
+                        i_cat = np.concatenate(feed_i)
+                        q_cat = np.concatenate(feed_q)
+                        mgr.feed_all_iq(i_cat, q_cat)
             if use_c and not getattr(self, '_worker_started', False):
                 scanners_ready = sum(1 for mgr in self.managers
                                      if mgr._itila_scanner and mgr._itila_scanner._sc)
@@ -6976,32 +7004,6 @@ class SparkGap:
                             _emit_intent(st, f_khz, call, wpm, is_runner=True, raw_text=raw)
                             log.info("ITILA context %.1f kHz: %s %d WPM",
                                      f_khz, call, wpm)
-                else:
-                    # Python receiver path: drain from callback buffers
-                    with self._iq_lock:
-                        buf = self._band_bufs[rx_idx]
-                        raw_chunks = buf['raw']
-                        buf['raw'] = []
-                    if raw_chunks:
-                        chunk_size = len(raw_chunks[0])
-                        max_chunks = max(1, live_rate // 5 // chunk_size)
-                        if len(raw_chunks) > max_chunks:
-                            raw_chunks = raw_chunks[-max_chunks:]
-                        feed_i = []
-                        feed_q = []
-                        for chunk in raw_chunks:
-                            iq_arr = np.asarray(chunk, dtype=np.float64)
-                            feed_i.append(iq_arr[:, 0] * 8388608.0)
-                            feed_q.append(iq_arr[:, 1] * 8388608.0)
-                        max_iq_buf = live_rate * 10
-                        iq_deq = buf['iq']
-                        for chunk in raw_chunks:
-                            iq_deq.extend(chunk)
-                        while len(iq_deq) > max_iq_buf:
-                            iq_deq.popleft()
-                        i_cat = np.concatenate(feed_i)
-                        q_cat = np.concatenate(feed_q)
-                        mgr.feed_all_iq(i_cat, q_cat)
 
             # ----------------------------------------------------------------
             # Periodic signal scan — one FFT per band
@@ -7550,7 +7552,6 @@ class SparkGap:
                                     log.info("RTTY cycle done: %d spots across %d bands",
                                              rtty_total, len(jobs))
                             skimmer._ft8_running = False
-                        import threading
                         threading.Thread(target=_ft8_decode,
                                          args=(ft8_jobs, self),
                                          daemon=True).start()
@@ -7685,6 +7686,8 @@ def run_file_mode(args, config):
             f.seek(chunk_size, 1)
 
     log.info("File: %d ch, %d Hz, %d-bit", file_channels, file_rate, file_bits)
+    if config.get('use_itila') and file_rate != 192000:
+        sys.exit(f"use_itila needs a 192 kHz recording, got {file_rate}")
 
     speeds = config.get('decoder_speeds', [0, 25, 30, 35])
     manager = InstanceManager(
