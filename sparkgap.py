@@ -5332,7 +5332,7 @@ class SpotTracker:
         r'^(?:\d{2}:\d{2}:\d{2}\s+)?DX de (\S+):\s+(\d+\.\d+)\s+([A-Z0-9/]{3,15})\s+'
     )
 
-    def _peer_connect_loop(self, host, port, label, login_call='WF8Z'):
+    def _peer_connect_loop(self, host, port, label, login_call):
         """Connect to a peer DX cluster, parse DX lines, ingest as S-floor
         support evidence. Reconnects on disconnect. Runs as daemon thread.
 
@@ -5376,15 +5376,18 @@ class SpotTracker:
                     except Exception: pass
             time.sleep(5)
 
-    def start_recent_band_tees(self):
+    def start_recent_band_tees(self, login_call):
         """Spawn one daemon thread per configured peer. Idempotent."""
         if getattr(self, '_rb_peer_threads_started', False):
+            return
+        if not login_call:
+            log.warning("S-floor: no callsign configured; peer tees not started")
             return
         self._rb_peer_threads_started = True
         for peer in self._rb_peers_cfg:
             t = threading.Thread(
                 target=self._peer_connect_loop,
-                args=(peer['host'], peer['port'], peer.get('label', 'PEER')),
+                args=(peer['host'], peer['port'], peer.get('label', 'PEER'), login_call),
                 name=f"rb_peer_{peer.get('label','peer')}",
                 daemon=True,
             )
@@ -6508,7 +6511,7 @@ class SparkGap:
         # support map is cheap to maintain and we want it warm if the
         # gate is flipped on at runtime via config reload.
         if self.cfg.get('recent_band_floor', {}).get('peers'):
-            self.tracker.start_recent_band_tees()
+            self.tracker.start_recent_band_tees(self.cfg.get('callsign'))
 
         self.telnet = SpotTelnetServer(
             port=self.cfg.get('telnet_port', 7300),

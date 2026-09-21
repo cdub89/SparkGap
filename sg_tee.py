@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Persistent SparkGap telnet tee. Connects to skimmer1:7300, logs in
-as WF8Z, appends every received DX line to /tmp/os_stream.log with a UTC
+as argv[1], appends every received DX line to /tmp/os_stream.log with a UTC
 timestamp prefix. Auto-reconnects on disconnect.
 
 Mirror of sdc_tee.py / rbn_tee.py — gives us a local rolling capture of
@@ -10,13 +10,14 @@ and RBN streams.
 Run: nohup python3 sg_tee.py > /tmp/sg_tee.log 2>&1 &
 """
 import socket
+import sys
 import time
 from datetime import datetime, timezone
 
 LOG = '/tmp/os_stream.log'
 HOST = '192.168.1.76'
 PORT = 7300
-CALL = b'WF8Z\n'
+CALL = (sys.argv[1] + '\n').encode()
 
 
 def stamp():

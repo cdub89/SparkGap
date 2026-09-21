@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """Persistent RBN telnet tee. Connects to telnet.reversebeacon.net:7000,
-logs in as WF8Z, appends every line to /tmp/rbn_stream.log with a UTC
+logs in as argv[1], appends every line to /tmp/rbn_stream.log with a UTC
 timestamp prefix. Auto-reconnects on disconnect.
 
 Run: nohup python3 rbn_tee.py > /tmp/rbn_tee.log 2>&1 &
 """
 import socket
+import sys
 import time
 from datetime import datetime, timezone
 
 LOG = '/tmp/rbn_stream.log'
 HOST = 'telnet.reversebeacon.net'
 PORT = 7000
-CALL = b'WF8Z\n'
+CALL = (sys.argv[1] + '\n').encode()
 
 def stamp():
     return datetime.now(timezone.utc).strftime('%H:%M:%S')

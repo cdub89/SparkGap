@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Persistent SDC telnet tee. Connects to 192.168.1.205:7373, logs in as
-WF8Z, appends every received line to /tmp/sdc_stream.log with a UTC
+argv[1], appends every received line to /tmp/sdc_stream.log with a UTC
 timestamp prefix. Auto-reconnects on disconnect.
 
 Run: nohup python3 sdc_tee.py > /tmp/sdc_tee.log 2>&1 &
@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 LOG = '/tmp/sdc_stream.log'
 HOST = '192.168.1.205'
 PORT = 7373
-CALL = b'WF8Z\n'
+CALL = (sys.argv[1] + '\n').encode()
 
 def stamp():
     return datetime.now(timezone.utc).strftime('%H:%M:%S')
