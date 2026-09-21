@@ -1,0 +1,3 @@
+numpy
+scipy
+paho-mqtt>=2.0
