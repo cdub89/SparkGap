@@ -1392,8 +1392,8 @@ _ITILA_CQ_WORDS = {'CQ', 'TEST', 'CWT', 'SST', 'MST', 'FD', 'SS', 'NA', 'UP'}
 # "TU CALL 5NN QRZ?" and the next decode chunk often starts with the next
 # caller — extracting after QRZ grabs the wrong station. CQ + contest tokens
 # uniquely identify runners; we lose nothing real by dropping QRZ here.
-# Base callsign: 1-2 prefix letters, 1-2 digits, 1-4 suffix letters
-_BASE_CALL_PAT = re.compile(r'^[A-Z]{1,2}[0-9]{1,4}[A-Z]{1,6}$')
+# Base callsign: 1-2 prefix letters or digit+letter (9A, 4X), digits, suffix letters
+_BASE_CALL_PAT = re.compile(r'^(?:[A-Z]{1,2}|[0-9][A-Z])[0-9]{1,4}[A-Z]{1,6}$')
 # Slash suffixes that don't make it a new full callsign: /P /M /MM /QRP /0-9
 _SLASH_SUFFIX_PAT = re.compile(r'^([0-9]|P|M|MM|QRP|A|B)$')
 
@@ -2389,7 +2389,7 @@ class _ItilaScanner:
     windows and routes spots.
 
     Pipeline per bin per block (C):
-      192 kHz IQ → FFT scan → spawn → mix DC → 16:1 → IIR 100/200 Hz
+      192/96/48 kHz IQ → FFT scan → spawn → mix DC → 16/8/4:1 → IIR 100/200 Hz
                 → |z| → 60:1 → 200 Hz accum → window ready
     Python:
       window ready → itila_feed() → callsign → collect()
@@ -5332,7 +5332,7 @@ class SpotTracker:
         r'^(?:\d{2}:\d{2}:\d{2}\s+)?DX de (\S+):\s+(\d+\.\d+)\s+([A-Z0-9/]{3,15})\s+'
     )
 
-    def _peer_connect_loop(self, host, port, label, login_call='WF8Z'):
+    def _peer_connect_loop(self, host, port, label, login_call):
         """Connect to a peer DX cluster, parse DX lines, ingest as S-floor
         support evidence. Reconnects on disconnect. Runs as daemon thread.
 
@@ -5376,15 +5376,18 @@ class SpotTracker:
                     except Exception: pass
             time.sleep(5)
 
-    def start_recent_band_tees(self):
+    def start_recent_band_tees(self, login_call):
         """Spawn one daemon thread per configured peer. Idempotent."""
         if getattr(self, '_rb_peer_threads_started', False):
+            return
+        if not login_call:
+            log.warning("S-floor: no callsign configured; peer tees not started")
             return
         self._rb_peer_threads_started = True
         for peer in self._rb_peers_cfg:
             t = threading.Thread(
                 target=self._peer_connect_loop,
-                args=(peer['host'], peer['port'], peer.get('label', 'PEER')),
+                args=(peer['host'], peer['port'], peer.get('label', 'PEER'), login_call),
                 name=f"rb_peer_{peer.get('label','peer')}",
                 daemon=True,
             )
@@ -6478,7 +6481,7 @@ class SparkGap:
         if record_wav:
             import wave as _wave, datetime as _dt
             ts = _dt.datetime.utcnow().strftime('%Y%m%d_%H%M%SZ')
-            band_khz = self.cfg.get('bands', [0])[0] // 1000
+            band_khz = self._resolve_band(self.cfg.get('bands', [0])[0])[1] // 1000
             rec_path = record_wav.format(ts=ts, band=band_khz)
             self._wav_record = _wave.open(rec_path, 'wb')
             self._wav_record.setnchannels(2)
@@ -6508,9 +6511,10 @@ class SparkGap:
         # support map is cheap to maintain and we want it warm if the
         # gate is flipped on at runtime via config reload.
         if self.cfg.get('recent_band_floor', {}).get('peers'):
-            self.tracker.start_recent_band_tees()
+            self.tracker.start_recent_band_tees(self.cfg.get('callsign'))
 
         self.telnet = SpotTelnetServer(
+            host=self.cfg.get('telnet_host', '0.0.0.0'),
             port=self.cfg.get('telnet_port', 7300),
             callsign=self.cfg.get('callsign', 'WF8Z'),
             node_call=self.cfg.get('node_call', 'SPARK-2'),
@@ -6551,6 +6555,10 @@ class SparkGap:
         ]
 
         rx_sample_rate = self.cfg.get('sample_rate', 48000)
+        rates = (192000,) if self.cfg.get('use_pfb_scanner') or self.cfg.get('pfb_scanner_bands') else (48000, 96000, 192000)
+        if self.cfg.get('use_itila') and rx_sample_rate not in rates:
+            log.error("use_itila needs sample_rate in %s, got %d", rates, rx_sample_rate)
+            return False
         sdr_port = self.cfg.get('sdr_port', 1024)
 
         sdr_ip = self.cfg.get('sdr_ip')
@@ -6573,6 +6581,7 @@ class SparkGap:
             flex_port = self.cfg.get('flex_udp_port', 7791)
             self.receiver = FlexIQReceiver(device_ip, freq_hz=int(center_hz),
                                            sample_rate=rx_sample_rate,
+                                           daxiq_channel=self.cfg.get('flex_daxiq_channel', 1),
                                            udp_port=flex_port,
                                            control_port=sdr_port)
             log.info("Using FlexRadio DAX-IQ receiver at %s", device_ip)
@@ -6760,8 +6769,10 @@ class SparkGap:
             if getattr(self, '_use_c_receiver', False):
                 self.receiver.stop()
                 self.receiver.destroy()
-            else:
+            elif hasattr(self.receiver, 'close'):
                 self.receiver.close()
+            else:
+                self.receiver.stop()
         for mgr in self.managers:
             mgr.kill_all()
         if self.telnet:
@@ -6787,13 +6798,9 @@ class SparkGap:
             with self._iq_lock:
                 buf['raw'].append(iq_samples)
             if self._wav_record and rx_index == 0:
-                import struct as _struct
-                frames = bytearray()
-                for i_val, q_val in iq_samples:
-                    i16 = max(-32768, min(32767, int(i_val * 32767)))
-                    q16 = max(-32768, min(32767, int(q_val * 32767)))
-                    frames += _struct.pack('<hh', i16, q16)
-                self._wav_record.writeframes(bytes(frames))
+                iq = np.asarray(iq_samples, dtype=np.float64) * 32767
+                pcm = np.clip(np.trunc(iq), -32768, 32767).astype('<i2')
+                self._wav_record.writeframes(pcm.tobytes())
         except Exception:
             pass  # Don't let errors kill the receiver thread
 
@@ -6838,6 +6845,32 @@ class SparkGap:
                             self.receiver._h, rx_idx, scanner._sc._h,
                             feed_ptr, _ct.c_double(8388608.0))
             # Start worker thread once all scanners are registered
+                else:
+                    # Python receiver path: drain from callback buffers
+                    with self._iq_lock:
+                        buf = self._band_bufs[rx_idx]
+                        raw_chunks = buf['raw']
+                        buf['raw'] = []
+                    if raw_chunks:
+                        chunk_size = len(raw_chunks[0])
+                        max_chunks = max(1, live_rate // 5 // chunk_size)
+                        if len(raw_chunks) > max_chunks:
+                            raw_chunks = raw_chunks[-max_chunks:]
+                        feed_i = []
+                        feed_q = []
+                        for chunk in raw_chunks:
+                            iq_arr = np.asarray(chunk, dtype=np.float64)
+                            feed_i.append(iq_arr[:, 0] * 8388608.0)
+                            feed_q.append(iq_arr[:, 1] * 8388608.0)
+                        max_iq_buf = live_rate * 10
+                        iq_deq = buf['iq']
+                        for chunk in raw_chunks:
+                            iq_deq.extend(chunk)
+                        while len(iq_deq) > max_iq_buf:
+                            iq_deq.popleft()
+                        i_cat = np.concatenate(feed_i)
+                        q_cat = np.concatenate(feed_q)
+                        mgr.feed_all_iq(i_cat, q_cat)
             if use_c and not getattr(self, '_worker_started', False):
                 scanners_ready = sum(1 for mgr in self.managers
                                      if mgr._itila_scanner and mgr._itila_scanner._sc)
@@ -6876,6 +6909,8 @@ class SparkGap:
                     # for free), so allocate it if EITHER is enabled.
                     enable_ft8  = bool(self.cfg.get('enable_ft8',  True))
                     enable_rtty = bool(self.cfg.get('enable_rtty', True))
+                    if enable_ft8 and not os.path.exists('/home/sparkgap/decode_ft8'):
+                        log.warning("enable_ft8 is on but /home/sparkgap/decode_ft8 is missing; FT8 decode will fail")
                     if enable_ft8 or enable_rtty:
                         FT8_FREQS = {3590: 3573, 7090: 7074, 10118: 10136,
                                      14090: 14074, 18083: 18100,
@@ -6976,32 +7011,6 @@ class SparkGap:
                             _emit_intent(st, f_khz, call, wpm, is_runner=True, raw_text=raw)
                             log.info("ITILA context %.1f kHz: %s %d WPM",
                                      f_khz, call, wpm)
-                else:
-                    # Python receiver path: drain from callback buffers
-                    with self._iq_lock:
-                        buf = self._band_bufs[rx_idx]
-                        raw_chunks = buf['raw']
-                        buf['raw'] = []
-                    if raw_chunks:
-                        chunk_size = len(raw_chunks[0])
-                        max_chunks = max(1, live_rate // 5 // chunk_size)
-                        if len(raw_chunks) > max_chunks:
-                            raw_chunks = raw_chunks[-max_chunks:]
-                        feed_i = []
-                        feed_q = []
-                        for chunk in raw_chunks:
-                            iq_arr = np.asarray(chunk, dtype=np.float64)
-                            feed_i.append(iq_arr[:, 0] * 8388608.0)
-                            feed_q.append(iq_arr[:, 1] * 8388608.0)
-                        max_iq_buf = live_rate * 10
-                        iq_deq = buf['iq']
-                        for chunk in raw_chunks:
-                            iq_deq.extend(chunk)
-                        while len(iq_deq) > max_iq_buf:
-                            iq_deq.popleft()
-                        i_cat = np.concatenate(feed_i)
-                        q_cat = np.concatenate(feed_q)
-                        mgr.feed_all_iq(i_cat, q_cat)
 
             # ----------------------------------------------------------------
             # Periodic signal scan — one FFT per band
@@ -7550,7 +7559,6 @@ class SparkGap:
                                     log.info("RTTY cycle done: %d spots across %d bands",
                                              rtty_total, len(jobs))
                             skimmer._ft8_running = False
-                        import threading
                         threading.Thread(target=_ft8_decode,
                                          args=(ft8_jobs, self),
                                          daemon=True).start()
@@ -7563,9 +7571,7 @@ class SparkGap:
 
 def load_config(path):
     defaults = {
-        'callsign': 'WF8Z-2',
         'node_call': 'SPARK-2',
-        'sdr_ip': '192.168.1.54',
         'bands': ['20m'],
         'lna_gain': 20,
         'decoder_bin': './uhsdr_cw',
@@ -7685,6 +7691,9 @@ def run_file_mode(args, config):
             f.seek(chunk_size, 1)
 
     log.info("File: %d ch, %d Hz, %d-bit", file_channels, file_rate, file_bits)
+    rates = (192000,) if config.get('use_pfb_scanner') or config.get('pfb_scanner_bands') else (48000, 96000, 192000)
+    if config.get('use_itila') and file_rate not in rates:
+        sys.exit(f"use_itila needs a recording at {rates} Hz, got {file_rate}")
 
     speeds = config.get('decoder_speeds', [0, 25, 30, 35])
     manager = InstanceManager(
@@ -8008,7 +8017,7 @@ def main():
         description='SparkGap — Open Source Linux CW Skimmer',
         epilog='One JSON file. One process. Zero Windows.',
     )
-    parser.add_argument('--config', default='skimmer.json', help='Config JSON')
+    parser.add_argument('--config', required=True, help='Config JSON')
     parser.add_argument('--ip', help='SDR IP override')
     parser.add_argument('--band', help='Band override (e.g., 20m)')
     parser.add_argument('--port', type=int, help='Telnet port override')
@@ -8025,13 +8034,19 @@ def main():
         datefmt='%H:%M:%S',
     )
 
-    config = load_config(args.config if os.path.exists(args.config) else None)
+    if not os.path.exists(args.config):
+        sys.exit(f"Config not found: {args.config}")
+    config = load_config(args.config)
+    if not config.get('callsign'):
+        sys.exit(f"{args.config} sets no callsign")
     if args.ip:
         config['sdr_ip'] = args.ip
     if args.band:
         config['bands'] = [args.band]
     if args.port:
         config['telnet_port'] = args.port
+    if config.get('use_itila') and float(config.get('itila_window_sec', 120.0)) > 75:
+        sys.exit("itila_window_sec must be <= 75 (ITILA decode buffer); set it in the config")
 
     if args.file:
         sys.exit(run_file_mode(args, config))

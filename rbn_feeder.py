@@ -421,6 +421,10 @@ def main():
         datefmt='%H:%M:%S',
     )
 
+    if not HAVE_RBN_AUTH and not args.dry_run:
+        sys.exit("rbn_auth module not found: RBN would silently drop these spots. "
+                 "Use --dry-run to test.")
+
     blacklist = load_blacklist(args.blacklist)
     log.info('loaded %d blacklist entries', len(blacklist))
 
