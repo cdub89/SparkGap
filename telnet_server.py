@@ -84,13 +84,15 @@ class SpotTelnetServer:
     async def stop(self):
         if self._server:
             self._server.close()
-            await self._server.wait_closed()
+        # Close clients first: since Python 3.12 wait_closed() waits for them.
         for writer in list(self._clients):
             try:
                 writer.close()
             except Exception:
                 pass
         self._clients.clear()
+        if self._server:
+            await self._server.wait_closed()
         log.info("Spot telnet server stopped")
 
     @property
