@@ -353,6 +353,18 @@ void hpsdr_set_freq(HpsdrFast *h, int rx_index, uint32_t freq_hz) {
 }
 
 void hpsdr_start(HpsdrFast *h) {
+    /* Idempotent guard (2026-09-21, L1 via WX7V review). SparkGap.start()
+     * and SparkGap.run() BOTH call receiver.start() -> hpsdr_start() in the
+     * multi-band (use_c) production path. Without this guard the second call
+     * spawns a SECOND recv_thread on the same UDP socket: the kernel then
+     * splits the HPSDR packet stream ~50/50 between the two threads, both
+     * call parse_frame() into the same ring unsynchronized, and h->thread is
+     * overwritten so thread #1 leaks and never joins on stop(). Corrupts the
+     * LIVE IQ only (file mode never calls this) -> prime suspect for the
+     * recorded-36/min vs live-~5/min delivery gap. Matches the existing
+     * hpsdr_start_worker() worker_running guard. Freqs are set before the
+     * first call (sparkgap.py:6599), so the redundant call is pure no-op. */
+    if (h->running) return;
     /* Speed bits: 0=48k, 1=96k, 2=192k, 3=384k */
     int speed = 0;
     if (h->sample_rate >= 384000) speed = 3;
