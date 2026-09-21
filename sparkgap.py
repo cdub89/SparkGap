@@ -8032,6 +8032,8 @@ def main():
         config['bands'] = [args.band]
     if args.port:
         config['telnet_port'] = args.port
+    if config.get('use_itila') and float(config.get('itila_window_sec', 120.0)) > 75:
+        sys.exit("itila_window_sec must be <= 75 (ITILA decode buffer); set it in the config")
 
     if args.file:
         sys.exit(run_file_mode(args, config))
