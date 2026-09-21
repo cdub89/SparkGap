@@ -6551,6 +6551,9 @@ class SparkGap:
         ]
 
         rx_sample_rate = self.cfg.get('sample_rate', 48000)
+        if self.cfg.get('use_itila') and rx_sample_rate != 192000:
+            log.error("use_itila needs sample_rate 192000, got %d", rx_sample_rate)
+            return False
         sdr_port = self.cfg.get('sdr_port', 1024)
 
         sdr_ip = self.cfg.get('sdr_ip')
