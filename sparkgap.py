@@ -6514,6 +6514,7 @@ class SparkGap:
             self.tracker.start_recent_band_tees(self.cfg.get('callsign'))
 
         self.telnet = SpotTelnetServer(
+            host=self.cfg.get('telnet_host', '0.0.0.0'),
             port=self.cfg.get('telnet_port', 7300),
             callsign=self.cfg.get('callsign', 'WF8Z'),
             node_call=self.cfg.get('node_call', 'SPARK-2'),
@@ -6879,6 +6880,8 @@ class SparkGap:
                     # for free), so allocate it if EITHER is enabled.
                     enable_ft8  = bool(self.cfg.get('enable_ft8',  True))
                     enable_rtty = bool(self.cfg.get('enable_rtty', True))
+                    if enable_ft8 and not os.path.exists('/home/sparkgap/decode_ft8'):
+                        log.warning("enable_ft8 is on but /home/sparkgap/decode_ft8 is missing; FT8 decode will fail")
                     if enable_ft8 or enable_rtty:
                         FT8_FREQS = {3590: 3573, 7090: 7074, 10118: 10136,
                                      14090: 14074, 18083: 18100,
