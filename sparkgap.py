@@ -2389,7 +2389,7 @@ class _ItilaScanner:
     windows and routes spots.
 
     Pipeline per bin per block (C):
-      192 kHz IQ → FFT scan → spawn → mix DC → 16:1 → IIR 100/200 Hz
+      192/96/48 kHz IQ → FFT scan → spawn → mix DC → 16/8/4:1 → IIR 100/200 Hz
                 → |z| → 60:1 → 200 Hz accum → window ready
     Python:
       window ready → itila_feed() → callsign → collect()
@@ -6551,8 +6551,9 @@ class SparkGap:
         ]
 
         rx_sample_rate = self.cfg.get('sample_rate', 48000)
-        if self.cfg.get('use_itila') and rx_sample_rate != 192000:
-            log.error("use_itila needs sample_rate 192000, got %d", rx_sample_rate)
+        rates = (192000,) if self.cfg.get('use_pfb_scanner') or self.cfg.get('pfb_scanner_bands') else (48000, 96000, 192000)
+        if self.cfg.get('use_itila') and rx_sample_rate not in rates:
+            log.error("use_itila needs sample_rate in %s, got %d", rates, rx_sample_rate)
             return False
         sdr_port = self.cfg.get('sdr_port', 1024)
 
@@ -7686,8 +7687,9 @@ def run_file_mode(args, config):
             f.seek(chunk_size, 1)
 
     log.info("File: %d ch, %d Hz, %d-bit", file_channels, file_rate, file_bits)
-    if config.get('use_itila') and file_rate != 192000:
-        sys.exit(f"use_itila needs a 192 kHz recording, got {file_rate}")
+    rates = (192000,) if config.get('use_pfb_scanner') or config.get('pfb_scanner_bands') else (48000, 96000, 192000)
+    if config.get('use_itila') and file_rate not in rates:
+        sys.exit(f"use_itila needs a recording at {rates} Hz, got {file_rate}")
 
     speeds = config.get('decoder_speeds', [0, 25, 30, 35])
     manager = InstanceManager(
