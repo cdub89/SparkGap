@@ -33,6 +33,9 @@ log = logging.getLogger(__name__)
 class SpotTelnetServer:
     """Async TCP telnet server that broadcasts CW spots to connected clients."""
 
+    # Unsent bytes allowed per client before it is dropped as stalled.
+    MAX_CLIENT_BUFFER = 1_000_000
+
     def __init__(self, host: str = '0.0.0.0', port: int = 7300,
                  callsign: str = 'WF8Z', node_call: str = 'SPARK-2',
                  skimmer_suffix: str = '-#', source_tag: str = 'SG',
@@ -293,6 +296,12 @@ class SpotTelnetServer:
         dead = []
         for writer, state in self._clients.items():
             try:
+                pending = writer.transport.get_write_buffer_size()
+                if pending > self.MAX_CLIENT_BUFFER:
+                    log.warning("Dropping stalled client %s: %d bytes unsent",
+                                state.get('call'), pending)
+                    dead.append(writer)
+                    continue
                 if state.get('ve7cc'):
                     writer.write(cc11_line.encode())
                 else:
