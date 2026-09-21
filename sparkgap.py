@@ -1392,8 +1392,8 @@ _ITILA_CQ_WORDS = {'CQ', 'TEST', 'CWT', 'SST', 'MST', 'FD', 'SS', 'NA', 'UP'}
 # "TU CALL 5NN QRZ?" and the next decode chunk often starts with the next
 # caller — extracting after QRZ grabs the wrong station. CQ + contest tokens
 # uniquely identify runners; we lose nothing real by dropping QRZ here.
-# Base callsign: 1-2 prefix letters, 1-2 digits, 1-4 suffix letters
-_BASE_CALL_PAT = re.compile(r'^[A-Z]{1,2}[0-9]{1,4}[A-Z]{1,6}$')
+# Base callsign: 1-2 prefix letters or digit+letter (9A, 4X), digits, suffix letters
+_BASE_CALL_PAT = re.compile(r'^(?:[A-Z]{1,2}|[0-9][A-Z])[0-9]{1,4}[A-Z]{1,6}$')
 # Slash suffixes that don't make it a new full callsign: /P /M /MM /QRP /0-9
 _SLASH_SUFFIX_PAT = re.compile(r'^([0-9]|P|M|MM|QRP|A|B)$')
 

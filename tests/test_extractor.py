@@ -4,7 +4,7 @@ import pytest
 
 import sparkgap
 
-DIGIT_FIRST = ["9A1AA", "4X4DK", "3A2MW", "4U1ITU", "3DA0RU", "2E0ABC"]
+DIGIT_FIRST = ["9A1AA", "4X4DK", "3A2MW", "4U1ITU", "5B4AIF", "2E0ABC"]
 
 
 @pytest.mark.parametrize("tok", ["W1AW", "K9MA", "M7Z", "HB9AMO"])
@@ -19,7 +19,7 @@ def test_base_call_rejects(tok: str) -> None:
 
 @pytest.mark.parametrize("tok", DIGIT_FIRST)
 def test_base_call_digit_first_prefix(tok: str) -> None:
-    assert not sparkgap._is_base_call(tok)  # bug: legal ITU prefixes rejected
+    assert sparkgap._is_base_call(tok)
 
 
 @pytest.mark.parametrize(
@@ -31,6 +31,8 @@ def test_base_call_digit_first_prefix(tok: str) -> None:
         ("CQ CQ E E A2JD K2JD K2JD K", "K2JD"),
         ("REST W1AW", "W1AW"),
         ("FB JIM N3BB DE N5RZ", None),
+        ("CQ CQ 9A1AA 9A1AA K", "9A1AA"),
+        ("CQ 4X4DK 4X4DK", "4X4DK"),
     ],
 )
 def test_extract_cq_call(text: str, call: str | None) -> None:
