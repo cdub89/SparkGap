@@ -245,6 +245,7 @@ class FlexIQReceiver:
         start = time.time()
         last_counter = None
         pkt_count = 0
+        lost = 0
         last_report = start
 
         # Flex v1.4+ sends payload_endian=little. Confirmed empirically:
@@ -287,6 +288,7 @@ class FlexIQReceiver:
             if last_counter is not None:
                 gap = (counter - last_counter - 1) & 0x0F
                 if gap and pkt_count > 10:
+                    lost += gap
                     log.debug("[Flex] Packet gap: %d missed", gap)
             last_counter = counter
 
@@ -305,8 +307,8 @@ class FlexIQReceiver:
             now = time.time()
             if now - last_report >= 30:
                 elapsed = now - start
-                log.info("[Flex] %d packets in %.0fs (%.0f pkt/s, %d samp/pkt)",
-                         pkt_count, elapsed, pkt_count / elapsed, n_samples)
+                log.info("[Flex] %d packets in %.0fs (%.0f pkt/s, %d samp/pkt, %d lost)",
+                         pkt_count, elapsed, pkt_count / elapsed, n_samples, lost)
                 last_report = now
 
     # -- helpers -------------------------------------------------------------
