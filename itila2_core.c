@@ -28,7 +28,8 @@
 #define BAYES_RATE      200
 #define N_SPEED_BINS    16
 #define WPM_MIN         8.0
-#define WPM_MAX         60.0
+#define WPM_MAX         35.0     /* real CW is 15 to 25 WPM, never above 35 (WX7V) */
+#define MIN_MARK_RUN    7        /* dit at WPM_MAX; shorter mark runs are noise */
 #define MAX_ENV         16384    /* ~82 s at 200 Hz.  Was 200000, sized
                                   * for a hypothetical 16.7-min window
                                   * that nothing actually uses.  Real
@@ -289,12 +290,12 @@ static double estimate_wpm_from_gamma(const double *gamma, int T) {
         int v = gamma[i*2+1] > 0.5 ? 1 : 0;
         if (v == val) { cnt++; }
         else {
-            if (val == 1 && cnt >= 2 && n_runs < 8192)
+            if (val == 1 && cnt >= MIN_MARK_RUN && n_runs < 8192)
                 runs[n_runs++] = log((double)cnt + 0.5);
             val = v; cnt = 1;
         }
     }
-    if (val == 1 && cnt >= 2 && n_runs < 8192)
+    if (val == 1 && cnt >= MIN_MARK_RUN && n_runs < 8192)
         runs[n_runs++] = log((double)cnt + 0.5);
     if (n_runs < 5) return -1.0;
 
@@ -319,7 +320,7 @@ static double estimate_wpm_from_gamma(const double *gamma, int T) {
         if (dit_samples < 1.0) return -1.0;
         double wpm = 240.0 / dit_samples;
         if (wpm < WPM_MIN) wpm = WPM_MIN;
-        if (wpm > WPM_MAX) wpm = WPM_MAX;
+        if (wpm > WPM_MAX) return -1.0;
         return wpm;
     }
 
@@ -354,7 +355,7 @@ static double estimate_wpm_from_gamma(const double *gamma, int T) {
     if (dit_samples < 1.0) return -1.0;
     double wpm = 240.0 / dit_samples;
     if (wpm < WPM_MIN) wpm = WPM_MIN;
-    if (wpm > WPM_MAX) wpm = WPM_MAX;
+    if (wpm > WPM_MAX) return -1.0;
     return wpm;
 }
 
@@ -826,56 +827,68 @@ static double fit_unit(const run_t *runs, int n_runs, double unit_in, int *fitte
         ? sorted[n_marks / 2]
         : sorted[n_marks / 2 - 1];
 
-    double x[2048];
-    int n_surv = 0;
-    for (int i = 0; i < n_marks; i++) {
-        if (d[i] < UNIT_FIT_NOISE_FRAC * median) continue;
-        x[n_surv++] = log(d[i]);
-    }
-
-    if (n_surv < UNIT_FIT_MIN_MARKS) { *fitted = 0; *dah_out = 0.0; return unit_in; }
-
-    qsort(x, n_surv, sizeof(double), cmp_double);
-    double median_log = (n_surv % 2)
-        ? x[n_surv / 2]
-        : x[n_surv / 2 - 1];
-
-    double c[2] = { x[(n_surv - 1) / 4], x[3 * (n_surv - 1) / 4] };
-    int n[2] = { 0, 0 };
-    int assign[2048];
-    for (int iter = 0; iter < UNIT_FIT_ITERS; iter++) {
-        n[0] = n[1] = 0;
-        for (int i = 0; i < n_surv; i++) {
-            double d0 = fabs(x[i] - c[0]);
-            double d1 = fabs(x[i] - c[1]);
-            int best = (d1 < d0) ? 1 : 0;
-            assign[i] = best;
-            n[best]++;
+    /* Pass 0 drops marks under half the median as noise.  When dahs outnumber
+     * dits the median is a dah and that drops every dit (W1AW, 40m,
+     * 2026-09-22), so pass 1, taken only when pass 0 finds no usable fit,
+     * keeps every mark at least as long as the shortest legal dit.  Too few
+     * survivors in pass 0 still returns unfitted, as before. */
+    for (int pass = 0; pass < 2; pass++) {
+        double floor_len = pass == 0 ? UNIT_FIT_NOISE_FRAC * median : unit_samples(WPM_MAX);
+        double x[2048];
+        int n_surv = 0;
+        for (int i = 0; i < n_marks; i++) {
+            if (d[i] < floor_len) continue;
+            x[n_surv++] = log(d[i]);
         }
-        double sum[2] = { 0.0, 0.0 };
-        for (int i = 0; i < n_surv; i++) sum[assign[i]] += x[i];
-        for (int k = 0; k < 2; k++)
-            if (n[k] > 0) c[k] = sum[k] / n[k];
-    }
 
-    int dit_idx = (c[0] <= c[1]) ? 0 : 1;
-    int dah_idx = 1 - dit_idx;
-    double dit = exp(c[dit_idx]);
-    double dah = exp(c[dah_idx]);
-
-    if (n[dah_idx] < 2 || dah / dit < UNIT_FIT_RATIO_MIN || dah / dit > UNIT_FIT_RATIO_MAX) {
-        /* one-cluster case: accept the median only if it lands near the
-         * WPM-derived unit already in hand. */
-        double m = exp(median_log);
-        if (m / unit_in >= UNIT_FIT_SOLO_LO && m / unit_in <= UNIT_FIT_SOLO_HI) {
-            *fitted = 1; *dah_out = 0.0; return m;
+        if (n_surv < UNIT_FIT_MIN_MARKS) {
+            if (pass == 0) { *fitted = 0; *dah_out = 0.0; return unit_in; }
+            continue;
         }
-        *fitted = 0; *dah_out = 0.0; return unit_in;
-    }
 
-    *fitted = 1;
-    *dah_out = dah;
-    return dit;
+        qsort(x, n_surv, sizeof(double), cmp_double);
+        double median_log = (n_surv % 2)
+            ? x[n_surv / 2]
+            : x[n_surv / 2 - 1];
+
+        double c[2] = { x[(n_surv - 1) / 4], x[3 * (n_surv - 1) / 4] };
+        int n[2] = { 0, 0 };
+        int assign[2048];
+        for (int iter = 0; iter < UNIT_FIT_ITERS; iter++) {
+            n[0] = n[1] = 0;
+            for (int i = 0; i < n_surv; i++) {
+                double d0 = fabs(x[i] - c[0]);
+                double d1 = fabs(x[i] - c[1]);
+                int best = (d1 < d0) ? 1 : 0;
+                assign[i] = best;
+                n[best]++;
+            }
+            double sum[2] = { 0.0, 0.0 };
+            for (int i = 0; i < n_surv; i++) sum[assign[i]] += x[i];
+            for (int k = 0; k < 2; k++)
+                if (n[k] > 0) c[k] = sum[k] / n[k];
+        }
+
+        int dit_idx = (c[0] <= c[1]) ? 0 : 1;
+        int dah_idx = 1 - dit_idx;
+        double dit = exp(c[dit_idx]);
+        double dah = exp(c[dah_idx]);
+
+        if (n[dah_idx] >= 2 && dah / dit >= UNIT_FIT_RATIO_MIN && dah / dit <= UNIT_FIT_RATIO_MAX) {
+            *fitted = 1;
+            *dah_out = dah;
+            return dit;
+        }
+        if (pass == 0) {
+            /* one-cluster case: accept the median only if it lands near the
+             * WPM-derived unit already in hand. */
+            double m = exp(median_log);
+            if (m / unit_in >= UNIT_FIT_SOLO_LO && m / unit_in <= UNIT_FIT_SOLO_HI) {
+                *fitted = 1; *dah_out = 0.0; return m;
+            }
+        }
+    }
+    *fitted = 0; *dah_out = 0.0; return unit_in;
 }
 
 /* Letter/word gap boundary fitted from this window's own gaps.  Returns the
@@ -1585,4 +1598,21 @@ double itila2_test_fit_letter_word(const int *is_mark, const int *dur, int n,
     double boundary = fit_letter_word_boundary(runs, n, unit, fitted);
     free(runs);
     return boundary;
+}
+
+double itila2_test_estimate_wpm(const int *is_mark, const int *dur, int n) {
+    int T = 0;
+    for (int i = 0; i < n; i++) T += dur[i];
+    if (T < 2 || T > MAX_ENV) return -2.0;
+    double *gamma = malloc((size_t)T * 2 * sizeof(double));
+    if (!gamma) return -2.0;
+    int t = 0;
+    for (int i = 0; i < n; i++)
+        for (int k = 0; k < dur[i]; k++, t++) {
+            gamma[t*2+1] = is_mark[i] ? 1.0 : 0.0;
+            gamma[t*2+0] = 1.0 - gamma[t*2+1];
+        }
+    double wpm = estimate_wpm_from_gamma(gamma, T);
+    free(gamma);
+    return wpm;
 }
