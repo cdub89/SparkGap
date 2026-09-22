@@ -809,7 +809,7 @@ static double compute_timing_cost(const int8_t *marks, int T, double wpm,
  * the space thresholds; the dit/dah boundary and the beam likelihoods keep the
  * unit derived from the WPM estimate.  Returns unit_in when the marks do not
  * support a fit. */
-static double fit_unit(const run_t *runs, int n_runs, double unit_in, int *fitted) {
+static double fit_unit(const run_t *runs, int n_runs, double unit_in, int *fitted, double *dah_out) {
     double d[2048];
     int n_marks = 0;
     for (int i = 1; i < n_runs - 1 && n_marks < 2048; i++) {
@@ -817,7 +817,7 @@ static double fit_unit(const run_t *runs, int n_runs, double unit_in, int *fitte
         d[n_marks++] = (double)runs[i].dur;
     }
 
-    if (n_marks < UNIT_FIT_MIN_MARKS) { *fitted = 0; return unit_in; }
+    if (n_marks < UNIT_FIT_MIN_MARKS) { *fitted = 0; *dah_out = 0.0; return unit_in; }
 
     double sorted[2048];
     memcpy(sorted, d, n_marks * sizeof(double));
@@ -833,7 +833,7 @@ static double fit_unit(const run_t *runs, int n_runs, double unit_in, int *fitte
         x[n_surv++] = log(d[i]);
     }
 
-    if (n_surv < UNIT_FIT_MIN_MARKS) { *fitted = 0; return unit_in; }
+    if (n_surv < UNIT_FIT_MIN_MARKS) { *fitted = 0; *dah_out = 0.0; return unit_in; }
 
     qsort(x, n_surv, sizeof(double), cmp_double);
     double median_log = (n_surv % 2)
@@ -868,12 +868,13 @@ static double fit_unit(const run_t *runs, int n_runs, double unit_in, int *fitte
          * WPM-derived unit already in hand. */
         double m = exp(median_log);
         if (m / unit_in >= UNIT_FIT_SOLO_LO && m / unit_in <= UNIT_FIT_SOLO_HI) {
-            *fitted = 1; return m;
+            *fitted = 1; *dah_out = 0.0; return m;
         }
-        *fitted = 0; return unit_in;
+        *fitted = 0; *dah_out = 0.0; return unit_in;
     }
 
     *fitted = 1;
+    *dah_out = dah;
     return dit;
 }
 
@@ -963,16 +964,27 @@ static int decode_runs_beam(
     if (n_runs < MAX_ENV) { runs[n_runs].is_mark=val; runs[n_runs].dur=cnt; n_runs++; }
 
     int unit_fitted = 0;
-    double unit_sp = fit_unit(runs, n_runs, unit, &unit_fitted);   /* space thresholds only */
+    double dah_sp = 0.0;
+    double unit_sp = fit_unit(runs, n_runs, unit, &unit_fitted, &dah_sp);   /* space thresholds only */
     if (unit_sp_out) *unit_sp_out = unit_sp;
 
     int lw_fitted = 0;
     double letter_word = fit_letter_word_boundary(runs, n_runs, unit_sp, &lw_fitted);
 
+    /* Both mark classes fitted from this window: use them for the mark
+     * decisions too (CWReader-style), else keep the WPM-derived unit. */
+    double dit_m = unit, dah_m = 3.0 * unit;
+    if (unit_fitted && dah_sp > 0.0) {
+        dit_m = unit_sp; dah_m = dah_sp;
+        boundary = sqrt(dit_m * dah_m);
+        zone_lo  = boundary * 0.75;
+        zone_hi  = boundary * 1.25;
+    }
+
     if (getenv("ITILA2_DUMP_RUNS")) {
-        fprintf(stderr, "ITILA2 runs %.1f kHz wpm=%.1f unit=%.2f usp=%.2f%s lw=%.1f%s n=%d:",
+        fprintf(stderr, "ITILA2 runs %.1f kHz wpm=%.1f unit=%.2f usp=%.2f%s dah=%.2f lw=%.1f%s n=%d:",
                 freq_khz, wpm, unit, unit_sp, unit_fitted ? "" : "(in)",
-                letter_word / unit, lw_fitted ? "" : "(fixed)", n_runs);
+                dah_sp, letter_word / unit, lw_fitted ? "" : "(fixed)", n_runs);
         int lim = n_runs < 400 ? n_runs : 400;
         for (int i = 0; i < lim; i++)
             fprintf(stderr, " %c%d", runs[i].is_mark ? '+' : '-', runs[i].dur);
@@ -995,8 +1007,8 @@ static int decode_runs_beam(
         if (is_mark) {
             if ((double)dur >= zone_lo && (double)dur <= zone_hi) {
                 /* Boundary zone: expand both dit and dah */
-                double log_dit = GEOM_LOG_PMF(dur, unit);
-                double log_dah = GEOM_LOG_PMF(dur, 3.0*unit);
+                double log_dit = GEOM_LOG_PMF(dur, dit_m);
+                double log_dah = GEOM_LOG_PMF(dur, dah_m);
                 int next_sz = 0;
 
                 for (int i = 0; i < beam_sz && next_sz < MAX_BEAM - 1; i++) {
