@@ -27,7 +27,7 @@ MANIFEST=$1; LABEL=$2; ITILA2_SRC=${3:-}; SCANNER_SRC=${4:-}; FIR_HDR=${5:-}
 
 cd "$(dirname "$0")/../.."
 if [ -n "${PYTHON:-}" ]; then PY=$PYTHON
-elif [ -x .venv/bin/python ]; then PY=.venv/bin/python
+elif [ -x .venv/bin/python ]; then PY=$PWD/.venv/bin/python
 else PY=python3; fi
 
 fail() { echo "refusing to run: $*" >&2; exit 1; }
