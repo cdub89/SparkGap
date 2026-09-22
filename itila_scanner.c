@@ -30,6 +30,7 @@
 #define SC_DEC2       6       /* 12 kHz → 2 kHz    (FIR stage 2) */
 #define SC_DEC3       10      /* 2 kHz → 200 Hz    (FIR stage 3) */
 #define SC_ENV_CAP    15000   /* 75s at 200 Hz — 1.25 decode windows */
+#define SC_EVIDENCE_COST_MAX 30.0  /* a decode this clean keeps its bin alive (itila.h cost gate) */
 
 /* Lazy bin spawn: a peak must be detected by ≥SC_CAND_HITS_REQUIRED scans
  * before a bin is allocated for it. Filters single-scan noise crossings
@@ -860,7 +861,10 @@ int itila_sc_decode_ready(ItilaSc *sc, int window_samples,
                     /* Trim trailing whitespace */
                     while (len > 0 && (r->text[len-1] == ' ' || r->text[len-1] == '\n'))
                         r->text[--len] = '\0';
-                    if (len > 0) n_results++;
+                    if (len > 0) {
+                        if (cost <= SC_EVIDENCE_COST_MAX) b->last_evidence = sc->total_samples;
+                        n_results++;
+                    }
                 }
             }
 

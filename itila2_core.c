@@ -52,11 +52,10 @@
 #define MAX_CALL        8        /* max callsign length + null */
 #define RESULT_BUF      2048     /* output buffer, must hold MAX_TEXT */
 #define GAP_FIT_MIN_GAPS    8     /* below this, use the fixed 5-unit rule */
-#define GAP_FIT_ITERS       10    /* 3-means iterations in log space */
+#define GAP_FIT_ITERS       10    /* 2-means iterations in log space */
 #define GAP_FIT_MIN_MEMBERS 2     /* letter/word clusters need this many gaps each */
-#define GAP_FIT_LW_MIN      3.5   /* fitted boundary must fall in [MIN, MAX] units */
-#define GAP_FIT_LW_MAX      12.0
-#define GAP_FIT_MAX_UNITS 20.0   /* longer gaps are idle time, not word gaps */
+#define GAP_FIT_LW_MIN      3.5   /* fitted boundary must be at least this many units */
+#define GAP_FIT_IDLE_X      6.0   /* gaps over this multiple of the letter gap are idle time */
 #define GAP_FIT_LW_SEP 1.8      /* word centre must be this far above letter centre: distinct classes */
 #define UNIT_FIT_MIN_MARKS   8     /* fewer interior marks: keep the passed unit */
 #define UNIT_FIT_ITERS       10    /* fixed 2-means iterations, deterministic */
@@ -65,6 +64,10 @@
 #define UNIT_FIT_NOISE_FRAC  0.5   /* marks shorter than this fraction of the median are noise */
 #define UNIT_FIT_SOLO_LO     0.7   /* one-cluster case: accept only if near the passed unit */
 #define UNIT_FIT_SOLO_HI     1.4
+#define CARRY_MAX    4000   /* 20 s: longest unfinished word carried into the next window */
+#define FLUSH_MARGIN 1000   /* 5 s decoded after a carried word when the signal ends */
+#define SEP_MIN      1.5    /* mark level this many noise sigmas above the noise, or no CW:
+                             * EM fits noise at 0.5 to 1; no confirmed call below 1.5 (A/B 2026-09-22) */
 
 /* Forward declaration of fb_core (fb_core.c) */
 void fb_core(const double* log_B, const double* log_T, int T,
@@ -116,6 +119,13 @@ typedef struct {
     callsign_t   *sc_calls;         /* MAX_CALLS */
     char         (*sc_out_texts)[MAX_TEXT]; /* MAX_TEXTS entries */
     char         *sc_primary;       /* MAX_TEXT, primary_text */
+
+    /* Envelope after the last word gap of the previous window, decoded with
+     * the next one so nothing sent across a window edge is split. */
+    double       *carry_env;        /* CARRY_MAX */
+    int           carry_n;
+    double       *feed_env;         /* MAX_ENV, carry + new window */
+    double        lw_units_prev;    /* last fitted letter/word boundary, in units */
 
     /* Speed bins */
     double speed_bins[N_SPEED_BINS];
@@ -208,6 +218,7 @@ static const morse_entry_t MORSE_TABLE[] = {
     {".....", '5'},{"-....","6"[0]},{"--...","7"[0]},{"---..","8"[0]},{"----.","9"[0]},
     {"..--..","?"[0]}, {".-.-.-","."[0]}, {"--..--",","[0]},
     {"-..-.","/"[0]}, {"-....-","-"[0]},
+    {"-...-", '='}, {".-.-.", '<'}, {"...-.-", '>'}, {".-...", '&'},   /* BT, AR, SK, AS */
     {NULL, 0}
 };
 
@@ -216,6 +227,19 @@ static char morse_lookup(const char *sym) {
         if (strcmp(sym, MORSE_TABLE[i].pat) == 0)
             return MORSE_TABLE[i].ch;
     return '?';
+}
+
+/* Append sym's character to txt (length tl); prosigns AR, SK and AS print as letters. */
+static int append_sym(char *txt, int tl, const char *sym) {
+    char ch = morse_lookup(sym);
+    const char *out = ch == '<' ? "AR" : ch == '>' ? "SK" : ch == '&' ? "AS" : NULL;
+    if (!out) {
+        if (tl < MAX_TEXT-1) txt[tl++] = ch;
+    } else {
+        for (; *out && tl < MAX_TEXT-1; out++) txt[tl++] = *out;
+    }
+    txt[tl] = '\0';
+    return tl;
 }
 
 /* -------------------------------------------------------------------------
@@ -834,6 +858,7 @@ static double fit_unit(const run_t *runs, int n_runs, double unit_in, int *fitte
      * survivors in pass 0 still returns unfitted, as before. */
     for (int pass = 0; pass < 2; pass++) {
         double floor_len = pass == 0 ? UNIT_FIT_NOISE_FRAC * median : unit_samples(WPM_MAX);
+        if (floor_len < unit_samples(WPM_MAX)) floor_len = unit_samples(WPM_MAX);
         double x[2048];
         int n_surv = 0;
         for (int i = 0; i < n_marks; i++) {
@@ -893,52 +918,60 @@ static double fit_unit(const run_t *runs, int n_runs, double unit_in, int *fitte
 
 /* Letter/word gap boundary fitted from this window's own gaps.  Returns the
  * boundary in samples, or the fixed 5-unit rule when the gaps do not support
- * a fit.  Marks, the unit and the dit/dah boundary are deliberately untouched. */
+ * a fit.  Gaps under 2 units are element gaps (the beam's rule); the rest are
+ * split into letter and word classes from their own spread, so Farnsworth and
+ * slow senders (letter gaps 6 to 16 units, word gaps 14 to 37, W1AW 5 and 10
+ * WPM) fit as well as standard timing.  Marks and the unit are untouched. */
 static double fit_letter_word_boundary(const run_t *runs, int n_runs, double unit, int *fitted) {
     double x[2048];
     int n_gaps = 0;
     for (int i = 1; i < n_runs - 1 && n_gaps < 2048; i++) {
         if (runs[i].is_mark) continue;
         double gap_units = (double)runs[i].dur / unit;
-        if (gap_units < 0.5 || gap_units > GAP_FIT_MAX_UNITS) continue;
+        if (gap_units < 2.0) continue;
         x[n_gaps++] = log(gap_units);
     }
-
     if (n_gaps < GAP_FIT_MIN_GAPS) { *fitted = 0; return 5.0 * unit; }
 
-    double c[3] = { log(1.0), log(3.0), log(7.0) };
-    int n[3] = { 0, 0, 0 };
-    int assign[2048];
+    /* Letter gaps outnumber word gaps; anything far above them is idle time. */
+    qsort(x, n_gaps, sizeof(double), cmp_double);
+    double idle = x[(n_gaps - 1) / 4] + log(GAP_FIT_IDLE_X);
+    while (n_gaps > 0 && x[n_gaps - 1] > idle) n_gaps--;
+    if (n_gaps < GAP_FIT_MIN_GAPS) { *fitted = 0; return 5.0 * unit; }
+
+    double c[2] = { x[(n_gaps - 1) / 4], x[9 * (n_gaps - 1) / 10] };
+    int n[2] = { 0, 0 };
     for (int iter = 0; iter < GAP_FIT_ITERS; iter++) {
-        n[0] = n[1] = n[2] = 0;
+        double sum[2] = { 0.0, 0.0 };
+        n[0] = n[1] = 0;
         for (int i = 0; i < n_gaps; i++) {
-            int best = 0;
-            double best_d = fabs(x[i] - c[0]);
-            for (int k = 1; k < 3; k++) {
-                double d = fabs(x[i] - c[k]);
-                if (d < best_d) { best_d = d; best = k; }
-            }
-            assign[i] = best;
-            n[best]++;
+            int k = fabs(x[i] - c[1]) < fabs(x[i] - c[0]) ? 1 : 0;
+            sum[k] += x[i];
+            n[k]++;
         }
-        double sum[3] = { 0.0, 0.0, 0.0 };
-        for (int i = 0; i < n_gaps; i++) sum[assign[i]] += x[i];
-        for (int k = 0; k < 3; k++)
+        for (int k = 0; k < 2; k++)
             if (n[k] > 0) c[k] = sum[k] / n[k];
     }
 
-    if (n[1] < GAP_FIT_MIN_MEMBERS || n[2] < GAP_FIT_MIN_MEMBERS) {
+    if (n[0] < GAP_FIT_MIN_MEMBERS || n[1] < GAP_FIT_MIN_MEMBERS) {
         *fitted = 0; return 5.0 * unit;
     }
-
-    if (exp(c[2] - c[1]) < GAP_FIT_LW_SEP) { *fitted = 0; return 5.0 * unit; }
-    double boundary_units = exp(0.5 * (c[1] + c[2]));
-    if (boundary_units < GAP_FIT_LW_MIN || boundary_units > GAP_FIT_LW_MAX) {
-        *fitted = 0; return 5.0 * unit;
-    }
+    if (exp(c[1] - c[0]) < GAP_FIT_LW_SEP) { *fitted = 0; return 5.0 * unit; }
+    double boundary_units = exp(0.5 * (c[0] + c[1]));
+    if (boundary_units < GAP_FIT_LW_MIN) { *fitted = 0; return 5.0 * unit; }
 
     *fitted = 1;
     return boundary_units * unit;
+}
+
+/* The fitted boundary, or this handle's last fitted one when this window's gaps
+ * do not support a fit (a short flush window, a few letters). */
+static double letter_word_boundary(itila_state_t *st, const run_t *runs, int n_runs,
+                                   double unit, int *fitted) {
+    double b = fit_letter_word_boundary(runs, n_runs, unit, fitted);
+    if (*fitted) st->lw_units_prev = b / unit;
+    else if (st->lw_units_prev > 0.0) b = st->lw_units_prev * unit;
+    return b;
 }
 
 static int beam_score_cmp(const void *a, const void *b) {
@@ -982,7 +1015,7 @@ static int decode_runs_beam(
     if (unit_sp_out) *unit_sp_out = unit_sp;
 
     int lw_fitted = 0;
-    double letter_word = fit_letter_word_boundary(runs, n_runs, unit_sp, &lw_fitted);
+    double letter_word = letter_word_boundary(st, runs, n_runs, unit_sp, &lw_fitted);
 
     /* Both mark classes fitted from this window: use them for the mark
      * decisions too (CWReader-style), else keep the WPM-derived unit. */
@@ -1072,9 +1105,7 @@ static int decode_runs_beam(
                 /* letter space: emit symbol */
                 for (int i = 0; i < beam_sz; i++) {
                     if (beam[i].sym[0]) {
-                        char ch = morse_lookup(beam[i].sym);
-                        int tl = strlen(beam[i].txt);
-                        if (tl < MAX_TEXT-1) { beam[i].txt[tl]=ch; beam[i].txt[tl+1]='\0'; }
+                        append_sym(beam[i].txt, strlen(beam[i].txt), beam[i].sym);
                         beam[i].sym[0] = '\0';
                     }
                 }
@@ -1083,8 +1114,7 @@ static int decode_runs_beam(
                 for (int i = 0; i < beam_sz; i++) {
                     int tl = strlen(beam[i].txt);
                     if (beam[i].sym[0]) {
-                        char ch = morse_lookup(beam[i].sym);
-                        if (tl < MAX_TEXT-1) { beam[i].txt[tl]=ch; tl++; beam[i].txt[tl]='\0'; }
+                        tl = append_sym(beam[i].txt, tl, beam[i].sym);
                         beam[i].sym[0] = '\0';
                     }
                     if (tl < MAX_TEXT-1) { beam[i].txt[tl]=' '; beam[i].txt[tl+1]='\0'; }
@@ -1096,9 +1126,7 @@ static int decode_runs_beam(
     /* Flush remaining symbols */
     for (int i = 0; i < beam_sz; i++) {
         if (beam[i].sym[0]) {
-            char ch = morse_lookup(beam[i].sym);
-            int tl = strlen(beam[i].txt);
-            if (tl < MAX_TEXT-1) { beam[i].txt[tl]=ch; beam[i].txt[tl+1]='\0'; }
+            append_sym(beam[i].txt, strlen(beam[i].txt), beam[i].sym);
             beam[i].sym[0] = '\0';
         }
     }
@@ -1232,6 +1260,40 @@ static int extract_callsigns(
     return *n_calls;
 }
 
+/* Sample index where this window's text ends: mid-way through the last word
+ * gap, or the last letter gap when no word gap lies within CARRY_MAX of the
+ * end.  Everything after it is decoded again with the next window. */
+static int find_carry_cut(itila_state_t *st, const int8_t *marks, int T, double wpm) {
+    run_t *runs = st->sc_runs;
+    int n_runs = 0;
+    int val = marks[0], cnt = 1;
+    for (int i = 1; i < T; i++) {
+        if (marks[i] == val) { cnt++; continue; }
+        runs[n_runs].is_mark = val; runs[n_runs].dur = cnt; n_runs++;
+        val = marks[i]; cnt = 1;
+    }
+    runs[n_runs].is_mark = val; runs[n_runs].dur = cnt; n_runs++;
+
+    int fitted, lw_fitted;
+    double dah;
+    double unit_sp = fit_unit(runs, n_runs, unit_samples(wpm), &fitted, &dah);
+    double letter_word = letter_word_boundary(st, runs, n_runs, unit_sp, &lw_fitted);
+
+    if (!runs[n_runs - 1].is_mark && runs[n_runs - 1].dur >= letter_word) return T;
+
+    int letter_cut = -1;
+    int pos = T;
+    for (int r = n_runs - 1; r >= 1; r--) {
+        pos -= runs[r].dur;
+        if (runs[r].is_mark) continue;
+        int cut = pos + runs[r].dur / 2;
+        if (T - cut > CARRY_MAX) break;
+        if (runs[r].dur >= letter_word) return cut;
+        if (letter_cut < 0 && runs[r].dur >= 2.0 * unit_sp) letter_cut = cut;
+    }
+    return letter_cut >= 0 ? letter_cut : T;
+}
+
 /* -------------------------------------------------------------------------
  * Public API
  * ---------------------------------------------------------------------- */
@@ -1261,12 +1323,14 @@ itila_t itila_create(int sample_rate, double lpf_hz) {
     st->sc_calls     = (callsign_t*)  malloc(MAX_CALLS * sizeof(callsign_t));
     st->sc_out_texts = malloc(MAX_TEXTS * MAX_TEXT);
     st->sc_primary   = (char*)        malloc(MAX_TEXT * sizeof(char));
+    st->carry_env    = (double*)      malloc(CARRY_MAX * sizeof(double));
+    st->feed_env     = (double*)      malloc(MAX_ENV * sizeof(double));
 
     if (!st->log_B || !st->log_alpha || !st->log_beta ||
         !st->gamma || !st->gamma_marg || !st->env_norm || !st->marks ||
         !st->sc_runs || !st->sc_beamA || !st->sc_beamB || !st->sc_dedup ||
         !st->sc_up || !st->sc_tokens || !st->sc_calls ||
-        !st->sc_out_texts || !st->sc_primary) {
+        !st->sc_out_texts || !st->sc_primary || !st->carry_env || !st->feed_env) {
         itila_free(st); return NULL;
     }
 
@@ -1283,7 +1347,14 @@ const char* itila_feed(itila_t h, const double* envelope, int n,
     itila_state_t *st = (itila_state_t*)h;
     st->result_buf[0] = '\0';
 
+    int carry = st->carry_n;
+    st->carry_n = 0;
     if (n < st->sample_rate || n > MAX_ENV) return st->result_buf;
+    if (carry + n > MAX_ENV) carry = 0;
+    memcpy(st->feed_env, st->carry_env, (size_t)carry * sizeof(double));
+    memcpy(st->feed_env + carry, envelope, (size_t)n * sizeof(double));
+    envelope = st->feed_env;
+    n += carry;
 
     /* EM estimation, warm-start from previous call if available */
     double A, noise_mean, sigma2_obs, wpm_em;
@@ -1291,7 +1362,15 @@ const char* itila_feed(itila_t h, const double* envelope, int n,
 
     /* Evidence ratio, calls decode_marginal internally */
     double log_bf = signal_evidence_ratio(st, envelope, n, A, noise_mean, sigma2_obs);
-    if (log_bf < ev_thresh) return st->result_buf;
+    double sep = (A - noise_mean) / sqrt(sigma2_obs);
+    if ((log_bf < ev_thresh || sep < SEP_MIN) && carry > 0 && n > carry + FLUSH_MARGIN) {
+        /* The signal ended: decode the carried word with a little silence after it. */
+        n = carry + FLUSH_MARGIN;
+        em_estimate(st, envelope, n, st->ws_wpm, &A, &noise_mean, &sigma2_obs, &wpm_em);
+        log_bf = signal_evidence_ratio(st, envelope, n, A, noise_mean, sigma2_obs);
+        sep = (A - noise_mean) / sqrt(sigma2_obs);
+    }
+    if (log_bf < ev_thresh || sep < SEP_MIN) return st->result_buf;
 
     /* gamma_marg is already filled by signal_evidence_ratio → decode_marginal */
     posterior_to_marks(st->gamma_marg, n, st->marks);
@@ -1307,6 +1386,10 @@ const char* itila_feed(itila_t h, const double* envelope, int n,
      * causing C vs Python cost divergence; using wpm_em keeps parity. */
     st->last_timing_cost = compute_timing_cost(st->marks, n, wpm_em,
                                                 st->sc_runs);
+
+    int n_dec = find_carry_cut(st, st->marks, n, wpm_cands[0]);
+    st->carry_n = n - n_dec;
+    memcpy(st->carry_env, envelope + n_dec, (size_t)st->carry_n * sizeof(double));
 
     /* Per-handle scratch, was function-local static; live mode races. */
     callsign_t *calls = st->sc_calls;
@@ -1324,7 +1407,7 @@ const char* itila_feed(itila_t h, const double* envelope, int n,
     double prev_usp = -1.0;
     for (int ci = 0; ci < n_cands; ci++) {
         double usp;
-        int n_texts = decode_runs_beam(st, st->marks, n, wpm_cands[ci], freq_khz,
+        int n_texts = decode_runs_beam(st, st->marks, n_dec, wpm_cands[ci], freq_khz,
                                        out_texts, MAX_TEXTS, &usp);
         int dup_cand = (ci > 0 && fabs(usp - prev_usp) < 1e-9);
         prev_usp = usp;
@@ -1335,7 +1418,11 @@ const char* itila_feed(itila_t h, const double* envelope, int n,
             extract_callsigns(st, out_texts[ti], calls, &n_calls);
     }
 
-    if (n_calls == 0) return st->result_buf;
+    if (getenv("ITILA2_DUMP_RUNS"))
+        fprintf(stderr, "ITILA2 text %.2f kHz lpf=%.0f carry=%d sep=%.2f bf=%.0f: '%s'\n",
+                freq_khz, st->lpf_hz, st->carry_n, sep, log_bf, primary_text);
+
+    if (!primary_text[0] && n_calls == 0) return st->result_buf;
 
     st->last_wpm = wpm_cands[0];
 
@@ -1522,7 +1609,7 @@ const char* itila_feed_online(itila_t h, const double *envelope, int n,
             extract_callsigns(st, out_texts_ol[ti], calls_ol, &n_calls);
     }
 
-    if (n_calls == 0) return st->result_buf;
+    if (!primary_ol[0] && n_calls == 0) return st->result_buf;
 
     if (primary_ol[0]) {
         strncpy(st->result_buf, primary_ol, RESULT_BUF - 1);
@@ -1564,6 +1651,7 @@ void itila_free(itila_t h) {
     free(st->sc_beamA); free(st->sc_beamB); free(st->sc_dedup);
     free(st->sc_up); free(st->sc_tokens);
     free(st->sc_calls); free(st->sc_out_texts); free(st->sc_primary);
+    free(st->carry_env); free(st->feed_env);
     free(st);
 }
 

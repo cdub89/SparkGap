@@ -1988,6 +1988,21 @@ class _ItilaSc:
         n = self._lib.itila_sc_list_bins(self._h, ptr, _ct.c_int(self._max_bins))
         return set(buf[:n].tolist())
 
+    def bin_ages(self):
+        """{f_hz: age} of active bins, or None if the backend has no ages or the bins changed between calls."""
+        import ctypes as _ct
+        fn = getattr(self._lib, 'itila_sc_list_bin_ages', None)
+        if fn is None:
+            return None
+        fbuf = np.empty(self._max_bins, dtype=np.float64)
+        abuf = np.empty(self._max_bins, dtype=np.int32)
+        n = self._lib.itila_sc_list_bins(self._h, fbuf.ctypes.data_as(_ct.POINTER(_ct.c_double)),
+                                         _ct.c_int(self._max_bins))
+        m = fn(self._h, abuf.ctypes.data_as(_ct.POINTER(_ct.c_int)), _ct.c_int(self._max_bins))
+        if n != m:
+            return None
+        return dict(zip(fbuf[:n].tolist(), abuf[:m].tolist()))
+
     def env_n(self, f_hz):
         import ctypes as _ct
         return self._lib.itila_sc_env_n(self._h, _ct.c_double(f_hz))
@@ -2513,8 +2528,16 @@ class _ItilaScanner:
         if not self._sc:
             return
         active_hz = self._sc.list_bins()
+        ages = self._sc.bin_ages() or {}
         for f_hz in active_hz:
+            # Evicted and respawned at the same frequency since the last look:
+            # the old handles hold the old bin's decoder state.
+            st = self._bins.get(f_hz)
+            if st is not None and f_hz in ages and ages[f_hz] < st.get('age', 0):
+                self._free_bin_handles(f_hz)
             self._ensure_bin_handles(f_hz)
+            if f_hz in ages:
+                self._bins[f_hz]['age'] = ages[f_hz]
         for f_hz in list(self._bins):
             if f_hz not in active_hz:
                 self._free_bin_handles(f_hz)
@@ -2560,6 +2583,10 @@ class _ItilaScanner:
                 continue
             cost = lib.itila_get_last_cost(h)
             log.info("ITILA raw %.1f kHz cost=%.2f: %r", f_khz, cost, raw[:400])
+            # A clean decode is evidence the bin is live; without it the scanner
+            # evicts the bin 300 s after its last new spot.
+            if cost <= 30.0:
+                self._sc._lib.itila_sc_mark_evidence(self._sc._h, _ct.c_double(f_hz))
             # Timing-cost gate (off by default).  Drops the whole decode
             # window's call extraction when segmentation quality is too low;
             # logs the suppression with cost so we can tune the threshold

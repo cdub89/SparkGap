@@ -229,6 +229,19 @@ def test_fit_unit_too_few_survivors_stays_unfitted() -> None:
     assert dah_out == 0.0
 
 
+# Off-tone bin 7053.3, W1AW 20 WPM replay (2026-09-22): 20 runs of a window whose
+# "marks" are all 1 or 2 samples, which pass 0 used to fit as dit 1 / dah 2.
+W1AW_NOISE_RUNS = "-34 +2 -10 +2 -10 +2 -34 +2 -10 +2 -34 +2 -83 +2 -22 +2 -10 +1 -11 +2"
+
+
+def test_fit_unit_noise_marks_unfitted() -> None:
+    """Marks shorter than a 35 WPM dit are noise in both passes: no fit."""
+    unit, fitted, dah_out = call_fit_unit(W1AW_NOISE_RUNS, 9.6)
+    assert unit == 9.6
+    assert fitted == 0
+    assert dah_out == 0.0
+
+
 def test_estimate_wpm_w6ted() -> None:
     """Real CW runs 15 to 25 WPM and never above 35, so marks shorter than
     the dit at 35 WPM (7 samples at 200 Hz) are noise. W6TED's 11 to 12
@@ -306,3 +319,35 @@ def test_letter_word_ignores_silence() -> None:
     with_silence = W6TED_RUNS + " -3000 +10 -3000"
     boundary_after, _ = call_fit_letter_word(with_silence, 10.0)
     assert abs(boundary_after - boundary_before) <= 1.0
+
+
+# W1AW 5 and 10 WPM (Farnsworth, 15 WPM characters), bin 7052.6, 2026-09-22: the first
+# 90 runs of a window. Letter gaps 297 to 298 / 107 to 109 samples, word gaps 697 to
+# 699 / 256 to 257; the fixed 1/3/7 unit start and 20-unit idle cap read every letter
+# gap as a word gap.
+W1AW_05_RUNS = (
+    "-363 +51 -13 +19 -13 +19 -13 +19 -13 +51 -697 +52 -14 +19 -298 +50 -14 +50 -14 +50 "
+    "-298 +19 -14 +50 -14 +50 -699 +19 -13 +19 -13 +19 -13 +19 -13 +19 -699 +18 -14 +50 "
+    "-14 +50 -298 +19 -14 +50 -14 +50 -14 +18 -298 +51 -13 +51 -697 +52 -14 +19 -13 +19 "
+    "-13 +19 -13 +51 -699 +50 -297 +20 -298 +51 -13 +19 -13 +19 -13 +51 -298 +50 -699 "
+    "+19 -13 +19 -298 +19 -13 +19 -13 +19 -697 +20"
+)
+W1AW_10_RUNS = (
+    "-131 +50 -14 +18 -14 +18 -14 +18 -14 +50 -257 +51 -13 +19 -107 +52 -14 +50 -14 +50 "
+    "-109 +18 -14 +50 -14 +50 -256 +20 -13 +51 -13 +51 -14 +50 -14 +50 -109 +50 -14 +50 "
+    "-14 +50 -14 +50 -14 +51 -256 +19 -13 +51 -14 +50 -108 +19 -14 +50 -14 +50 -14 +18 "
+    "-109 +51 -13 +51 -257 +50 -14 +18 -14 +18 -14 +18 -14 +50 -257 +51 -107 +20 -108 "
+    "+51 -14 +18 -14 +18 -14 +50 -107 +52 -256 +20"
+)
+
+
+def test_letter_word_farnsworth_5wpm() -> None:
+    boundary, fitted = call_fit_letter_word(W1AW_05_RUNS, 18.89)
+    assert fitted == 1
+    assert 298.0 < boundary < 697.0
+
+
+def test_letter_word_farnsworth_10wpm() -> None:
+    boundary, fitted = call_fit_letter_word(W1AW_10_RUNS, 18.64)
+    assert fitted == 1
+    assert 109.0 < boundary < 256.0
