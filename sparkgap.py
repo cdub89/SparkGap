@@ -1393,7 +1393,14 @@ _ITILA_CQ_WORDS = {'CQ', 'TEST', 'CWT', 'SST', 'MST', 'FD', 'SS', 'NA', 'UP'}
 # caller — extracting after QRZ grabs the wrong station. CQ + contest tokens
 # uniquely identify runners; we lose nothing real by dropping QRZ here.
 # Base callsign: 1-2 prefix letters, 1-2 digits, 1-4 suffix letters
-_BASE_CALL_PAT = re.compile(r'^[A-Z]{1,2}[0-9]{1,4}[A-Z]{1,6}$')
+# Optional leading digit (2026-09-21, T1 via WX7V review): real digit-first
+# prefixes (9A Croatia, 4X Israel, 5B Cyprus, 3A Monaco, 2E UK, 9M/9L/9Q/…) were
+# silently never extracted on the ITILA path — the old `^[A-Z]{1,2}` rejected any
+# call starting with a digit. Letter-then-digit prefixes (H4, T5, P5) already
+# worked (the digit reads as the leading number). Kept tighter than CALL_RE's
+# `[A-Z0-9]{1,2}` — requires ≥1 letter in the prefix, so all-digit garbage (991AA)
+# still fails. Changes spot output → PLAN.md measurement run before shipping.
+_BASE_CALL_PAT = re.compile(r'^[0-9]?[A-Z]{1,2}[0-9]{1,4}[A-Z]{1,6}$')
 # Slash suffixes that don't make it a new full callsign: /P /M /MM /QRP /0-9
 _SLASH_SUFFIX_PAT = re.compile(r'^([0-9]|P|M|MM|QRP|A|B)$')
 
