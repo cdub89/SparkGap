@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <assert.h>
+#include <stdio.h>
 
 /* -------------------------------------------------------------------------
  * Constants: must match itila_cw.py exactly
@@ -49,6 +50,20 @@
 #define MAX_CALLS       64       /* max callsigns per chunk */
 #define MAX_CALL        8        /* max callsign length + null */
 #define RESULT_BUF      2048     /* output buffer, must hold MAX_TEXT */
+#define GAP_FIT_MIN_GAPS    8     /* below this, use the fixed 5-unit rule */
+#define GAP_FIT_ITERS       10    /* 3-means iterations in log space */
+#define GAP_FIT_MIN_MEMBERS 2     /* letter/word clusters need this many gaps each */
+#define GAP_FIT_LW_MIN      3.5   /* fitted boundary must fall in [MIN, MAX] units */
+#define GAP_FIT_LW_MAX      12.0
+#define GAP_FIT_MAX_UNITS 20.0   /* longer gaps are idle time, not word gaps */
+#define GAP_FIT_LW_SEP 1.8      /* word centre must be this far above letter centre: distinct classes */
+#define UNIT_FIT_MIN_MARKS   8     /* fewer interior marks: keep the passed unit */
+#define UNIT_FIT_ITERS       10    /* fixed 2-means iterations, deterministic */
+#define UNIT_FIT_RATIO_MIN   2.0   /* dah/dit outside this range: not two mark classes */
+#define UNIT_FIT_RATIO_MAX   4.5
+#define UNIT_FIT_NOISE_FRAC  0.5   /* marks shorter than this fraction of the median are noise */
+#define UNIT_FIT_SOLO_LO     0.7   /* one-cluster case: accept only if near the passed unit */
+#define UNIT_FIT_SOLO_HI     1.4
 
 /* Forward declaration of fb_core (fb_core.c) */
 void fb_core(const double* log_B, const double* log_T, int T,
@@ -790,6 +805,128 @@ static double compute_timing_cost(const int8_t *marks, int T, double wpm,
  * decode_runs_beam: M7b score-guided beam search
  * (beam_state_t typedef hoisted to top of file, see itila_state_t)
  * ---------------------------------------------------------------------- */
+/* Dit length in samples fitted from this window's own mark runs.  Used only for
+ * the space thresholds; the dit/dah boundary and the beam likelihoods keep the
+ * unit derived from the WPM estimate.  Returns unit_in when the marks do not
+ * support a fit. */
+static double fit_unit(const run_t *runs, int n_runs, double unit_in, int *fitted) {
+    double d[2048];
+    int n_marks = 0;
+    for (int i = 1; i < n_runs - 1 && n_marks < 2048; i++) {
+        if (!runs[i].is_mark) continue;
+        d[n_marks++] = (double)runs[i].dur;
+    }
+
+    if (n_marks < UNIT_FIT_MIN_MARKS) { *fitted = 0; return unit_in; }
+
+    double sorted[2048];
+    memcpy(sorted, d, n_marks * sizeof(double));
+    qsort(sorted, n_marks, sizeof(double), cmp_double);
+    double median = (n_marks % 2)
+        ? sorted[n_marks / 2]
+        : sorted[n_marks / 2 - 1];
+
+    double x[2048];
+    int n_surv = 0;
+    for (int i = 0; i < n_marks; i++) {
+        if (d[i] < UNIT_FIT_NOISE_FRAC * median) continue;
+        x[n_surv++] = log(d[i]);
+    }
+
+    if (n_surv < UNIT_FIT_MIN_MARKS) { *fitted = 0; return unit_in; }
+
+    qsort(x, n_surv, sizeof(double), cmp_double);
+    double median_log = (n_surv % 2)
+        ? x[n_surv / 2]
+        : x[n_surv / 2 - 1];
+
+    double c[2] = { x[(n_surv - 1) / 4], x[3 * (n_surv - 1) / 4] };
+    int n[2] = { 0, 0 };
+    int assign[2048];
+    for (int iter = 0; iter < UNIT_FIT_ITERS; iter++) {
+        n[0] = n[1] = 0;
+        for (int i = 0; i < n_surv; i++) {
+            double d0 = fabs(x[i] - c[0]);
+            double d1 = fabs(x[i] - c[1]);
+            int best = (d1 < d0) ? 1 : 0;
+            assign[i] = best;
+            n[best]++;
+        }
+        double sum[2] = { 0.0, 0.0 };
+        for (int i = 0; i < n_surv; i++) sum[assign[i]] += x[i];
+        for (int k = 0; k < 2; k++)
+            if (n[k] > 0) c[k] = sum[k] / n[k];
+    }
+
+    int dit_idx = (c[0] <= c[1]) ? 0 : 1;
+    int dah_idx = 1 - dit_idx;
+    double dit = exp(c[dit_idx]);
+    double dah = exp(c[dah_idx]);
+
+    if (n[dah_idx] < 2 || dah / dit < UNIT_FIT_RATIO_MIN || dah / dit > UNIT_FIT_RATIO_MAX) {
+        /* one-cluster case: accept the median only if it lands near the
+         * WPM-derived unit already in hand. */
+        double m = exp(median_log);
+        if (m / unit_in >= UNIT_FIT_SOLO_LO && m / unit_in <= UNIT_FIT_SOLO_HI) {
+            *fitted = 1; return m;
+        }
+        *fitted = 0; return unit_in;
+    }
+
+    *fitted = 1;
+    return dit;
+}
+
+/* Letter/word gap boundary fitted from this window's own gaps.  Returns the
+ * boundary in samples, or the fixed 5-unit rule when the gaps do not support
+ * a fit.  Marks, the unit and the dit/dah boundary are deliberately untouched. */
+static double fit_letter_word_boundary(const run_t *runs, int n_runs, double unit, int *fitted) {
+    double x[2048];
+    int n_gaps = 0;
+    for (int i = 1; i < n_runs - 1 && n_gaps < 2048; i++) {
+        if (runs[i].is_mark) continue;
+        double gap_units = (double)runs[i].dur / unit;
+        if (gap_units < 0.5 || gap_units > GAP_FIT_MAX_UNITS) continue;
+        x[n_gaps++] = log(gap_units);
+    }
+
+    if (n_gaps < GAP_FIT_MIN_GAPS) { *fitted = 0; return 5.0 * unit; }
+
+    double c[3] = { log(1.0), log(3.0), log(7.0) };
+    int n[3] = { 0, 0, 0 };
+    int assign[2048];
+    for (int iter = 0; iter < GAP_FIT_ITERS; iter++) {
+        n[0] = n[1] = n[2] = 0;
+        for (int i = 0; i < n_gaps; i++) {
+            int best = 0;
+            double best_d = fabs(x[i] - c[0]);
+            for (int k = 1; k < 3; k++) {
+                double d = fabs(x[i] - c[k]);
+                if (d < best_d) { best_d = d; best = k; }
+            }
+            assign[i] = best;
+            n[best]++;
+        }
+        double sum[3] = { 0.0, 0.0, 0.0 };
+        for (int i = 0; i < n_gaps; i++) sum[assign[i]] += x[i];
+        for (int k = 0; k < 3; k++)
+            if (n[k] > 0) c[k] = sum[k] / n[k];
+    }
+
+    if (n[1] < GAP_FIT_MIN_MEMBERS || n[2] < GAP_FIT_MIN_MEMBERS) {
+        *fitted = 0; return 5.0 * unit;
+    }
+
+    if (exp(c[2] - c[1]) < GAP_FIT_LW_SEP) { *fitted = 0; return 5.0 * unit; }
+    double boundary_units = exp(0.5 * (c[1] + c[2]));
+    if (boundary_units < GAP_FIT_LW_MIN || boundary_units > GAP_FIT_LW_MAX) {
+        *fitted = 0; return 5.0 * unit;
+    }
+
+    *fitted = 1;
+    return boundary_units * unit;
+}
+
 static int beam_score_cmp(const void *a, const void *b) {
     double sa = ((const beam_state_t*)a)->score;
     double sb = ((const beam_state_t*)b)->score;
@@ -802,8 +939,9 @@ static int beam_score_cmp(const void *a, const void *b) {
 static int decode_runs_beam(
     itila_state_t *st,
     const int8_t *marks, int T,
-    double wpm,
-    char out_texts[][MAX_TEXT], int max_out)
+    double wpm, double freq_khz,
+    char out_texts[][MAX_TEXT], int max_out,
+    double *unit_sp_out)
 {
     double boundary = 2.0 * unit_samples(wpm);
     double zone_lo  = boundary * 0.75;
@@ -823,6 +961,23 @@ static int decode_runs_beam(
         }
     }
     if (n_runs < MAX_ENV) { runs[n_runs].is_mark=val; runs[n_runs].dur=cnt; n_runs++; }
+
+    int unit_fitted = 0;
+    double unit_sp = fit_unit(runs, n_runs, unit, &unit_fitted);   /* space thresholds only */
+    if (unit_sp_out) *unit_sp_out = unit_sp;
+
+    int lw_fitted = 0;
+    double letter_word = fit_letter_word_boundary(runs, n_runs, unit_sp, &lw_fitted);
+
+    if (getenv("ITILA2_DUMP_RUNS")) {
+        fprintf(stderr, "ITILA2 runs %.1f kHz wpm=%.1f unit=%.2f usp=%.2f%s lw=%.1f%s n=%d:",
+                freq_khz, wpm, unit, unit_sp, unit_fitted ? "" : "(in)",
+                letter_word / unit, lw_fitted ? "" : "(fixed)", n_runs);
+        int lim = n_runs < 400 ? n_runs : 400;
+        for (int i = 0; i < lim; i++)
+            fprintf(stderr, " %c%d", runs[i].is_mark ? '+' : '-', runs[i].dur);
+        fprintf(stderr, "%s\n", n_runs > lim ? " ..." : "");
+    }
 
     /* Log PMF for geometric distribution */
     #define GEOM_LOG_PMF(d, mean) \
@@ -886,9 +1041,9 @@ static int decode_runs_beam(
             }
         } else {
             /* Space */
-            if ((double)dur < 2.0*unit) {
+            if ((double)dur < 2.0*unit_sp) {
                 /* element space, no change */
-            } else if ((double)dur < 5.0*unit) {
+            } else if ((double)dur < letter_word) {
                 /* letter space: emit symbol */
                 for (int i = 0; i < beam_sz; i++) {
                     if (beam[i].sym[0]) {
@@ -1100,7 +1255,6 @@ itila_t itila_create(int sample_rate, double lpf_hz) {
 const char* itila_feed(itila_t h, const double* envelope, int n,
                        double freq_khz, double ev_thresh)
 {
-    (void)freq_khz;
     itila_state_t *st = (itila_state_t*)h;
     st->result_buf[0] = '\0';
 
@@ -1136,9 +1290,20 @@ const char* itila_feed(itila_t h, const double* envelope, int n,
     char *primary_text = st->sc_primary;
     primary_text[0] = '\0';
 
+    if (getenv("ITILA2_DUMP_RUNS")) {
+        fprintf(stderr, "ITILA2 cands %.1f kHz wpm_em=%.1f n=%d:", freq_khz, wpm_em, n_cands);
+        for (int ci = 0; ci < n_cands; ci++) fprintf(stderr, " %.1f", wpm_cands[ci]);
+        fprintf(stderr, "\n");
+    }
+
+    double prev_usp = -1.0;
     for (int ci = 0; ci < n_cands; ci++) {
-        int n_texts = decode_runs_beam(st, st->marks, n, wpm_cands[ci],
-                                       out_texts, MAX_TEXTS);
+        double usp;
+        int n_texts = decode_runs_beam(st, st->marks, n, wpm_cands[ci], freq_khz,
+                                       out_texts, MAX_TEXTS, &usp);
+        int dup_cand = (ci > 0 && fabs(usp - prev_usp) < 1e-9);
+        prev_usp = usp;
+        if (dup_cand) continue;
         if (ci == 0 && n_texts > 0)
             strncpy(primary_text, out_texts[0], MAX_TEXT-1);
         for (int ti = 0; ti < n_texts; ti++)
@@ -1171,7 +1336,6 @@ const char* itila_feed(itila_t h, const double* envelope, int n,
 const char* itila_feed_online(itila_t h, const double *envelope, int n,
                               double lambda, double freq_khz, double ev_thresh)
 {
-    (void)freq_khz;
     itila_state_t *st = (itila_state_t*)h;
     st->result_buf[0] = '\0';
     if (n < 10 || n > MAX_ENV) return st->result_buf;
@@ -1313,9 +1477,20 @@ const char* itila_feed_online(itila_t h, const double *envelope, int n,
     char *primary_ol = st->sc_primary;
     primary_ol[0] = '\0';
 
+    if (getenv("ITILA2_DUMP_RUNS")) {
+        fprintf(stderr, "ITILA2 cands %.1f kHz wpm_em=%.1f n=%d:", freq_khz, wpm2, n_cands);
+        for (int ci = 0; ci < n_cands; ci++) fprintf(stderr, " %.1f", wpm_cands[ci]);
+        fprintf(stderr, "\n");
+    }
+
+    double prev_usp = -1.0;
     for (int ci = 0; ci < n_cands; ci++) {
-        int n_texts = decode_runs_beam(st, st->marks, n, wpm_cands[ci],
-                                       out_texts_ol, MAX_TEXTS);
+        double usp;
+        int n_texts = decode_runs_beam(st, st->marks, n, wpm_cands[ci], freq_khz,
+                                       out_texts_ol, MAX_TEXTS, &usp);
+        int dup_cand = (ci > 0 && fabs(usp - prev_usp) < 1e-9);
+        prev_usp = usp;
+        if (dup_cand) continue;
         if (ci == 0 && n_texts > 0)
             strncpy(primary_ol, out_texts_ol[0], MAX_TEXT - 1);
         for (int ti = 0; ti < n_texts; ti++)
