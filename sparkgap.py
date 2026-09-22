@@ -1588,13 +1588,26 @@ def _itila_extract_cq_call(text, valid_calls=None):
 
 
 _itila_lib = None
+_ITILA_LIBS = {'itila': './libitila.so', 'itila2': './libitila2.so'}
+_itila_lib_path = _ITILA_LIBS['itila']
+
+def _select_cw_decoder(name):
+    """Choose the library _get_itila_lib opens (config key cw_decoder)."""
+    global _itila_lib_path
+    if name not in _ITILA_LIBS:
+        raise ValueError("cw_decoder must be one of %s, got %r" % (sorted(_ITILA_LIBS), name))
+    if _itila_lib and _itila_lib_path != _ITILA_LIBS[name]:
+        raise RuntimeError("cw_decoder cannot change after %s is loaded" % _itila_lib_path)
+    _itila_lib_path = _ITILA_LIBS[name]
+    log.info("CW decoder: %s (%s)", name, _itila_lib_path)
+    return _itila_lib_path
 
 def _get_itila_lib():
     global _itila_lib
     if _itila_lib is None:
         import ctypes as _ct
         try:
-            _itila_lib = _ct.CDLL('./libitila.so')
+            _itila_lib = _ct.CDLL(_itila_lib_path)
             _itila_lib.itila_create.restype = _ct.c_void_p
             _itila_lib.itila_create.argtypes = [_ct.c_int, _ct.c_double]
             _itila_lib.itila_feed.restype  = _ct.c_char_p
@@ -1609,9 +1622,9 @@ def _get_itila_lib():
             # Timing-cost confidence (ggmorse-inspired, added 2026-05-14).
             _itila_lib.itila_get_last_cost.restype  = _ct.c_double
             _itila_lib.itila_get_last_cost.argtypes = [_ct.c_void_p]
-            log.info("Loaded libitila.so")
+            log.info("Loaded %s", _itila_lib_path)
         except OSError:
-            log.warning("libitila.so not found — ITILA decoder unavailable")
+            log.warning("%s not found, ITILA decoder unavailable", _itila_lib_path)
             _itila_lib = False  # sentinel: tried and failed
     return _itila_lib if _itila_lib else None
 
@@ -6559,6 +6572,11 @@ class SparkGap:
         if self.cfg.get('use_itila') and rx_sample_rate not in rates:
             log.error("use_itila needs sample_rate in %s, got %d", rates, rx_sample_rate)
             return False
+        try:
+            _select_cw_decoder(self.cfg.get('cw_decoder', 'itila'))
+        except (ValueError, RuntimeError) as e:
+            log.error("%s", e)
+            return False
         sdr_port = self.cfg.get('sdr_port', 1024)
 
         sdr_ip = self.cfg.get('sdr_ip')
@@ -7694,6 +7712,10 @@ def run_file_mode(args, config):
     rates = (192000,) if config.get('use_pfb_scanner') or config.get('pfb_scanner_bands') else (48000, 96000, 192000)
     if config.get('use_itila') and file_rate not in rates:
         sys.exit(f"use_itila needs a recording at {rates} Hz, got {file_rate}")
+    try:
+        _select_cw_decoder(config.get('cw_decoder', 'itila'))
+    except (ValueError, RuntimeError) as e:
+        sys.exit(str(e))
 
     speeds = config.get('decoder_speeds', [0, 25, 30, 35])
     manager = InstanceManager(

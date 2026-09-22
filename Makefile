@@ -10,7 +10,7 @@ ARCHFLAG := $(if $(ARCH),-march=$(ARCH))
 
 # libbmorse can't be rebuilt here (missing morse-wip headers).
 NATIVE_LIBS := libhpsdr_fast.so libitila.so libitila_dsp.so libitila_scanner.so \
-               librtty.so libuhsdr_cw.so libcw_engine.so libpfb_scanner.so
+               librtty.so libuhsdr_cw.so libcw_engine.so libpfb_scanner.so libitila2.so
 
 all: native libcw_dispatcher.so
 
@@ -25,6 +25,10 @@ libhpsdr_fast.so: hpsdr_fast.c
 libitila.so: itila_core.c fb_core.c itila.h
 	gcc -O3 $(ARCHFLAG) -ffast-math -shared -fPIC \
 	    -o $@ itila_core.c fb_core.c -lm
+
+libitila2.so: itila2_core.c fb_core.c itila.h
+	gcc -O3 $(ARCHFLAG) -ffast-math -shared -fPIC \
+	    -o $@ itila2_core.c fb_core.c -lm
 
 libitila_dsp.so: itila_dsp.c itila_dsp.h
 	gcc -O3 $(ARCHFLAG) -ffast-math -shared -fPIC \
