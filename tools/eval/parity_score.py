@@ -39,7 +39,7 @@ DX_DE_RE = re.compile(
     r"(?P<call>\S+)\s+(?:(?P<mode>[A-Z]+)\s+)?(?P<rest>\d+ dB.*)$"
 )
 RAW_DECODE_RE = re.compile(r"ITILA raw\s+(?P<freq>[\d.]+)\s+kHz.*'(?P<text>.*)'$")
-SPOT_LINE_RE = re.compile(r"SPOT:\s+(?P<freq>[\d.]+)\s+(?P<call>\S+)\s+(?P<snr>\d+) dB")
+SPOT_LINE_RE = re.compile(r"SPOT:\s+(?P<freq>[\d.]+)\s+(?:kHz\s+)?(?P<call>\S+)\s+(?P<snr>\d+) dB")
 CQ_TOKEN_RE = re.compile(r"(?:^|\s)CQ(?:\s|$)")
 
 
@@ -92,6 +92,8 @@ class Score:
     unconfirmed: list[Spot]
     passband: tuple[float, float]
     tol_khz: float
+    decoded: frozenset[tuple[str, float]]
+    spotted: frozenset[tuple[str, float]]
 
 
 def base_call(raw: str) -> str:
@@ -230,11 +232,22 @@ def compute_score(
     decode_cq_hit, decode_cq_total = decode_recall(cws_cq, raw, tol_khz)
     spot_cq_hit, spot_cq_total = spot_recall(cws_cq, our_spots, tol_khz)
 
+    decoded = frozenset(
+        (s.call, round(s.freq_khz, DEDUPE_ROUND_NDIGITS))
+        for s in cws_spots
+        if _decode_confirmed(s, raw, tol_khz)
+    )
+    spotted = frozenset(
+        (s.call, round(s.freq_khz, DEDUPE_ROUND_NDIGITS))
+        for s in cws_spots
+        if _spot_confirmed(s, our_spots, tol_khz)
+    )
+
     return Score(
         decode_hit, decode_total, spot_hit, spot_total, precision_hit, precision_total,
         decode_cq_hit, decode_cq_total, spot_cq_hit, spot_cq_total,
         find_misses(cws_spots, raw, tol_khz), find_unconfirmed(our_spots, cws_spots, tol_khz),
-        (lo, hi), tol_khz,
+        (lo, hi), tol_khz, decoded, spotted,
     )
 
 
@@ -288,6 +301,22 @@ def delta_line(a: Score, b: Score) -> str:
     )
 
 
+def _fmt_keys(keys: frozenset[tuple[str, float]]) -> str:
+    if not keys:
+        return "none"
+    ordered = sorted(keys, key=lambda k: (k[1], k[0]))
+    return " ".join(f"{call}@{freq:.1f}" for call, freq in ordered)
+
+
+def diff_lines(a: Score, b: Score) -> list[str]:
+    return [
+        f"decode gained: {_fmt_keys(b.decoded - a.decoded)}",
+        f"decode lost: {_fmt_keys(a.decoded - b.decoded)}",
+        f"spot gained: {_fmt_keys(b.spotted - a.spotted)}",
+        f"spot lost: {_fmt_keys(a.spotted - b.spotted)}",
+    ]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ours", nargs="+", type=Path, required=True, metavar="PATH")
@@ -319,6 +348,8 @@ def main() -> None:
 
     if len(scores) == 2:
         print(delta_line(scores[0], scores[1]))
+        for line in diff_lines(scores[0], scores[1]):
+            print(line)
 
 
 if __name__ == "__main__":

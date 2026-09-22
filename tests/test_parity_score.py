@@ -9,6 +9,7 @@ from parity_score import (  # noqa: E402  # pyright: ignore[reportMissingImports
     Spot,
     compute_score,
     decode_recall,
+    diff_lines,
     parse_cws_tee,
     parse_ours_log,
     token_match,
@@ -42,6 +43,7 @@ def test_our_log_parsing_and_dedupe(tmp_path: Path) -> None:
         "20:49:36 INFO ITILA raw 7037.5 kHz cost=0.32: "
         "'NA ? 5 U SE 5US A D 5 U S TD5 I E T EN'\n"
         "20:50:36 INFO *** SPOT:     7045.0  I8UGP         25 dB  14 WPM  [unverified] ***\n"
+        "20:50:37 INFO SPOT: 7031.0 kHz N0SSM 19 dB 21 WPM [exact]\n"
         "01:50:36 DX de WX7V-1:     7045.00  I8UGP        CW   25 dB 14 WPM   CQ"
         "                  SG  0150Z\n"
     )
@@ -49,9 +51,10 @@ def test_our_log_parsing_and_dedupe(tmp_path: Path) -> None:
     assert len(ours.raw) == 1
     assert ours.raw[0].freq_khz == 7037.5
     assert "NA ? 5 U SE" in ours.raw[0].text
-    assert len(ours.spots) == 1
+    assert len(ours.spots) == 2
     assert ours.spots[0].call == "I8UGP"
     assert ours.spots[0].cq is True
+    assert ours.spots[1] == Spot(7031.0, "N0SSM", False)
 
 
 def test_passband_excludes_out_of_band_spot() -> None:
@@ -110,3 +113,31 @@ def test_metrics_three_spot_fixture() -> None:
     miss = score.misses[0]
     assert miss.call == "KB8UGP"
     assert miss.nearest_text == "KB8UG G P"
+
+
+def test_diff_lines_lists_gained_and_lost() -> None:
+    """B decodes/spots EN5TT that A did not, and loses KB8UGP that A had."""
+    cws_spots = [
+        Spot(7040.0, "N0RNM", False),
+        Spot(7045.0, "KB8UGP", False),
+        Spot(7050.0, "EN5TT", False),
+    ]
+    ours_a = OurLog(
+        raw=[RawDecode(7040.0, "CQ N0RNM K"), RawDecode(7045.0, "CQ KB8UGP K")],
+        spots=[Spot(7040.0, "N0RNM", False), Spot(7045.0, "KB8UGP", False)],
+    )
+    ours_b = OurLog(
+        raw=[RawDecode(7040.0, "CQ N0RNM K"), RawDecode(7050.0, "CQ EN5TT K")],
+        spots=[Spot(7040.0, "N0RNM", False), Spot(7050.0, "EN5TT", False)],
+    )
+
+    score_a = compute_score(ours_a, cws_spots, 7000.0, 7100.0, 0.5)
+    score_b = compute_score(ours_b, cws_spots, 7000.0, 7100.0, 0.5)
+
+    lines = diff_lines(score_a, score_b)
+    assert lines == [
+        "decode gained: EN5TT@7050.0",
+        "decode lost: KB8UGP@7045.0",
+        "spot gained: EN5TT@7050.0",
+        "spot lost: KB8UGP@7045.0",
+    ]

@@ -2559,7 +2559,7 @@ class _ItilaScanner:
             if not raw:
                 continue
             cost = lib.itila_get_last_cost(h)
-            log.info("ITILA raw %.1f kHz cost=%.2f: %r", f_khz, cost, raw[:80])
+            log.info("ITILA raw %.1f kHz cost=%.2f: %r", f_khz, cost, raw[:400])
             # Timing-cost gate (off by default).  Drops the whole decode
             # window's call extraction when segmentation quality is too low;
             # logs the suppression with cost so we can tune the threshold
@@ -2646,7 +2646,7 @@ class _ItilaScanner:
             if not raw:
                 continue
             f_khz = f_hz / 1000.0
-            log.info("ITILA raw %.1f kHz cost=%.2f: %r", f_khz, cost, raw[:80])
+            log.info("ITILA raw %.1f kHz cost=%.2f: %r", f_khz, cost, raw[:400])
             if self.gate_timing_cost and cost > self.timing_cost_max:
                 log.info("ITILA cost-gate %.1f kHz: dropped raw (cost=%.2f > %.2f)",
                          f_khz, cost, self.timing_cost_max)
@@ -6984,7 +6984,7 @@ class SparkGap:
                     if not raw:
                         continue
                     f_khz = f_hz / 1000.0
-                    log.info("ITILA raw %.1f kHz cost=%.2f: %r", f_khz, cost, raw[:80])
+                    log.info("ITILA raw %.1f kHz cost=%.2f: %r", f_khz, cost, raw[:400])
                     # Find or create bin state for ticker tape
                     scanner = None
                     for mgr in self.managers:
