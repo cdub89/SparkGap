@@ -9,6 +9,7 @@ host, port, call, out = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
 while True:
     try:
         s = socket.create_connection((host, port), timeout=30)
+        s.settimeout(None)  # connect timeout only; a quiet band is not a dead link
         s.sendall((call + "\r\n").encode())
         f = s.makefile("r", errors="replace")
         with open(out, "a", buffering=1) as o:

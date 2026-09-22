@@ -32,9 +32,11 @@ DEFAULT_SHOW = 20
 MISS_TEXT_TRUNCATE = 60
 DEDUPE_ROUND_NDIGITS = 1
 
+# CW Skimmer's own telnet port omits the mode column; tees relayed through a
+# cluster or our own server carry one, so the mode is optional.
 DX_DE_RE = re.compile(
     r"^(?P<time>\d{2}:\d{2}:\d{2})\s+DX de \S+:\s+(?P<freq>[\d.]+)\s+"
-    r"(?P<call>\S+)\s+(?P<mode>\S+)\s+(?P<rest>.*)$"
+    r"(?P<call>\S+)\s+(?:(?P<mode>[A-Z]+)\s+)?(?P<rest>\d+ dB.*)$"
 )
 RAW_DECODE_RE = re.compile(r"ITILA raw\s+(?P<freq>[\d.]+)\s+kHz.*'(?P<text>.*)'$")
 SPOT_LINE_RE = re.compile(r"SPOT:\s+(?P<freq>[\d.]+)\s+(?P<call>\S+)\s+(?P<snr>\d+) dB")
@@ -129,7 +131,7 @@ def parse_cws_tee(path: Path) -> list[Spot]:
     spots = []
     for line in read_lines(path):
         m = DX_DE_RE.match(line)
-        if not m or m.group("mode") != "CW":
+        if not m or m.group("mode") not in (None, "CW"):
             continue
         freq, call, rest = m.group("freq"), m.group("call"), m.group("rest")
         spots.append(Spot(float(freq), base_call(call), has_cq(rest)))
@@ -149,7 +151,7 @@ def parse_ours_log(path: Path) -> OurLog:
             spots.append(Spot(float(m_spot.group("freq")), base_call(m_spot.group("call")), False))
             continue
         m_dx = DX_DE_RE.match(line)
-        if m_dx and m_dx.group("mode") == "CW":
+        if m_dx and m_dx.group("mode") in (None, "CW"):
             freq, call, rest = m_dx.group("freq"), m_dx.group("call"), m_dx.group("rest")
             spots.append(Spot(float(freq), base_call(call), has_cq(rest)))
     return OurLog(raw=raw, spots=dedupe_spots(spots))

@@ -16,19 +16,23 @@ from parity_score import (  # noqa: E402  # pyright: ignore[reportMissingImports
 
 
 def test_cws_tee_parsing(tmp_path: Path) -> None:
-    """Parses freq, base call, CW-only filter and the cq flag from a CW Skimmer tee."""
+    """Parses freq, base call, cq flag and the optional mode column from a CW Skimmer tee."""
     log = tmp_path / "cws.log"
     log.write_text(
         "01:49:21 DX de WX7V-#: 7061.5 N0RNM CW 13 dB 20 WPM CQ 0149Z\n"
         "01:50:14 DX de WX7V-#: 7048.0 EN5TT CW 24 dB 21 WPM 0150Z\n"
         "01:50:20 DX de WX7V-#: 7050.0 W1AW/9 CW 10 dB 15 WPM CQ 0150Z\n"
         "01:50:25 DX de WX7V-#: 7052.0 K5ABC RTTY 10 dB 0150Z\n"
+        "14:06:52 DX de WX7V-#:    14038.0  NZ4N           21 dB  27 WPM                1406Z\n"
+        "14:08:26 DX de WX7V-#:    14066.5  VE3IIM         14 dB  22 WPM   CQ           1408Z\n"
     )
     spots = parse_cws_tee(log)
-    assert len(spots) == 3
+    assert len(spots) == 5
     assert spots[0] == Spot(7061.5, "N0RNM", True)
     assert spots[1] == Spot(7048.0, "EN5TT", False)
     assert spots[2] == Spot(7050.0, "W1AW", True)
+    assert spots[3] == Spot(14038.0, "NZ4N", False)
+    assert spots[4] == Spot(14066.5, "VE3IIM", True)
 
 
 def test_our_log_parsing_and_dedupe(tmp_path: Path) -> None:

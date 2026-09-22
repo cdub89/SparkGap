@@ -66,25 +66,44 @@ TEE_PID=$!
 TZ=UTC "$PY" sparkgap.py --config "$CONFIG" > "$RUN/sparkgap.log" 2>&1 &
 SG_PID=$!
 echo "sparkgap pid $SG_PID, tee pid $TEE_PID; Ctrl-C stops early"
+# Echo CW Skimmer spots as they arrive, and a status line every minute.
+setsid bash -c "tail -n 0 -F '$RUN/cws.log' 2>/dev/null | grep --line-buffered 'DX de' | sed -u 's/^/  cws  /'" &
+TAIL_PID=$!   # its own process group, so the whole pipeline can be killed
+
+status() {
+    local n_cws n_raw n_spot n_conn
+    n_cws=$({ grep -c 'DX de' "$RUN/cws.log" 2>/dev/null || true; } | tail -1)
+    n_conn=$({ grep -c 'callsign' "$RUN/cws.log" 2>/dev/null || true; } | tail -1)
+    n_raw=$({ grep -c 'ITILA raw' "$RUN/sparkgap.log" 2>/dev/null || true; } | tail -1)
+    n_spot=$({ grep -c 'SPOT:' "$RUN/sparkgap.log" 2>/dev/null || true; } | tail -1)
+    echo "$(date -u +%H:%M:%SZ) elapsed $((SECONDS / 60))m | cws spots ${n_cws:-0} (logins ${n_conn:-0}) | sparkgap decodes ${n_raw:-0} spots ${n_spot:-0}"
+}
 
 stop_all() {
-    trap - INT TERM
-    kill -INT "$SG_PID" 2>/dev/null || true
+    trap '' INT TERM
+    kill -TERM "$SG_PID" 2>/dev/null || true
+    for ((w = 0; w < 30; w++)); do kill -0 "$SG_PID" 2>/dev/null || break; sleep 1 || true; done
+    kill -0 "$SG_PID" 2>/dev/null && { echo "sparkgap ignored SIGTERM for 30 s, killing" >&2; kill -KILL "$SG_PID" 2>/dev/null || true; }
     wait "$SG_PID" 2>/dev/null || true
     kill "$TEE_PID" 2>/dev/null || true
-    wait "$TEE_PID" 2>/dev/null || true
+    kill -- -"$TAIL_PID" 2>/dev/null || true
+    wait "$TEE_PID" "$TAIL_PID" 2>/dev/null || true
 }
-trap stop_all INT TERM
+# Ctrl-C reaches every process in the group, so sparkgap and the tee stop on
+# their own; the script only needs to notice and finish the run record.
+STOP=0
+trap 'STOP=1' INT TERM
 
-if [ "$MINUTES" -gt 0 ]; then
-    for ((i = 0; i < MINUTES * 60; i++)); do
-        kill -0 "$SG_PID" 2>/dev/null || { echo "sparkgap exited early" >&2; break; }
-        sleep 1
-    done
-else
-    wait "$SG_PID" || true
-fi
+SECONDS=0
+while :; do
+    kill -0 "$SG_PID" 2>/dev/null || { echo "sparkgap exited early, see $RUN/sparkgap.log" >&2; break; }
+    [ "$STOP" = 1 ] && { echo "stopping on request"; break; }
+    [ "$MINUTES" -gt 0 ] && [ "$SECONDS" -ge $((MINUTES * 60)) ] && break
+    sleep 1 || true
+    [ $((SECONDS % 60)) -eq 0 ] && status
+done
 stop_all
+status
 
 WAV=$(grep -o 'Recording IQ to .*' "$RUN/sparkgap.log" | head -1 | cut -d' ' -f4-)
 WAVINFO=none
