@@ -1565,3 +1565,24 @@ void itila_debug_em(itila_t h, const double* envelope, int n,
     itila_state_t *st = (itila_state_t*)h;
     em_estimate(st, envelope, n, 0.0, A_out, nm_out, s2_out, wpm_out);
 }
+
+/* Test hooks: expose the pure timing fits to tests/test_itila2_timing.py */
+double itila2_test_fit_unit(const int *is_mark, const int *dur, int n,
+                            double unit_in, int *fitted, double *dah_out) {
+    run_t *runs = malloc(n * sizeof(run_t));
+    if (!runs) { *fitted = 0; *dah_out = 0.0; return unit_in; }
+    for (int i = 0; i < n; i++) { runs[i].is_mark = is_mark[i]; runs[i].dur = dur[i]; }
+    double unit = fit_unit(runs, n, unit_in, fitted, dah_out);
+    free(runs);
+    return unit;
+}
+
+double itila2_test_fit_letter_word(const int *is_mark, const int *dur, int n,
+                                   double unit, int *fitted) {
+    run_t *runs = malloc(n * sizeof(run_t));
+    if (!runs) { *fitted = 0; return 5.0 * unit; }
+    for (int i = 0; i < n; i++) { runs[i].is_mark = is_mark[i]; runs[i].dur = dur[i]; }
+    double boundary = fit_letter_word_boundary(runs, n, unit, fitted);
+    free(runs);
+    return boundary;
+}
