@@ -6468,6 +6468,7 @@ class SparkGap:
         self.spot_count = 0
         self.start_time = None
         self._iq_lock = threading.Lock()
+        self._iq_trimmed = 0  # IQ samples discarded by the Python receiver path
         # Per-band IQ buffers keyed by rx_index.  For single-band configs
         # rx_index=0 is the only key (same as before).
         self._band_bufs = {}   # rx_index → {'iq': deque, 'i': [], 'q': []}
@@ -6900,6 +6901,7 @@ class SparkGap:
                         chunk_size = len(raw_chunks[0])
                         max_chunks = max(1, live_rate // 5 // chunk_size)
                         if len(raw_chunks) > max_chunks:
+                            self._iq_trimmed += sum(len(c) for c in raw_chunks[:-max_chunks])
                             raw_chunks = raw_chunks[-max_chunks:]
                         feed_i = []
                         feed_q = []
@@ -7211,6 +7213,8 @@ class SparkGap:
                          "%d chars, %.0fs",
                          self.spot_count, total_decoders, len(self.managers),
                          self.telnet.client_count, total_chars, elapsed)
+                if not use_c and self.receiver:
+                    log.info("IQ trimmed before scanner: %.1fs total", self._iq_trimmed / live_rate)
                 # Ring + env-cap drop telemetry (added 2026-04-26 to verify
                 # we're not silently losing samples in the C pipeline).
                 if use_c and self.receiver and self.receiver._h:
