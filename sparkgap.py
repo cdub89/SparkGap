@@ -6899,7 +6899,7 @@ class SparkGap:
                         buf['raw'] = []
                     if raw_chunks:
                         chunk_size = len(raw_chunks[0])
-                        max_chunks = max(1, live_rate // 5 // chunk_size)
+                        max_chunks = max(1, live_rate * 10 // chunk_size)  # feed the backlog; trim only past 10 s
                         if len(raw_chunks) > max_chunks:
                             self._iq_trimmed += sum(len(c) for c in raw_chunks[:-max_chunks])
                             raw_chunks = raw_chunks[-max_chunks:]
