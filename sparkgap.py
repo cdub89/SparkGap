@@ -3738,7 +3738,7 @@ class SignalGroup:
                  wpm=30, ml_model_path=None, ml_min_confidence=0.7,
                  pfb=None, use_dispatcher=False, use_pfb_dispatcher=False,
                  use_itila=False, center_khz=0, itila_ev_thresh=2.0,
-                 itila_window_sec=120.0):
+                 itila_window_sec=60.0):
         self.freq_offset = freq_offset
         self.rf_khz = rf_khz
         self.snr = snr
@@ -4290,7 +4290,7 @@ class InstanceManager:
                  hamfist_scp=None, ml_model_path=None, ml_min_confidence=0.7,
                  ml_max_channels=20, use_dispatcher=False,
                  use_pfb_dispatcher=False, use_itila=False,
-                 itila_ev_thresh=2.0, itila_window_sec=120.0,
+                 itila_ev_thresh=2.0, itila_window_sec=60.0,
                  itila_min_snr=8.0, itila_max_bins=200,
                  use_pfb_scanner=False, valid_calls=None,
                  cw_min_khz=0.0, cw_max_khz=99999.0,
@@ -6720,7 +6720,7 @@ class SparkGap:
                 use_pfb_dispatcher=bool(self.cfg.get('use_cpp_pfb', False)),
                 use_itila=bool(self.cfg.get('use_itila', False)),
                 itila_ev_thresh=float(self.cfg.get('itila_ev_thresh', 2.0)),
-                itila_window_sec=float(self.cfg.get('itila_window_sec', 120.0)),
+                itila_window_sec=float(self.cfg.get('itila_window_sec', 60.0)),
                 itila_min_snr=min_snr_here,
                 itila_max_bins=int(self.cfg.get('itila_max_bins', 200)),
                 use_pfb_scanner=use_pfb_here,
@@ -7773,7 +7773,7 @@ def run_file_mode(args, config):
         use_pfb_dispatcher=bool(config.get('use_cpp_pfb', False)),
         use_itila=bool(config.get('use_itila', False)),
         itila_ev_thresh=float(config.get('itila_ev_thresh', 2.0)),
-        itila_window_sec=float(config.get('itila_window_sec', 120.0)),
+        itila_window_sec=float(config.get('itila_window_sec', 60.0)),
         # Match live mode: use config values for itila_min_snr / max_bins /
         # use_pfb_scanner instead of letting the InstanceManager defaults
         # (8.0, 200, False) silently apply. Pre-fix divergence documented
@@ -8108,7 +8108,7 @@ def main():
         config['bands'] = [args.band]
     if args.port:
         config['telnet_port'] = args.port
-    if config.get('use_itila') and float(config.get('itila_window_sec', 120.0)) > 75:
+    if config.get('use_itila') and float(config.get('itila_window_sec', 60.0)) > 75:
         sys.exit("itila_window_sec must be <= 75 (ITILA decode buffer); set it in the config")
 
     if args.file:
