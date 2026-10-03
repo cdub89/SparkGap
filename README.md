@@ -205,16 +205,14 @@ apt install build-essential gcc python3 python3-numpy python3-scipy \
             libfftw3-dev pkg-config
 ```
 
-Build the C libraries:
+PSKReporter/MQTT needs `paho-mqtt>=2.0`, which Ubuntu doesn't package;
+use `pip install -r requirements.txt` in a venv.
+
+Build the C libraries (`make native ARCH=native` for `-march=native`):
 
 ```
-make libpfb_scanner.so libcw_dispatcher.so
-gcc -O3 -march=native -shared -fPIC -pthread -o libhpsdr_fast.so hpsdr_fast.c -lm
-gcc -O3 -march=native -ffast-math -shared -fPIC -o libitila_scanner.so itila_scanner.c -lm
+make native
 ```
-
-(See `Makefile` for the full list.  ITILA decoder library `libitila.so`
-build is currently in `bayes-skimmer3.cpp` / Makefile.)
 
 Pitaya: install [Pavel Demin's `sdr_receiver_hpsdr`](https://pavel-demin.github.io/red-pitaya-notes/sdr-receiver-hpsdr/) firmware
 and ensure it's reachable on your LAN.  Update `sdr_ip` in your config.

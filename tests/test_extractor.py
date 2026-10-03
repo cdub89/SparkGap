@@ -110,6 +110,34 @@ def test_fuzzy_cq_overaccepts_documented():
     assert got == 'W1AW', 'characterization: REST currently triggers CQ extraction'
 
 
+# ---------------------------------------------------------------------------
+# Cases merged from WX7V's fork tests (cdub89/SparkGap tests/test_extractor.py)
+# ---------------------------------------------------------------------------
+
+def test_wx7v_base_call_cases():
+    for c in ['W1AW', 'K9MA', 'M7Z', 'HB9AMO', '4U1ITU']:
+        assert sg._is_base_call(c), f'{c} should be a base call'
+    for c in ['HB9AMOHBM', '5NN', '5NN5TU', 'TU', '599']:
+        assert not sg._is_base_call(c), f'{c} should be rejected'
+
+
+def test_wx7v_extract_cq_cases():
+    cases = [
+        ('CQ CQ DE W1AW W1AW K', 'W1AW'),
+        ('CQ TEST K9MA/P', 'K9MA/P'),
+        ('CQ PJ2 AG3I', 'PJ2/AG3I'),
+        ('CQ CQ E E A2JD K2JD K2JD K', 'K2JD'),
+        ('FB JIM N3BB DE N5RZ', None),
+    ]
+    for text, want in cases:
+        got = sg._itila_extract_cq_call(text)
+        assert got == want, f'{text!r}: got {got!r}, want {want!r}'
+
+
+def test_wx7v_extract_all_needs_repeats():
+    assert sg._itila_extract_all_calls('W1AW DE K2JD W1AW TU') == ['W1AW']
+
+
 if __name__ == '__main__':
     fns = [v for k, v in sorted(globals().items())
            if k.startswith('test_') and callable(v)]

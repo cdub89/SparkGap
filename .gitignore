@@ -9,6 +9,7 @@ threshold-cwskimmer
 bayes-cwskimmer
 bayes-cwskimmer2
 bayes-cwskimmer3
+libcw_dispatcher.so
 __pycache__/
 
 # Audio recordings (large)
