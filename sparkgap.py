@@ -2593,10 +2593,6 @@ class _ItilaScanner:
                 continue
             cost = lib.itila_get_last_cost(h)
             log.info("ITILA raw %.1f kHz cost=%.2f: %r", f_khz, cost, raw[:400])
-            # A clean decode is evidence the bin is live; without it the scanner
-            # evicts the bin 300 s after its last new spot.
-            if cost <= 30.0:
-                self._sc._lib.itila_sc_mark_evidence(self._sc._h, _ct.c_double(f_hz))
             # Timing-cost gate (off by default).  Drops the whole decode
             # window's call extraction when segmentation quality is too low;
             # logs the suppression with cost so we can tune the threshold
