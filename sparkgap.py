@@ -1400,7 +1400,10 @@ _ITILA_CQ_WORDS = {'CQ', 'TEST', 'CWT', 'SST', 'MST', 'FD', 'SS', 'NA', 'UP'}
 # worked (the digit reads as the leading number). Kept tighter than CALL_RE's
 # `[A-Z0-9]{1,2}` — requires ≥1 letter in the prefix, so all-digit garbage (991AA)
 # still fails. Changes spot output → PLAN.md measurement run before shipping.
-_BASE_CALL_PAT = re.compile(r'^[0-9]?[A-Z]{1,2}[0-9]{1,4}[A-Z]{1,6}$')
+# (?!5NN) guard (2026-10-03, WX7V test case): the leading digit also let a
+# run-on contest report through as a "call" (5NN5TU, 5NN5NN, 5NN2N — all seen in
+# live CQP raw decodes). No real call starts 5NN (5N Nigeria is 5N+digit).
+_BASE_CALL_PAT = re.compile(r'^(?!5NN)[0-9]?[A-Z]{1,2}[0-9]{1,4}[A-Z]{1,6}$')
 # Slash suffixes that don't make it a new full callsign: /P /M /MM /QRP /0-9
 _SLASH_SUFFIX_PAT = re.compile(r'^([0-9]|P|M|MM|QRP|A|B)$')
 
