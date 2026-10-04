@@ -39,6 +39,7 @@ class DeepFistPass:
         from deepfist.model.decode import greedy_ctc_decode
         from squelch import has_signal
         self._torch = torch
+        torch.set_num_threads(1)    # don't starve the scanner/decoder threads
         self._spec, self._sr = audio_to_spectrogram, SAMPLE_RATE
         self._cond, self._ctc, self._has_signal = maybe_condition, greedy_ctc_decode, has_signal
         cfg = json.load(open(os.path.join(os.path.dirname(ckpt), 'config.json')))
