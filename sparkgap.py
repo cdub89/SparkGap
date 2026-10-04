@@ -2505,6 +2505,24 @@ class _ItilaScanner:
         else:
             self._c_decode = False
 
+        # EXPERIMENT (issue #5, branch deepfist-2pass): DeepFist second pass on
+        # bins whose ITILA window produced no spot.  Off unless
+        # SPARKGAP_DEEPFIST_CKPT is set; needs scanner baseband capture.
+        self._df = None
+        ckpt = os.environ.get('SPARKGAP_DEEPFIST_CKPT')
+        if ckpt and self._sc and hasattr(self._sc._lib, 'itila_sc_peek_iq'):
+            lib = self._sc._lib
+            lib.itila_sc_enable_iq_capture.restype = None
+            lib.itila_sc_enable_iq_capture.argtypes = [_ct.c_void_p, _ct.c_int]
+            lib.itila_sc_peek_iq.restype = _ct.c_int
+            lib.itila_sc_peek_iq.argtypes = [_ct.c_void_p, _ct.c_double,
+                                             _ct.POINTER(_ct.c_float), _ct.c_int]
+            lib.itila_sc_enable_iq_capture(self._sc._h, 1)
+            from deepfist_pass import DeepFistPass
+            self._df = DeepFistPass(ckpt, os.environ['SPARKGAP_DEEPFIST_SRC'])
+            self._df_n_iq = self._window_samples * 5   # 1 kHz IQ per 200 Hz env sample
+            log.info("DeepFist second pass ENABLED (%s)", ckpt)
+
     def _ensure_bin_handles(self, f_hz):
         """Create itila decoder handles for a C-spawned bin if not yet tracked."""
         if f_hz in self._bins:
@@ -2567,6 +2585,18 @@ class _ItilaScanner:
         lib = _get_itila_lib()
         if not lib or not self._sc:
             return
+
+        # DeepFist experiment: copy this window's baseband before the drain
+        # below shifts it out (the C side shifts IQ in lockstep with env).
+        df_iq = None
+        if self._df:
+            iq = np.empty(2 * self._df_n_iq, dtype=np.float32)
+            got = self._sc._lib.itila_sc_peek_iq(
+                self._sc._h, _ct.c_double(f_hz),
+                iq.ctypes.data_as(_ct.POINTER(_ct.c_float)), self._df_n_iq)
+            if got >= int(0.9 * self._df_n_iq):
+                df_iq = iq[:2 * got]
+        spotted_before = len(st['spotted'])
 
         env100 = np.empty(self._window_samples, dtype=np.float64)
         env200 = np.empty(self._window_samples, dtype=np.float64)
@@ -2652,6 +2682,9 @@ class _ItilaScanner:
                             self._sc._lib.itila_sc_mark_evidence(
                                 self._sc._h, _ct.c_double(f_hz))
 
+        if df_iq is not None and len(st['spotted']) == spotted_before:
+            self._deepfist_pass({f_hz: df_iq}, {f_hz: spotted_before}, now)
+
     def _process_ready_c(self):
         """C decode loop — all bin iteration + decode happens in C."""
         import ctypes as _ct
@@ -2662,6 +2695,7 @@ class _ItilaScanner:
         max_results = 128
         result_size = 8 + 8 + 4 + 4 + 256 + 8  # 288 bytes
         buf = _ct.create_string_buffer(result_size * max_results)
+
         n = self._sc._lib.itila_sc_decode_ready(
             self._sc._h, _ct.c_int(self._window_samples),
             buf, _ct.c_int(max_results))
@@ -2735,6 +2769,36 @@ class _ItilaScanner:
                         if self._sc:
                             self._sc._lib.itila_sc_mark_evidence(
                                 self._sc._h, _ct.c_double(f_hz))
+
+    def _deepfist_pass(self, df_iq, spotted_before, now):
+        """EXPERIMENT (issue #5): decode bins whose ITILA window yielded no new
+        call with DeepFist; extract with the same runner-only logic as ITILA."""
+        for f_hz, iq in df_iq.items():
+            st = self._bins.get(f_hz)
+            if st is None:
+                st = self._bins[f_hz] = {
+                    'h100': None, 'h200': None, 'pending': [], 'wpm': 0, 'snr': 0.0,
+                    'text_buf': '', 'spotted': set(), 'last_cq_time': 0.0,
+                    'window_id_next': 0,
+                }
+            if len(st['spotted']) > spotted_before.get(f_hz, 0):
+                continue            # ITILA already got a call from this window
+            text = self._df.decode_iq(iq)
+            if not text:
+                continue
+            f_khz = f_hz / 1000.0
+            log.info("DEEPFIST raw %.1f kHz: %r", f_khz, text[:400])
+            st['df_buf'] = (st.get('df_buf', '') + ' ' + text)[-512:]
+            if CQ_PATTERNS.search(text):
+                st['df_last_cq'] = now
+            call = _itila_extract_cq_call(text, self.valid_calls)
+            if not call and now - st.get('df_last_cq', 0.0) < 120.0:
+                call = _itila_extract_cq_call(st['df_buf'], self.valid_calls)
+            if call and call not in st['spotted']:
+                st['spotted'].add(call)
+                _emit_intent(st, f_khz, call, st['wpm'], is_runner=True,
+                             raw_text='DF: ' + text)
+                log.info("DEEPFIST scan %.1f kHz: %s (raw: %s)", f_khz, call, text[:60])
 
     def collect(self):
         """Returns list of SpotIntent records, one per ready window-extraction.
