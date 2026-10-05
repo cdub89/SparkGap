@@ -42,6 +42,15 @@ def test_noise_and_nonstructural_rejected():
         assert not sg._is_base_call(c), f'{c} should be rejected'
 
 
+def test_5nn_runon_rejected():
+    """The optional leading digit must not admit run-on contest reports
+    (5NN5TU from WX7V's tests; 5NN5NN/5NN2N seen in live CQP raw decodes)."""
+    for c in ['5NN5TU', '5NN5NN', '5NN2N', '5NN5E']:
+        assert not sg._is_base_call(c), f'{c} is a 5NN run-on, not a call'
+    # 5N (Nigeria) is 5N + digit — must still pass
+    assert sg._is_base_call('5N7M')
+
+
 def test_length_bounds():
     assert sg._is_base_call('W1AW')          # 4, ok
     assert sg._is_base_call('VE3KIU')        # 6, ok
@@ -60,6 +69,12 @@ def test_extract_cq_runner_letter_first():
 def test_extract_cq_runner_digit_first():
     """End-to-end T1: a digit-first runner adjacent to CQ now extracts."""
     assert sg._itila_extract_cq_call('CQ CQ DE 9A1A 9A1A', {'9A1A'}) == '9A1A'
+
+
+def test_extract_cq_runner_digit_first_wx7v_cases():
+    # cases from WX7V's fork tests
+    assert sg._itila_extract_cq_call('CQ CQ 9A1AA 9A1AA K', {'9A1AA'}) == '9A1AA'
+    assert sg._itila_extract_cq_call('CQ 4X4DK 4X4DK', {'4X4DK'}) == '4X4DK'
 
 
 def test_extract_cq_none_without_trigger():
@@ -93,6 +108,34 @@ def test_fuzzy_cq_overaccepts_documented():
     # future change tightens the trigger, flip this assertion and note it.
     got = sg._itila_extract_cq_call('REST W1AW W1AW', {'W1AW'})
     assert got == 'W1AW', 'characterization: REST currently triggers CQ extraction'
+
+
+# ---------------------------------------------------------------------------
+# Cases merged from WX7V's fork tests (cdub89/SparkGap tests/test_extractor.py)
+# ---------------------------------------------------------------------------
+
+def test_wx7v_base_call_cases():
+    for c in ['W1AW', 'K9MA', 'M7Z', 'HB9AMO', '4U1ITU']:
+        assert sg._is_base_call(c), f'{c} should be a base call'
+    for c in ['HB9AMOHBM', '5NN', '5NN5TU', 'TU', '599']:
+        assert not sg._is_base_call(c), f'{c} should be rejected'
+
+
+def test_wx7v_extract_cq_cases():
+    cases = [
+        ('CQ CQ DE W1AW W1AW K', 'W1AW'),
+        ('CQ TEST K9MA/P', 'K9MA/P'),
+        ('CQ PJ2 AG3I', 'PJ2/AG3I'),
+        ('CQ CQ E E A2JD K2JD K2JD K', 'K2JD'),
+        ('FB JIM N3BB DE N5RZ', None),
+    ]
+    for text, want in cases:
+        got = sg._itila_extract_cq_call(text)
+        assert got == want, f'{text!r}: got {got!r}, want {want!r}'
+
+
+def test_wx7v_extract_all_needs_repeats():
+    assert sg._itila_extract_all_calls('W1AW DE K2JD W1AW TU') == ['W1AW']
 
 
 if __name__ == '__main__':

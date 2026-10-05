@@ -18,6 +18,7 @@ Protocol refs:
 """
 
 import logging
+import re
 import select
 import socket
 import struct
@@ -35,6 +36,9 @@ SAMPLES_PER_PACKET = 512
 DAXIQ_PACKET_SIZE = VITA_HEADER_SIZE + SAMPLES_PER_PACKET * 8  # 4124
 
 VALID_RATES = (24000, 48000, 96000, 192000)
+
+# DAX-IQ floats are int16 full scale; FlexLib VitaIFDataPacket divides by 2**15.
+DAXIQ_FULL_SCALE = 32768.0
 
 
 class FlexIQReceiver:
@@ -70,6 +74,7 @@ class FlexIQReceiver:
         self._buf = b''
         self._stream_id = None
         self._pan_id = None
+        self._slice_id = None
 
         self._udp = None
         self._running = False
@@ -127,12 +132,22 @@ class FlexIQReceiver:
         self._tcp.connect((self.ip, self.control_port))
 
         # Consume initial handshake (version, handle, status flood)
-        self._drain(3)
+        hello = self._drain(3)
+        handle = next((l[1:].strip().upper() for l in hello if l.startswith('H')), '')
 
         # Register as GUI client — required for pan/DAX-IQ creation.
         # AetherSDR showed this is the missing piece for headless operation.
         gui_uuid = str(uuid.uuid4()).upper()
-        self._cmd(f"client gui {gui_uuid}")
+        resp = self._cmd(f"client gui {gui_uuid}")
+        # The radio gives a new GUI client its own pan (and slice). On 2-pan
+        # radios (6400) with a front panel that leaves none for the create below.
+        mine = set()
+        for line in resp if handle else []:
+            m = re.search(r'\|display pan (0x[0-9A-F]+) .*client_handle=0x' + handle + r'\b', line, re.I)
+            if m:
+                mine.add(m.group(1))
+        for pan in sorted(mine):
+            self._cmd(f"display pan remove {pan}")
         self._cmd("client program SmartSDR-Win")
         self._cmd(f"client udpport {self.udp_port}")
 
@@ -154,8 +169,7 @@ class FlexIQReceiver:
                             except ValueError:
                                 pass
         if self._pan_id is None:
-            log.error("[Flex] Failed to create panadapter")
-            return
+            raise RuntimeError("[Flex] No free panadapter on the radio; close one in SmartSDR or on the front panel")
 
         log.info("[Flex] Pan created: 0x%08x", self._pan_id)
 
@@ -183,16 +197,17 @@ class FlexIQReceiver:
         resp = self._cmd(f"stream create type=dax_iq daxiq_channel={self.channel}")
         self._stream_id = self._parse_hex_response(resp)
         if self._stream_id is None:
-            log.error("[Flex] Failed to create DAX-IQ stream")
-            return
+            raise RuntimeError("[Flex] Failed to create DAX-IQ stream")
         log.info("[Flex] DAX-IQ stream: 0x%08x", self._stream_id)
-
-        # Set sample rate
-        self._cmd(f"stream set 0x{self._stream_id:08x} "
-                  f"daxiq_rate={self.sample_rate}")
 
         # Bind DAX-IQ to the panadapter — THE critical step
         self._cmd(f"display pan set 0x{self._pan_id:08x} daxiq_channel={self.channel}")
+
+        # Set sample rate after binding; newer firmware rejects it on an unbound stream
+        resp = self._cmd(f"stream set 0x{self._stream_id:08x} "
+                         f"daxiq_rate={self.sample_rate}")
+        if not any(l.startswith(f"R{self._seq}|0|") for l in resp):
+            raise RuntimeError(f"[Flex] Radio refused daxiq_rate={self.sample_rate}: {resp[-1:]}")
 
         # Open UDP receiver
         self._udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -245,6 +260,7 @@ class FlexIQReceiver:
         start = time.time()
         last_counter = None
         pkt_count = 0
+        lost = 0
         last_report = start
 
         # Flex v1.4+ sends payload_endian=little. Confirmed empirically:
@@ -287,6 +303,7 @@ class FlexIQReceiver:
             if last_counter is not None:
                 gap = (counter - last_counter - 1) & 0x0F
                 if gap and pkt_count > 10:
+                    lost += gap
                     log.debug("[Flex] Packet gap: %d missed", gap)
             last_counter = counter
 
@@ -298,15 +315,16 @@ class FlexIQReceiver:
             except struct.error:
                 continue
 
-            iq_pairs = list(zip(samples[0::2], samples[1::2]))
+            iq_pairs = [(i / DAXIQ_FULL_SCALE, q / DAXIQ_FULL_SCALE)
+                        for i, q in zip(samples[0::2], samples[1::2])]
             callback(0, iq_pairs)
 
             pkt_count += 1
             now = time.time()
             if now - last_report >= 30:
                 elapsed = now - start
-                log.info("[Flex] %d packets in %.0fs (%.0f pkt/s, %d samp/pkt)",
-                         pkt_count, elapsed, pkt_count / elapsed, n_samples)
+                log.info("[Flex] %d packets in %.0fs (%.0f pkt/s, %d samp/pkt, %d lost)",
+                         pkt_count, elapsed, pkt_count / elapsed, n_samples, lost)
                 last_report = now
 
     # -- helpers -------------------------------------------------------------

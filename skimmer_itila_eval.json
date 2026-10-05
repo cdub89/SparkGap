@@ -10,7 +10,7 @@
   "rescan_interval_sec": 30,
   "use_itila": true,
   "itila_ev_thresh": 2.0,
-  "itila_window_sec": 120,
+  "itila_window_sec": 60,
   "use_cpp_dispatcher": false,
   "use_cpp_pfb": false,
   "telnet_port": 7305

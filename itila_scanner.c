@@ -26,7 +26,7 @@
 
 /* ---- compile-time limits ---- */
 #define SC_MAX_BINS   512
-#define SC_DEC1       16      /* 192 kHz → 12 kHz  (FIR stage 1) */
+#define SC_DEC1       16      /* max stage-1 decimation: 192 kHz → 12 kHz (8 at 96k, 4 at 48k) */
 #define SC_DEC2       6       /* 12 kHz → 2 kHz    (FIR stage 2) */
 #define SC_DEC3       10      /* 2 kHz → 200 Hz    (FIR stage 3) */
 #define SC_ENV_CAP    15000   /* 75s at 200 Hz — 1.25 decode windows */
@@ -51,7 +51,7 @@ typedef struct {
     int    active;
     double c_phase, s_phase;           /* oscillator state */
 
-    /* FIR stage 1: 192k→12k (32 taps, complex I/Q) */
+    /* FIR stage 1: to 12k (up to 32 taps, complex I/Q) */
     double dl1_i[FIR_STAGE1_LEN];
     double dl1_q[FIR_STAGE1_LEN];
     int    dl1_count;                  /* samples fed since last output */
@@ -91,6 +91,9 @@ typedef struct {
 /* ---- scanner ---- */
 struct ItilaSc {
     int    sample_rate;
+    int    dec1;              /* stage-1 decimation and filter for this rate */
+    const double *fir1;
+    int    fir1_len;
     double center_hz;
     int    max_bins;
     double min_snr;
@@ -310,7 +313,7 @@ static void run_scan(ItilaSc *sc, const double *seg_i, const double *seg_q)
      * drops climb past 50%. Sweeping unconditionally per scan keeps
      * the active set bounded by what the band actually produces. */
     {
-        int rate_12k = sc->sample_rate / SC_DEC1;
+        int rate_12k = sc->sample_rate / sc->dec1;
         for (int b = 0; b < SC_MAX_BINS; b++) {
             if (!sc->bins[b].active) continue;
             /* Skip mid-decode bins — see ScBin.in_decode comment. */
@@ -343,22 +346,11 @@ static void run_scan(ItilaSc *sc, const double *seg_i, const double *seg_q)
 
         /* Skip if within cluster_hz of any active bin — but update its SNR */
         int found = 0;
-        int blocking_bin = -1;
         for (int b = 0; b < SC_MAX_BINS; b++) {
             if (sc->bins[b].active && fabs(sc->bins[b].f_hz - f_hz) < cluster_hz) {
                 sc->bins[b].snr_db = peaks[i].snr;
-                found = 1; blocking_bin = b; break;
+                found = 1; break;
             }
-        }
-        /* Debug: log why peaks near 7047-7048 kHz are blocked */
-        if (f_hz > 7047000 && f_hz < 7049000) {
-            if (found)
-                fprintf(stderr, "PEAK %.1f Hz (%.1f dB) BLOCKED by bin %.1f Hz (dist=%.0f)\n",
-                        f_hz, peaks[i].snr,
-                        sc->bins[blocking_bin].f_hz,
-                        fabs(sc->bins[blocking_bin].f_hz - f_hz));
-            else
-                fprintf(stderr, "PEAK %.1f Hz (%.1f dB) NEW\n", f_hz, peaks[i].snr);
         }
         if (found) continue;
 
@@ -414,7 +406,7 @@ static void run_scan(ItilaSc *sc, const double *seg_i, const double *seg_q)
                 int since_ev = sc->total_samples - sc->bins[b].last_evidence;
                 /* Never produced evidence and >120s old
                  * total_samples counts in 12kHz units (n/SC_DEC1) */
-                int rate_12k = sc->sample_rate / SC_DEC1;
+                int rate_12k = sc->sample_rate / sc->dec1;
                 if (sc->bins[b].last_evidence == 0 &&
                     age > 300 * rate_12k) {
                     if (age > oldest_age) { oldest_age = age; evicted = b; }
@@ -486,15 +478,15 @@ static void process_bins(ItilaSc *sc, const double *i_full, const double *q_full
             cp = cn; sp = sn;
 
             /* Stage 1: push into FIR1 delay line, decimate 16:1 */
-            int pos1 = b->dl1_count % FIR_STAGE1_LEN;
+            int pos1 = b->dl1_count % sc->fir1_len;
             b->dl1_i[pos1] = mixed_i;
             b->dl1_q[pos1] = mixed_q;
             b->dl1_count++;
 
-            if (b->dl1_count % SC_DEC1 != 0) continue;
+            if (b->dl1_count % sc->dec1 != 0) continue;
             /* Output one 12k sample */
-            double s1_i = fir_dot(b->dl1_i, pos1, FIR_STAGE1, FIR_STAGE1_LEN);
-            double s1_q = fir_dot(b->dl1_q, pos1, FIR_STAGE1, FIR_STAGE1_LEN);
+            double s1_i = fir_dot(b->dl1_i, pos1, sc->fir1, sc->fir1_len);
+            double s1_q = fir_dot(b->dl1_q, pos1, sc->fir1, sc->fir1_len);
 
             /* Stage 2: push into FIR2 delay lines (100 Hz + 200 Hz paths), decimate 6:1 */
             int pos2_100 = b->dl2_count % FIR_S2_100_LEN;
@@ -561,6 +553,14 @@ ItilaSc *itila_sc_create(int sample_rate, double center_hz,
 
     ItilaSc *sc = (ItilaSc *)calloc(1, sizeof(ItilaSc));
     if (!sc) return NULL;
+    switch (sample_rate) {
+    case 192000: sc->dec1 = 16; sc->fir1 = FIR_STAGE1;     sc->fir1_len = FIR_STAGE1_LEN;     break;
+    case 96000:  sc->dec1 = 8;  sc->fir1 = FIR_STAGE1_96K; sc->fir1_len = FIR_STAGE1_96K_LEN; break;
+    case 48000:  sc->dec1 = 4;  sc->fir1 = FIR_STAGE1_48K; sc->fir1_len = FIR_STAGE1_48K_LEN; break;
+    default:     free(sc); return NULL;
+    }
+    /* Scale the scan FFT with the rate: same bin width and scan period as 192 kHz */
+    energy_win = energy_win * sc->dec1 / SC_DEC1;
 
     sc->sample_rate    = sample_rate;
     sc->center_hz      = center_hz;
@@ -614,7 +614,7 @@ void itila_sc_feed_iq(ItilaSc *sc,
                        const double *i_arr, const double *q_arr, int n)
 {
     pthread_mutex_lock(&sc->lock);
-    sc->total_samples += n / SC_DEC1;  /* count in 12kHz samples */
+    sc->total_samples += n / sc->dec1;  /* count in 12kHz samples */
     /* --- FFT energy scan: fill rolling scan buffer --- */
     int i_pos = 0;
     while (i_pos < n) {
@@ -633,7 +633,7 @@ void itila_sc_feed_iq(ItilaSc *sc,
 
     /* --- IQ routing: prepend residual, process bins --- */
     int total   = sc->iq_res_n + n;
-    int n_dec1  = (total / SC_DEC1) * SC_DEC1;
+    int n_dec1  = (total / sc->dec1) * sc->dec1;
     int new_res = total - n_dec1;
 
     double *i_full = (double *)malloc(total * sizeof(double));
