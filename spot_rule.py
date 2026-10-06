@@ -2,7 +2,8 @@
 
 A call is spotted when, within the reputation horizon:
   1. it is the first callsign within LOOKAHEAD tokens after CQ or TEST
-     (CQ CWT K0TQ, CQ POTA DE WX7V);
+     (CQ CWT K0TQ, CQ POTA DE WX7V), or after DE when CQ or TEST came earlier with no
+     callsign between and the call is sent twice in the window (CQ SKCC DE K4DH K4DH);
   2. that happens in at least tier(call) decode windows (2, 3 or 4 by patt3ch.lst);
   3. near-miss copies count toward it: a call one character off a call that has
      at least twice its windows on the same frequency is counted as that call, and so is
@@ -28,6 +29,7 @@ from dataclasses import dataclass, field
 
 KEYWORDS = frozenset({"CQ", "TEST"})
 LOOKAHEAD = 3                 # tokens after a keyword searched for the sender's call
+DE_LOOKBACK = 6               # tokens before DE searched for CQ or TEST
 SAME_FREQ_KHZ = 0.3           # near-miss copies must share a frequency within this
 MERGE_RATIO = 2               # the real call needs this many times the copy's windows
 TRUNC_MIN = 3                 # shortest truncated call merged into a longer one (K4N)
@@ -106,13 +108,26 @@ def is_exchange(toks: list[str], j: int) -> bool:
             and (any(ch.isdigit() for ch in num) or (num.isalpha() and len(num) == 2)))
 
 
+def _cq_before(toks: list[str], i: int) -> bool:
+    """CQ or TEST within DE_LOOKBACK tokens before toks[i], with no callsign between."""
+    for k in range(i - 1, max(i - 1 - DE_LOOKBACK, -1), -1):
+        if CALL_RE.match(toks[k].replace("?", "")):
+            return False
+        if toks[k] in KEYWORDS:
+            return True
+    return False
+
+
 def runner_calls(text: str) -> list[str]:
     """Calls this text puts right after CQ or TEST (rules 1 and 4)."""
     toks = tokens(text)
     out = []
     for i, t in enumerate(toks):
-        if t in KEYWORDS:
+        de = t == "DE" and _cq_before(toks, i)
+        if t in KEYWORDS or de:
             j = sender(toks, i)
+            if j is not None and de and toks.count(toks[j]) < 2:
+                continue
             if j is not None and not is_exchange(toks, j) and toks[j] not in out:
                 out.append(toks[j])
     return out

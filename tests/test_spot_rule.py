@@ -214,3 +214,13 @@ def test_equal_longer_candidates_resolve_by_call() -> None:
         r.feed(r.window_id(1, k, k * 60.0), 14030.0, "K4NAX K4NZZ", k * 60.0)
     r.feed(r.window_id(1, 3, 180.0), 14030.0, "CQ K4N", 180.0)
     assert r._dominant("K4N") == "K4NAX"
+
+
+def test_call_after_de_counts_when_cq_came_first_and_it_is_sent_twice() -> None:
+    assert runner_calls("CQ SKCC CG EKCC DE K4DH K4DH") == ["K4DH"]
+    assert runner_calls("NOT E 3KZE CQ I EE DE VE3N") == []
+    assert runner_calls("CQ K4DH DE W1AW W1AW") == ["K4DH"]
+    assert runner_calls("TU DE W1AW W1AW") == []
+    assert runner_calls("CQ SKCC CG EKCC DEW1AW W1AW") == ["W1AW"]
+    assert runner_calls("CQ K1ABC? FOO BAR BAZ DE W1XYZ W1XYZ") == []
+    assert runner_calls("CQ K1ABC? FOO BAR BAZ DEW1XYZ W1XYZ") == []
