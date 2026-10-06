@@ -5,7 +5,7 @@
  *   - a new bin is fed the last 1 s of IQ (pre-roll) so the first characters are not lost
  *   - stage-1 FIRs from hotairfred/SparkGap#8 (40 dB at the 12 kHz fold, same tap counts)
  *   - fir_dot without the per-tap modulo
- * Bin keep-alive from decoded words is in sparkgap.py (_ItilaScanner), itila2 scanner only.
+ * Bin keep-alive is the same as itila_scanner.c: spot evidence only (word keep-alive kept noise bins alive, removed 2026-10-06).
  *
  * Implements the complete per-feed pipeline:
  *   IQ residual → FFT energy scan → bin spawn →

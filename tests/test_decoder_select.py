@@ -54,9 +54,3 @@ def test_every_scanner_library_has_a_build_recipe() -> None:
     makefile_text = (Path(sparkgap.__file__).resolve().parent / "Makefile").read_text()
     for lib_path in _SCANNER_LIBS.values():
         assert f"{Path(lib_path).name}:" in makefile_text
-
-
-def test_words_live_needs_three_word_like_tokens() -> None:
-    """itila2 bin keep-alive: 3+ word-like tokens count as live, noise does not."""
-    assert sparkgap._words_live("CQ CQ DE K1ABC K")
-    assert not sparkgap._words_live("E T EE5E T I")
