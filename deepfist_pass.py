@@ -112,10 +112,33 @@ def _spectrogram(x):
     return spec.astype(np.float32)
 
 
+# What this module's vendored front end implements.  A model whose .json
+# declares anything else was trained on different features: refuse it loudly
+# rather than feed it spectrograms it would silently mis-decode.
+_PREPROC = {'sample_rate': SR, 'n_fft': _N_FFT, 'hop_length': _HOP,
+            'band_lo_hz': int(_BAND_LO_HZ), 'band_hi_hz': int(_BAND_HI_HZ),
+            'freq_bins': _HI_BIN - _LO_BIN, 'window': 'hann', 'center': True,
+            'magnitude': 'abs', 'compress': 'log1p',
+            'normalize': 'global_standardize'}
+
+
+def check_model_meta(meta):
+    """Raise ValueError if the model's declared preprocessing/IO differs from
+    what this module implements."""
+    pre = meta.get('preprocessing', {})
+    bad = {k: (pre.get(k), v) for k, v in _PREPROC.items() if pre.get(k) != v}
+    if meta.get('input', {}).get('layout') != '[batch,1,freq=65,time]':
+        bad['input.layout'] = (meta.get('input', {}).get('layout'), '[batch,1,freq=65,time]')
+    if bad:
+        raise ValueError('model preprocessing differs from deepfist_pass.py '
+                         '(model, ours): %r -- port the new front end first' % bad)
+
+
 class DeepFistOnnx:
     def __init__(self, model_path, threads=1):
         import onnxruntime as ort
         meta = json.load(open(model_path + '.json'))
+        check_model_meta(meta)
         self._tokens = meta['tokens']
         self._blank = meta['ctc']['blank_index']
         so = ort.SessionOptions()
