@@ -2643,6 +2643,7 @@ class _ItilaScanner:
             if got >= int(0.9 * self._df_n_iq):
                 df_iq = iq[:2 * got]
         spotted_before = len(st['spotted'])
+        win_costs, win_raw = [], []          # ITILA features for second-pass job logging
 
         env100 = np.empty(self._window_samples, dtype=np.float64)
         env200 = np.empty(self._window_samples, dtype=np.float64)
@@ -2669,6 +2670,9 @@ class _ItilaScanner:
                 continue
             cost = lib.itila_get_last_cost(h)
             log.info("ITILA raw %.1f kHz cost=%.2f: %r", f_khz, cost, raw[:400])
+            if self._df:
+                win_costs.append(cost)
+                win_raw.append(raw)
             # Second-pass trigger evidence -- before the cost gate, since a
             # garbled CQ is exactly what tends to fail it.
             if self._df and _DF_CQ_EVIDENCE.search(raw):
@@ -2765,13 +2769,17 @@ class _ItilaScanner:
                 look = self._df_first_look and unidentified and probe and not cq_recent
             if df_iq is not None and go:
                 first_look = self._df_mode == 'cq' and look
+                # priority: recent CQ evidence > a bin's first window >
+                # periodic probe; ties by SNR
+                cls = 2 if (self._df_mode == 'cq' and cq_recent) else (1 if win == 0 else 0)
+                toks = ' '.join(win_raw).split()
+                noise = (sum(1 for t in toks if len(t) <= 2) / len(toks)) if toks else 1.0
+                job = (f_hz, win, cls, st.get('snr', 0.0),
+                       min(win_costs) if win_costs else -1.0, noise, len(' '.join(win_raw)))
                 if self._df_budget > 0:
-                    # priority: recent CQ evidence > a bin's first window >
-                    # periodic probe; ties by SNR
-                    cls = 2 if (self._df_mode == 'cq' and cq_recent) else (1 if win == 0 else 0)
-                    self._df_cands.append(((cls, st.get('snr', 0.0)), f_hz, df_iq, first_look))
+                    self._df_cands.append(((cls, st.get('snr', 0.0)), job, df_iq, first_look))
                 else:
-                    self._df.submit(f_hz, df_iq, first_look=first_look)
+                    self._df.submit(job, df_iq, first_look=first_look)
                     self._df_submitted += 1
                     self._df_looks += first_look
             st['df_win'] = win + 1
@@ -2870,14 +2878,23 @@ class _ItilaScanner:
         self._df_tokens = min(self._df_tokens + self._df_budget * dt / 60.0, self._df_budget)
         cands, self._df_cands = self._df_cands, []
         cands.sort(key=lambda c: c[0], reverse=True)
-        for _pri, f_hz, iq, first_look in cands:
+        for _pri, job, iq, first_look in cands:
             if self._df_tokens >= 1.0:
                 self._df_tokens -= 1.0
-                self._df.submit(f_hz, iq, first_look=first_look)
+                self._df.submit(job, iq, first_look=first_look)
                 self._df_submitted += 1
                 self._df_looks += first_look
             else:
                 self._df_over_budget += 1
+
+    def _log_job(self, job, text, spot):
+        """One line per second-pass job, for finding what predicts a win:
+        window, priority class, SNR, ITILA's best cost and short-token share
+        for that window, ITILA text length, decoder text length, spot."""
+        f_hz, win, cls, snr, cost, noise, ilen = job
+        log.info("SECONDPASS job f=%.1f win=%d cls=%d snr=%.1f itila_cost=%.2f "
+                 "itila_noise=%.2f itila_len=%d df_len=%d spot=%s",
+                 f_hz / 1000.0, win, cls, snr, cost, noise, ilen, len(text or ''), spot or '-')
 
     def _apply_second_pass(self):
         """Apply finished second-pass decodes (runs on the scanner's thread).
@@ -2889,12 +2906,14 @@ class _ItilaScanner:
             self._df_select()
         done = self._df.flush() if self._df_sync else self._df.drain()
         now = time.time()
-        for f_hz, text, err in done:
+        for job, text, err in done:
+            f_hz = job[0]
             if err:
                 log.warning("second_pass error %.1f kHz: %s", f_hz / 1000.0, err)
                 continue
             st = self._bins.get(f_hz)
             if st is None or not text:
+                self._log_job(job, text, '')
                 continue            # bin evicted while decoding, or squelched
             f_khz = f_hz / 1000.0
             log.info("%s raw %.1f kHz: %r", self._df_tag, f_khz, text[:400])
@@ -2906,11 +2925,14 @@ class _ItilaScanner:
             call = _itila_extract_cq_call(text, self.valid_calls)
             if not call and now - st.get('df_last_cq', 0.0) < 120.0:
                 call = _itila_extract_cq_call(st['df_buf'], self.valid_calls)
+            emitted = ''
             if call and call not in st['spotted']:
                 st['spotted'].add(call)
                 _emit_intent(st, f_khz, call, st['wpm'], is_runner=True,
                              raw_text=self._df_tag + ': ' + text)
                 log.info("%s scan %.1f kHz: %s (raw: %s)", self._df_tag, f_khz, call, text[:60])
+                emitted = call
+            self._log_job(job, text, emitted)
 
     def collect(self):
         """Returns list of SpotIntent records, one per ready window-extraction.
