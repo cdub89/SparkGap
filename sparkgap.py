@@ -1975,7 +1975,7 @@ class _ItilaSc:
     def __init__(self, lib, handle):
         self._lib = lib
         self._h   = handle
-        self._max_bins = 128
+        self._max_bins = 512  # SC_MAX_BINS; 128 hid bins from decode (FX1, cdub89/SparkGap#8)
 
     def feed_iq(self, i_arr, q_arr):
         import ctypes as _ct
