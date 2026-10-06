@@ -26,3 +26,22 @@ def test_handle_prefix_of_another_handle_does_not_match() -> None:
 
 def test_no_handle_frees_nothing() -> None:
     assert owned_objects(STATUS, "") == (set(), set())
+
+
+def test_cmd_returns_at_its_own_reply() -> None:
+    import socket
+    import time
+
+    from flex_iq import FlexIQReceiver
+
+    rx = FlexIQReceiver("127.0.0.1", freq_hz=7_030_000, sample_rate=96_000)
+    ours, radio = socket.socketpair()
+    rx._tcp = ours
+    radio.sendall(b"S1|slice 0 in_use=1\nR0|0|\nR1|0|7\nS1|display pan 0x40000000\n")
+    t0 = time.time()
+    lines = rx._cmd("slice create", timeout=2.0)
+    assert time.time() - t0 < 0.5
+    assert lines[-1] == "R1|0|7"
+    assert rx._cmd("sub pan all", timeout=0.3, settle=0.1)[-1] == "S1|display pan 0x40000000"
+    ours.close()
+    radio.close()
