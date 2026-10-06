@@ -2543,6 +2543,7 @@ class _ItilaScanner:
                 lib.itila_sc_enable_iq_capture(self._sc._h, int(sp.get('max_bins', 50)))
                 self._df_mode = sp.get('mode', 'cq')
                 self._df_probe = int(sp.get('probe_every', 5))   # cq mode; 0 = no probes
+                self._df_first_look = bool(sp.get('probe_first_look', False))  # measured: loses gains
                 self._df_sync = bool(sp.get('sync', False))
                 self._df_n_iq = self._window_samples * 5   # 1 kHz IQ per 200 Hz env sample
                 self._df_submitted = 0
@@ -2730,17 +2731,20 @@ class _ItilaScanner:
                 go = True
             elif self._df_mode == 'rescue':
                 go = unidentified
-            else:   # 'cq': full decode where ITILA or DeepFist saw CQ recently;
-                    # otherwise a cheap first look (one 15 s chunk, the most
-                    # keyed) on a bin's first window and every probe_every
-                    # windows.  The first look is where most gains come from:
-                    # ITILA's text on the bins DeepFist rescues rarely shows a
-                    # usable CQ, so DeepFist has to find it (dropping the
-                    # window-0 probe cost K1GU and most confirmed spots on B1).
+            else:   # 'cq': full decode where ITILA or DeepFist saw CQ recently,
+                    # plus a probe on a bin's first window and every
+                    # probe_every windows.  Measured (B1/DK3QN, 2026-10-06):
+                    # the gains come from the FULL first-window decode -- ITILA's
+                    # text on rescued bins rarely shows a usable CQ, and DeepFist
+                    # reads CQ + call within that one window (bins are often
+                    # short-lived).  Dropping the window-0 probe or making it a
+                    # one-chunk "first look" (probe_first_look) both lost K1GU
+                    # and most confirmed spots.  Cost control belongs in which
+                    # and how many bins get it (budget), not in sampling.
                 cq_recent = win - st.get('df_cq_win', -10**9) <= DF_CQ_LOOKBACK
                 probe = self._df_probe > 0 and win % self._df_probe == 0
                 go = unidentified and (cq_recent or probe)
-                look = unidentified and probe and not cq_recent
+                look = self._df_first_look and unidentified and probe and not cq_recent
             if df_iq is not None and go:
                 first_look = self._df_mode == 'cq' and look
                 self._df.submit(f_hz, df_iq, first_look=first_look)
