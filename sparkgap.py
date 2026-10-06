@@ -2427,6 +2427,20 @@ DF_SELECT_SEC = 5.0     # budget: rank candidates gathered over this much audio,
 _DF_CQ_EVIDENCE = re.compile(r'CQ|TEST|CWT|SST|MST|QRZ')
 
 
+def _df_priority(job):
+    """Rank second-pass candidates under a budget. Fitted on B1 + DK3QN job
+    logs (2026-10-06): a win is likelier with CQ evidence (class), with more
+    ITILA text (a keyed signal is there), with SNR; it is unlikely when
+    ITILA decoded cleanly (cost < 0.06) but still found no call, or when
+    ITILA's text is nearly all 1-2 char noise tokens. At 75% of jobs this
+    kept 47/48 (B1) and 18/18 (DK3QN) winning jobs vs 42 and 16 for
+    (class, SNR)."""
+    _f, _win, cls, snr, cost, noise, ilen = job
+    return (cls + float(np.log1p(ilen)) + 0.05 * snr
+            - (1.0 if 0.0 <= cost < 0.06 else 0.0)
+            - (0.5 if noise > 0.79 else 0.0))
+
+
 class _ItilaScanner:
     """Band-wide ITILA channelizer — thin Python wrapper over libitila_scanner.so.
 
@@ -2546,6 +2560,7 @@ class _ItilaScanner:
                 self._df_mode = sp.get('mode', 'cq')
                 self._df_probe = int(sp.get('probe_every', 5))   # cq mode; 0 = no probes
                 self._df_first_look = bool(sp.get('probe_first_look', False))  # measured: loses gains
+                self._df_min_ilen = int(sp.get('min_itila_len', 0))  # prefilter, 0 = off
                 self._df_sync = bool(sp.get('sync', False))
                 self._df_n_iq = self._window_samples * 5   # 1 kHz IQ per 200 Hz env sample
                 self._df_submitted = 0
@@ -2768,16 +2783,21 @@ class _ItilaScanner:
                 go = unidentified and (cq_recent or probe)
                 look = self._df_first_look and unidentified and probe and not cq_recent
             if df_iq is not None and go:
-                first_look = self._df_mode == 'cq' and look
-                # priority: recent CQ evidence > a bin's first window >
-                # periodic probe; ties by SNR
                 cls = 2 if (self._df_mode == 'cq' and cq_recent) else (1 if win == 0 else 0)
                 toks = ' '.join(win_raw).split()
                 noise = (sum(1 for t in toks if len(t) <= 2) / len(toks)) if toks else 1.0
-                job = (f_hz, win, cls, st.get('snr', 0.0),
-                       min(win_costs) if win_costs else -1.0, noise, len(' '.join(win_raw)))
+                ilen = len(' '.join(win_raw))
+                cost = min(win_costs) if win_costs else -1.0
+                job = (f_hz, win, cls, st.get('snr', 0.0), cost, noise, ilen)
+                # Optional prefilter: ITILA heard almost nothing and no CQ
+                # evidence -> DeepFist rarely wins (B1/DK3QN job logs: bottom
+                # third by ITILA text length = ~2% win rate vs ~10-21% top).
+                if cls < 2 and ilen < self._df_min_ilen:
+                    go = False
+            if df_iq is not None and go:
+                first_look = self._df_mode == 'cq' and look
                 if self._df_budget > 0:
-                    self._df_cands.append(((cls, st.get('snr', 0.0)), job, df_iq, first_look))
+                    self._df_cands.append((_df_priority(job), job, df_iq, first_look))
                 else:
                     self._df.submit(job, df_iq, first_look=first_look)
                     self._df_submitted += 1

@@ -98,6 +98,18 @@ def test_deepfist_registered_and_compat_check():
         raise AssertionError('different preprocessing must be refused')
 
 
+def test_df_priority_ranking():
+    """Budget ranking fitted on B1/DK3QN job logs: CQ evidence first, more
+    ITILA text better, clean-ITILA-no-call and pure-noise windows demoted."""
+    import sparkgap as sg
+    job = lambda cls, snr=15.0, cost=0.3, noise=0.6, ilen=100: (7030000.0, 0, cls, snr, cost, noise, ilen)
+    assert sg._df_priority(job(2)) > sg._df_priority(job(1))           # CQ evidence first
+    assert sg._df_priority(job(1, ilen=150)) > sg._df_priority(job(1, ilen=10))
+    assert sg._df_priority(job(1, cost=0.01)) < sg._df_priority(job(1, cost=0.3))   # clean ITILA, no call
+    assert sg._df_priority(job(1, noise=0.9)) < sg._df_priority(job(1, noise=0.5))
+    assert sg._df_priority(job(1, cost=-1.0, ilen=0)) < sg._df_priority(job(1))      # no ITILA text
+
+
 if __name__ == '__main__':
     fns = [v for k, v in sorted(globals().items()) if k.startswith('test_') and callable(v)]
     ok = 0
