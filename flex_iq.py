@@ -159,12 +159,23 @@ class FlexIQReceiver:
                 break
             lines.append(line)
             if line.startswith(f"R{seq}|"):
-                if not line.startswith(f"R{seq}|0|"):
-                    log.warning("[Flex] %s -> %s", cmd, line[:120])
                 break
         if settle:
             lines += self._drain(settle)
         return lines
+
+    def _report(self, what, resp):
+        """Log OK or FAILED (with the radio's error code) for the last command."""
+        reply = next((l for l in resp if l.startswith(f"R{self._seq}|")), None)
+        if reply is None:
+            log.warning("[Flex] FAILED %s: no reply from the radio", what)
+            return False
+        code = reply.split('|')[1]
+        if code == '0':
+            log.info("[Flex] OK %s", what)
+            return True
+        log.warning("[Flex] FAILED %s: radio error %s", what, code)
+        return False
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -178,27 +189,37 @@ class FlexIQReceiver:
         # Consume initial handshake (version, handle, status flood)
         hello = self._drain(3)
         handle = next((l[1:].strip().upper() for l in hello if l.startswith('H')), '')
-        log.info("[Flex] Client handle 0x%s", handle)
+        version = next((l[1:].strip() for l in hello if l.startswith('V')), '?')
+        log.info("[Flex] Connected to %s, API %s, client handle 0x%s", self.ip, version, handle)
 
         # Same order FlexLib uses: program, then gui, then station name.  The
         # name is sent right behind "client gui" without waiting for its reply,
         # so other clients (SmartSDR, SmartStreamer4) see a nameless station
         # for only as long as the radio takes to read the next line.
         # "client gui" is required for pan and DAX-IQ creation (AetherSDR).
-        # Name before gui: the radio creates the default pan the instant this
-        # becomes a GUI client, and other clients (SmartStreamer4) label it with
-        # whatever name the client has at that moment.  Sent again after gui in
-        # case the radio ignores a station name on a non-GUI client.
-        self._cmd(f"client program {STATION_NAME}")
-        early = self._cmd(f"client station {STATION_NAME}")
-        log.info("[Flex] Station name before gui: %s", early[-1][:60] if early else "no reply")
+        # (A station name sent before "client gui" is refused: R|500000AA.)
+        resp = self._cmd(f"client program {STATION_NAME}")
+        if any(l.startswith(f"R{self._seq}|10000002|") for l in resp):
+            # Not a FlexRadio program name; the radio still records it.
+            log.info("[Flex] OK program name %s (radio notes it as an unknown program)", STATION_NAME)
+        else:
+            self._report("program name " + STATION_NAME, resp)
         self._send(f"client gui {str(uuid.uuid4()).upper()}")
-        self._cmd(f"client station {STATION_NAME}")
-        self._cmd(f"client udpport {self.udp_port}")
+        self._report("station name " + STATION_NAME, self._cmd(f"client station {STATION_NAME}"))
+        self._report(f"UDP port {self.udp_port} for DAX-IQ", self._cmd(f"client udpport {self.udp_port}"))
 
         # The radio gives a new GUI client a default pan with a band-default
         # slice (on a 6600: 14.100 MHz, and a further slice on any pan it
         # creates).  Reuse that pan and slice instead of removing and creating.
+        clients = self._cmd("sub client all", settle=0.5)
+        for m in re.finditer(r'\|client (0x[0-9A-F]+) connected.*?program=(\S*).*?station=(\S*)',
+                             '\n'.join(clients), re.I):
+            name = m.group(3).replace('\x7f', ' ')
+            if m.group(1).upper() == '0X' + handle:
+                log.info("[Flex] Radio lists this client as station '%s' (program %s)", name, m.group(2))
+            else:
+                log.info("[Flex] Other station on the radio: '%s' (program %s, client %s)",
+                         name, m.group(2), m.group(1))
         status = self._cmd("sub pan all", settle=0.5) + self._cmd("sub slice all", settle=0.5)
         slices, pans = owned_objects(status, handle)
         if not pans:
@@ -220,16 +241,20 @@ class FlexIQReceiver:
                 raise RuntimeError("[Flex] No free panadapter on the radio; close one in SmartSDR or on the front panel")
             log.info("[Flex] Pan created: 0x%08x", self._pan_id)
             slices, _ = owned_objects(self._cmd("sub slice all", settle=0.5), handle)
-        self._cmd(f"display pan set 0x{self._pan_id:08x} "
-                  f"center={self.freq_mhz:.6f} bandwidth={bw_mhz:.6f}")
+        self._report(f"pan 0x{self._pan_id:08x} center {self.freq_mhz:.6f} MHz, bandwidth {bw_mhz:.3f} MHz",
+                     self._cmd(f"display pan set 0x{self._pan_id:08x} "
+                               f"center={self.freq_mhz:.6f} bandwidth={bw_mhz:.6f}"))
 
         # One slice keeps the RF path live (without one the Flex streams zeros).
         # dax=0: the default slice comes with a DAX audio channel; we need none.
         self._slice_id = min(slices) if slices else None
         if self._slice_id is not None:
-            self._cmd(f"slice tune {self._slice_id} {self.freq_mhz:.6f}")
-            self._cmd(f"slice set {self._slice_id} mode=CW")     # one field per command,
-            self._cmd(f"slice set {self._slice_id} dax=0")       # as FlexLib sends them
+            self._report(f"slice {self._slice_id} tuned to {self.freq_mhz:.6f} MHz",
+                         self._cmd(f"slice tune {self._slice_id} {self.freq_mhz:.6f}"))
+            self._report(f"slice {self._slice_id} mode CW",          # one field per command,
+                         self._cmd(f"slice set {self._slice_id} mode=CW"))   # as FlexLib sends them
+            self._report(f"slice {self._slice_id} DAX audio off",
+                         self._cmd(f"slice set {self._slice_id} dax=0"))
             log.info("[Flex] Using the radio's default slice %d at %.6f MHz",
                      self._slice_id, self.freq_mhz)
         else:
@@ -256,7 +281,8 @@ class FlexIQReceiver:
         log.info("[Flex] DAX-IQ stream: 0x%08x", self._stream_id)
 
         # Bind DAX-IQ to the panadapter — THE critical step
-        self._cmd(f"display pan set 0x{self._pan_id:08x} daxiq_channel={self.channel}")
+        self._report(f"DAX-IQ channel {self.channel} bound to pan 0x{self._pan_id:08x}",
+                     self._cmd(f"display pan set 0x{self._pan_id:08x} daxiq_channel={self.channel}"))
 
         # Set sample rate after binding; newer firmware rejects it on an unbound stream
         resp = self._cmd(f"stream set 0x{self._stream_id:08x} "
@@ -273,18 +299,25 @@ class FlexIQReceiver:
         self._running = True
         log.info("[Flex] DAX-IQ streaming at %d Hz on UDP port %d",
                  self.sample_rate, self.udp_port)
+        log.info("[Flex] Ready: station %s (client 0x%s), pan 0x%08x at %.6f MHz x %.3f MHz, "
+                 "slice %s CW, DAX-IQ channel %d stream 0x%08x at %d Hz to UDP %d",
+                 STATION_NAME, handle, self._pan_id, self.freq_mhz, bw_mhz, self._slice_id,
+                 self.channel, self._stream_id, self.sample_rate, self.udp_port)
 
     def stop(self):
         self._running = False
         try:
             if self._stream_id:
-                self._cmd(f"stream remove 0x{self._stream_id:08x}", timeout=1)
+                self._report(f"DAX-IQ stream 0x{self._stream_id:08x} removed",
+                             self._cmd(f"stream remove 0x{self._stream_id:08x}", timeout=1))
             if self._slice_id is not None:
-                self._cmd(f"slice remove {self._slice_id}", timeout=1)
+                self._report(f"slice {self._slice_id} removed",
+                             self._cmd(f"slice remove {self._slice_id}", timeout=1))
             if self._pan_id:
-                self._cmd(f"display pan remove 0x{self._pan_id:08x}", timeout=1)
+                self._report(f"pan 0x{self._pan_id:08x} removed",
+                             self._cmd(f"display pan remove 0x{self._pan_id:08x}", timeout=1))
         except Exception:
-            pass
+            log.exception("[Flex] Cleanup on stop failed")
         if self._tcp:
             try:
                 self._tcp.close()
@@ -317,6 +350,8 @@ class FlexIQReceiver:
         pkt_count = 0
         lost = 0
         last_report = start
+        other_streams = 0
+        warned = False
 
         # Flex v1.4+ sends payload_endian=little. Confirmed empirically:
         # big-endian parses as all zeros, little-endian gives real RF values.
@@ -327,6 +362,12 @@ class FlexIQReceiver:
             if duration and (time.time() - start) >= duration:
                 break
 
+            if not pkt_count and not warned and time.time() - start > 10:
+                warned = True
+                log.warning("[Flex] No DAX-IQ packets after 10 s (%d for other streams): check that "
+                            "UDP port %d reaches this machine (WSL mirrored networking, firewall) "
+                            "and that DAX-IQ channel %d is bound to the pan",
+                            other_streams, self.udp_port, self.channel)
             ready = select.select([self._udp], [], [], 0.1)
             if not ready[0]:
                 continue
@@ -345,6 +386,7 @@ class FlexIQReceiver:
 
             # Filter: only process our DAX-IQ stream
             if self._stream_id and stream_id != self._stream_id:
+                other_streams += 1
                 continue
 
             # Check packet size matches DAX-IQ
@@ -374,6 +416,9 @@ class FlexIQReceiver:
                         for i, q in zip(samples[0::2], samples[1::2])]
             callback(0, iq_pairs)
 
+            if not pkt_count:
+                log.info("[Flex] OK first DAX-IQ packet after %.1f s (%d samples, stream 0x%08x)",
+                         time.time() - start, n_samples, stream_id)
             pkt_count += 1
             now = time.time()
             if now - last_report >= 30:
