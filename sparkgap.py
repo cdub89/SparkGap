@@ -1600,16 +1600,23 @@ def _itila_extract_cq_call(text, valid_calls=None):
 _itila_lib = None
 _ITILA_LIBS = {'itila': './libitila.so', 'itila2': './libitila2.so'}
 _itila_lib_path = _ITILA_LIBS['itila']
+# Each decoder runs with its own scanner: itila with itila_scanner.c, itila2 with itila2_scanner.c.
+_SCANNER_LIBS = {'itila': './libitila_scanner.so', 'itila2': './libitila2_scanner.so'}
+_scanner_lib_path = _SCANNER_LIBS['itila']
+_scanner_loaded = False
 
 def _select_cw_decoder(name):
-    """Choose the library _get_itila_lib opens (config key cw_decoder)."""
-    global _itila_lib_path
+    """Choose the decoder and scanner libraries (config key cw_decoder)."""
+    global _itila_lib_path, _scanner_lib_path
     if name not in _ITILA_LIBS:
         raise ValueError("cw_decoder must be one of %s, got %r" % (sorted(_ITILA_LIBS), name))
     if _itila_lib and _itila_lib_path != _ITILA_LIBS[name]:
         raise RuntimeError("cw_decoder cannot change after %s is loaded" % _itila_lib_path)
+    if _scanner_loaded and _scanner_lib_path != _SCANNER_LIBS[name]:
+        raise RuntimeError("cw_decoder cannot change after %s is loaded" % _scanner_lib_path)
     _itila_lib_path = _ITILA_LIBS[name]
-    log.info("CW decoder: %s (%s)", name, _itila_lib_path)
+    _scanner_lib_path = _SCANNER_LIBS[name]
+    log.info("CW decoder: %s (%s, %s)", name, _itila_lib_path, _scanner_lib_path)
     return _itila_lib_path
 
 def _get_itila_lib():
@@ -2041,8 +2048,10 @@ def _get_itila_scanner(sample_rate, center_hz, max_bins, min_snr,
                         band_min_hz, band_max_hz,
                         sos100, sos200):
     import ctypes as _ct
+    global _scanner_loaded
     try:
-        lib = _ct.CDLL('./libitila_scanner.so')
+        lib = _ct.CDLL(_scanner_lib_path)
+        _scanner_loaded = True
         lib.itila_sc_create.restype  = _ct.c_void_p
         lib.itila_sc_create.argtypes = [
             _ct.c_int, _ct.c_double, _ct.c_int, _ct.c_double,
@@ -2118,11 +2127,11 @@ def _get_itila_scanner(sample_rate, center_hz, max_bins, min_snr,
         if not h:
             log.warning("itila_sc_create returned NULL")
             return None
-        log.info("Loaded libitila_scanner.so (sr=%d center=%.0f Hz bins=%d)",
+        log.info("Loaded %s (sr=%d center=%.0f Hz bins=%d)", _scanner_lib_path,
                  sample_rate, center_hz, max_bins)
         return _ItilaSc(lib, _ct.c_void_p(h))
     except OSError:
-        log.warning("libitila_scanner.so not found")
+        log.warning("%s not found", _scanner_lib_path)
         return None
 
 
@@ -2419,6 +2428,33 @@ class _ItilaChannel:
 # _ItilaScanner — band-wide ITILA channelizer (FFT energy scan)
 # ---------------------------------------------------------------------------
 
+# Bin keep-alive for the itila2 scanner (cw_decoder "itila2"): a decode with 3+ word-like
+# tokens marks its bin live. Noise decodes rarely have 3 (cdub89/SparkGap#8: real 91%, noise 4%).
+_LIVE_VOCAB = {"CQ", "DE", "TU", "TNX", "TKS", "UR", "RST", "5NN", "599", "NAME", "OP", "QTH", "WX", "ES", "FB", "73",
+               "GM", "GA", "GE", "HR", "AGN", "BK", "KN", "SK", "TEST", "CWT", "QRL", "QRZ", "PSE", "RIG", "ANT", "PWR",
+               "QST", "HW", "CPY", "CUL", "GL", "OM", "SRI", "QSB", "QRM", "QRN", "POTA", "SOTA", "NR", "MY", "IS",
+               "IN", "TO", "OF", "ON", "AT", "IT"}
+_LIVE_CALL = re.compile(r'^(?:[A-Z]{1,2}|[0-9][A-Z])[0-9]{1,4}[A-Z]{1,6}$')
+_live_words = None
+
+
+def _words_live(raw):
+    global _live_words
+    if _live_words is None:
+        _live_words = set()
+        for p in ('/usr/share/dict/words', '/usr/share/dict/american-english'):
+            if os.path.exists(p):
+                with open(p, errors='replace') as fh:
+                    _live_words = {w.strip().upper() for w in fh if 3 <= len(w.strip()) <= 8 and w.strip().isalpha()}
+                break
+        log.info("itila2 bin keep-alive: %d dictionary words", len(_live_words))
+    n = 0
+    for t in raw.upper().split():
+        if t in _LIVE_VOCAB or t in _live_words or _LIVE_CALL.match(t) or re.fullmatch(r'\d{2,4}', t):
+            n += 1
+    return n >= 3
+
+
 class _ItilaScanner:
     """Band-wide ITILA channelizer — thin Python wrapper over libitila_scanner.so.
 
@@ -2593,6 +2629,8 @@ class _ItilaScanner:
                 continue
             cost = lib.itila_get_last_cost(h)
             log.info("ITILA raw %.1f kHz cost=%.2f: %r", f_khz, cost, raw[:400])
+            if _scanner_lib_path == _SCANNER_LIBS['itila2'] and _words_live(raw):
+                self._sc._lib.itila_sc_mark_evidence(self._sc._h, _ct.c_double(f_hz))
             # Timing-cost gate (off by default).  Drops the whole decode
             # window's call extraction when segmentation quality is too low;
             # logs the suppression with cost so we can tune the threshold
