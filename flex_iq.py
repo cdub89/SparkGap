@@ -222,7 +222,8 @@ class FlexIQReceiver:
         self._slice_id = min(slices) if slices else None
         if self._slice_id is not None:
             self._cmd(f"slice tune {self._slice_id} {self.freq_mhz:.6f}")
-            self._cmd(f"slice set {self._slice_id} mode=CW dax=0")
+            self._cmd(f"slice set {self._slice_id} mode=CW")     # one field per command,
+            self._cmd(f"slice set {self._slice_id} dax=0")       # as FlexLib sends them
             log.info("[Flex] Using the radio's default slice %d at %.6f MHz",
                      self._slice_id, self.freq_mhz)
         else:
