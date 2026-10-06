@@ -2523,10 +2523,11 @@ class _ItilaScanner:
         # plus one probe every probe_every windows (default 5, 0 = off);
         # rescue = every unidentified bin; all = every window.  max_bins caps scanner slots with baseband capture (memory
         # ~0.6 MB each).  Decodes run on a background thread; results are
-        # applied in collect().  Absent / decoder != deepfist -> off.
+        # applied in collect().  No "decoder" -> off.  Decoders plug in via
+        # second_pass.py (registry name or "module:Class").
         self._df = None
         sp = second_pass or {}
-        if (sp.get('decoder') == 'deepfist' and sp.get('mode', 'cq') in ('cq', 'rescue', 'all')
+        if (sp.get('decoder') and sp.get('mode', 'cq') in ('cq', 'rescue', 'all')
                 and self._sc and hasattr(self._sc._lib, 'itila_sc_peek_iq')):
             lib = self._sc._lib
             lib.itila_sc_enable_iq_capture.restype = None
@@ -2535,11 +2536,11 @@ class _ItilaScanner:
             lib.itila_sc_peek_iq.argtypes = [_ct.c_void_p, _ct.c_double,
                                              _ct.POINTER(_ct.c_float), _ct.c_int]
             try:
-                from deepfist_pass import DeepFistWorker
-                self._df = DeepFistWorker(sp.get('model', 'models/deepfist.onnx'),
-                                          threads=int(sp.get('threads', 1)))
+                from second_pass import load_decoder, SecondPassWorker
+                self._df = SecondPassWorker(load_decoder(sp))
             except Exception as e:
-                log.error("second_pass: DeepFist unavailable (%s) -- staying off", e)
+                log.error("second_pass: decoder %r unavailable (%s) -- staying off",
+                          sp.get('decoder'), e)
             if self._df:
                 lib.itila_sc_enable_iq_capture(self._sc._h, int(sp.get('max_bins', 50)))
                 self._df_mode = sp.get('mode', 'cq')
@@ -2559,8 +2560,10 @@ class _ItilaScanner:
                 self._df_tokens = 0.0
                 self._df_cands = []
                 self._df_over_budget = 0
-                log.info("second_pass: DeepFist %s, max_bins=%d, model=%s",
-                         self._df_mode, int(sp.get('max_bins', 50)), sp.get('model'))
+                self._df_tag = self._df.name.upper()
+                log.info("second_pass: %s %s, max_bins=%d, jobs_per_min=%g",
+                         self._df.name, self._df_mode, int(sp.get('max_bins', 50)),
+                         float(sp.get('jobs_per_min', 0)))
 
     def _ensure_bin_handles(self, f_hz):
         """Create itila decoder handles for a C-spawned bin if not yet tracked."""
@@ -2629,7 +2632,7 @@ class _ItilaScanner:
         if not lib or not self._sc:
             return
 
-        # DeepFist experiment: copy this window's baseband before the drain
+        # Second pass: copy this window's baseband before the drain
         # below shifts it out (the C side shifts IQ in lockstep with env).
         df_iq = None
         if self._df:
@@ -2877,9 +2880,9 @@ class _ItilaScanner:
                 self._df_over_budget += 1
 
     def _apply_second_pass(self):
-        """Apply finished DeepFist decodes (runs on the scanner's thread).
+        """Apply finished second-pass decodes (runs on the scanner's thread).
         Same runner-only extraction as ITILA: CQ-adjacent call in this text,
-        else in the bin's DeepFist buffer if it saw CQ in the last 120 s."""
+        else in the bin's second-pass buffer if it saw CQ in the last 120 s."""
         if not self._df:
             return
         if self._df_sync and self._df_budget > 0 and self._df_cands:
@@ -2894,7 +2897,7 @@ class _ItilaScanner:
             if st is None or not text:
                 continue            # bin evicted while decoding, or squelched
             f_khz = f_hz / 1000.0
-            log.info("DEEPFIST raw %.1f kHz: %r", f_khz, text[:400])
+            log.info("%s raw %.1f kHz: %r", self._df_tag, f_khz, text[:400])
             st['df_buf'] = (st.get('df_buf', '') + ' ' + text)[-512:]
             if CQ_PATTERNS.search(text):
                 st['df_last_cq'] = now
@@ -2906,8 +2909,8 @@ class _ItilaScanner:
             if call and call not in st['spotted']:
                 st['spotted'].add(call)
                 _emit_intent(st, f_khz, call, st['wpm'], is_runner=True,
-                             raw_text='DF: ' + text)
-                log.info("DEEPFIST scan %.1f kHz: %s (raw: %s)", f_khz, call, text[:60])
+                             raw_text=self._df_tag + ': ' + text)
+                log.info("%s scan %.1f kHz: %s (raw: %s)", self._df_tag, f_khz, call, text[:60])
 
     def collect(self):
         """Returns list of SpotIntent records, one per ready window-extraction.

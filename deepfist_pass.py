@@ -19,13 +19,12 @@ numerically identical to the originals:
     log1p, global standardise with unbiased std)
   - deepfist/model/decode.py          -> greedy CTC
 
-DeepFistWorker runs decodes on a background thread so a slow window can never
-stall the scanner; results are applied on the caller's thread.
+Implements the second-pass decoder interface in second_pass.py (registered
+as "deepfist"); the background worker, budget and trigger live there and in
+sparkgap.py, not here.
 """
 import json
 import os
-import queue
-import threading
 
 import numpy as np
 from scipy.signal import lfilter, resample_poly, stft
@@ -135,7 +134,15 @@ def check_model_meta(meta):
 
 
 class DeepFistOnnx:
-    def __init__(self, model_path, threads=1):
+    """second_pass decoder "deepfist". Config keys: model (path to the .onnx;
+    its .json sidecar must sit next to it), threads (onnxruntime intra-op)."""
+    name = 'deepfist'
+
+    def __init__(self, cfg, threads=1):
+        if isinstance(cfg, str):            # DeepFistOnnx(path) still works
+            cfg = {'model': cfg, 'threads': threads}
+        model_path = cfg.get('model', 'models/deepfist.onnx')
+        threads = int(cfg.get('threads', 1))
         import onnxruntime as ort
         meta = json.load(open(model_path + '.json'))
         check_model_meta(meta)
@@ -185,50 +192,3 @@ class DeepFistOnnx:
 
     def decode_iq(self, iq_interleaved, first_look=False):
         return self.decode_audio(self.iq_to_audio(iq_interleaved), first_look)
-
-
-class DeepFistWorker:
-    """Background decoder: submit() never blocks (a full queue drops the job and
-    counts it); drain() returns finished (key, text) pairs; flush() waits until
-    everything submitted so far is decoded (file mode)."""
-
-    def __init__(self, model_path, threads=1, max_queue=256):
-        self._df = DeepFistOnnx(model_path, threads)
-        self._jobs = queue.Queue(maxsize=max_queue)
-        self._done = queue.Queue()
-        self.dropped = 0
-        self.decoded = 0
-        threading.Thread(target=self._run, name='deepfist', daemon=True).start()
-
-    def _run(self):
-        while True:
-            key, iq, first_look = self._jobs.get()
-            try:
-                text = self._df.decode_iq(iq, first_look)
-            except Exception as e:      # never kill the worker on one bad window
-                text = ''
-                self._done.put((key, '', repr(e)))
-            else:
-                self._done.put((key, text, None))
-            self.decoded += 1
-            self._jobs.task_done()
-
-    def submit(self, key, iq, first_look=False):
-        try:
-            self._jobs.put_nowait((key, iq, first_look))
-            return True
-        except queue.Full:
-            self.dropped += 1
-            return False
-
-    def drain(self):
-        out = []
-        while True:
-            try:
-                out.append(self._done.get_nowait())
-            except queue.Empty:
-                return out
-
-    def flush(self):
-        self._jobs.join()
-        return self.drain()
