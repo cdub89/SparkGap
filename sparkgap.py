@@ -2158,6 +2158,12 @@ def _get_itila_scanner(sample_rate, center_hz, max_bins, min_snr,
             return None
         log.info("Loaded %s (sr=%d center=%.0f Hz bins=%d)", _scanner_lib_path,
                  sample_rate, center_hz, max_bins)
+        # itila2 scanner only: split its per-bin DSP over the decode threads too
+        if _itila_decode_threads > 1 and hasattr(lib, 'itila_sc_set_threads'):
+            lib.itila_sc_set_threads.restype = _ct.c_int
+            lib.itila_sc_set_threads.argtypes = [_ct.c_void_p, _ct.c_int]
+            n = lib.itila_sc_set_threads(_ct.c_void_p(h), _itila_decode_threads)
+            log.info("ITILA scanner threads: %d", n)
         return _ItilaSc(lib, _ct.c_void_p(h))
     except OSError:
         log.warning("%s not found", _scanner_lib_path)
