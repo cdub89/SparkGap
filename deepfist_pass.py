@@ -165,22 +165,26 @@ class DeepFistOnnx:
         a = np.real(z * np.exp(2j * np.pi * _OUT_PITCH * t))
         return (a / (np.abs(a).max() + 1e-12) * 0.9).astype(np.float32)
 
-    def decode_audio(self, a):
-        """Audio at SR -> text: 15 s windows, keying squelch, conditioner, net, CTC."""
+    def decode_audio(self, a, first_look=False):
+        """Audio at SR -> text: 15 s windows, keying squelch, conditioner, net, CTC.
+        first_look: decode only the single most-keyed window (the squelch score
+        is ~8 ms per window, the net ~135 ms) -- a cheap look at a new bin."""
         win = int(WIN_SEC * SR)
+        segs = [a[i:i + win] for i in range(0, len(a), win)]
+        scored = [(_keying_ratio(seg, SR), seg) for seg in segs if len(seg) >= SR]
+        scored = [(k, seg) for k, seg in scored if k >= _SQUELCH_THRESH]
+        if first_look and scored:
+            scored = [max(scored, key=lambda ks: ks[0])]
         parts = []
-        for i in range(0, len(a), win):
-            seg = a[i:i + win]
-            if len(seg) < SR or _keying_ratio(seg, SR) < _SQUELCH_THRESH:
-                continue
+        for _k, seg in scored:
             spec = _spectrogram(_condition(seg))[None, None]
             text = self._ctc(self._sess.run(None, {self._in: spec})[0])
             if text.strip():
                 parts.append(text)
         return ' '.join(parts)
 
-    def decode_iq(self, iq_interleaved):
-        return self.decode_audio(self.iq_to_audio(iq_interleaved))
+    def decode_iq(self, iq_interleaved, first_look=False):
+        return self.decode_audio(self.iq_to_audio(iq_interleaved), first_look)
 
 
 class DeepFistWorker:
@@ -198,9 +202,9 @@ class DeepFistWorker:
 
     def _run(self):
         while True:
-            key, iq = self._jobs.get()
+            key, iq, first_look = self._jobs.get()
             try:
-                text = self._df.decode_iq(iq)
+                text = self._df.decode_iq(iq, first_look)
             except Exception as e:      # never kill the worker on one bad window
                 text = ''
                 self._done.put((key, '', repr(e)))
@@ -209,9 +213,9 @@ class DeepFistWorker:
             self.decoded += 1
             self._jobs.task_done()
 
-    def submit(self, key, iq):
+    def submit(self, key, iq, first_look=False):
         try:
-            self._jobs.put_nowait((key, iq))
+            self._jobs.put_nowait((key, iq, first_look))
             return True
         except queue.Full:
             self.dropped += 1

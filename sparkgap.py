@@ -2546,6 +2546,7 @@ class _ItilaScanner:
                 self._df_sync = bool(sp.get('sync', False))
                 self._df_n_iq = self._window_samples * 5   # 1 kHz IQ per 200 Hz env sample
                 self._df_submitted = 0
+                self._df_looks = 0
                 log.info("second_pass: DeepFist %s, max_bins=%d, model=%s",
                          self._df_mode, int(sp.get('max_bins', 50)), sp.get('model'))
 
@@ -2729,17 +2730,22 @@ class _ItilaScanner:
                 go = True
             elif self._df_mode == 'rescue':
                 go = unidentified
-            else:   # 'cq': ITILA (or DeepFist) saw CQ here but no call came out,
-                    # plus a periodic probe so ITILA-garbage bins get a look
+            else:   # 'cq': full decode where ITILA or DeepFist saw CQ recently;
+                    # otherwise a cheap first look (one 15 s chunk, the most
+                    # keyed) on a bin's first window and every probe_every
+                    # windows.  The first look is where most gains come from:
+                    # ITILA's text on the bins DeepFist rescues rarely shows a
+                    # usable CQ, so DeepFist has to find it (dropping the
+                    # window-0 probe cost K1GU and most confirmed spots on B1).
                 cq_recent = win - st.get('df_cq_win', -10**9) <= DF_CQ_LOOKBACK
-                # no probe on a bin's first window: bins churn constantly at
-                # contest density (821 spawns in 15 min of B1), and a bin with
-                # CQ evidence there qualifies via cq_recent anyway
-                probe = self._df_probe > 0 and win > 0 and win % self._df_probe == 0
+                probe = self._df_probe > 0 and win % self._df_probe == 0
                 go = unidentified and (cq_recent or probe)
+                look = unidentified and probe and not cq_recent
             if df_iq is not None and go:
-                self._df.submit(f_hz, df_iq)
+                first_look = self._df_mode == 'cq' and look
+                self._df.submit(f_hz, df_iq, first_look=first_look)
                 self._df_submitted += 1
+                self._df_looks += first_look
             st['df_win'] = win + 1
 
     def _process_ready_c(self):
@@ -2892,8 +2898,8 @@ class _ItilaScanner:
 
     def kill(self):
         if self._df:
-            log.info("second_pass stats: submitted=%d decoded=%d dropped=%d",
-                     self._df_submitted, self._df.decoded, self._df.dropped)
+            log.info("second_pass stats: submitted=%d (first looks %d) decoded=%d dropped=%d",
+                     self._df_submitted, self._df_looks, self._df.decoded, self._df.dropped)
         for f_hz in list(self._bins.keys()):
             self._free_bin_handles(f_hz)
         if self._sc:
