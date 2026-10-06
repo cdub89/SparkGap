@@ -158,3 +158,59 @@ def test_tracker_drops_blacklisted_and_overspeed() -> None:
     assert tracker.process_intent(window(2, "CQ K0TQ")) == []
     assert tracker.process_intent(window(3, "CQ W1AW", wpm=55)) == []
     assert tracker.process_intent(window(4, "CQ W1AW", wpm=55)) == []
+
+
+def test_truncated_call_counts_toward_the_full_call() -> None:
+    r = _rule()
+    for k in range(3):
+        r.feed(r.window_id(1, k, k * 60.0), 14040.5, "KM7EJE KM7EJE", k * 60.0)
+    assert r.feed(r.window_id(1, 3, 180.0), 14040.5, "CQ POTA DE KM7E", 180.0) == []
+    spots = r.feed(r.window_id(1, 4, 240.0), 14040.5, "CQ POTA DE KM7E", 240.0)
+    assert spots == [("KM7EJE", 14040.5)]
+
+
+def test_truncated_call_waits_while_a_longer_call_is_heard() -> None:
+    r = RepeatSpotRule(lambda c: 4 if c == "WB0RTA" else 2)
+    r.feed(r.window_id(1, 0, 0.0), 14013.4, "WB1RTA WB0RTA", 0.0)
+    for k in range(1, 4):
+        assert r.feed(r.window_id(1, k, k * 60.0), 14013.4, "CQ CQ DE WB0R", k * 60.0) == []
+
+
+def test_glued_prosign_is_not_a_longer_call() -> None:
+    r = _rule()
+    for k in range(4):
+        r.feed(r.window_id(1, k, k * 60.0), 14069.2, "AB0CDKN", k * 60.0)
+    r.feed(r.window_id(1, 4, 240.0), 14069.2, "CQ AB0CD", 240.0)
+    assert r.feed(r.window_id(1, 5, 300.0), 14069.2, "CQ AB0CD", 300.0) == [("AB0CD", 14069.2)]
+
+
+def test_stale_neighbour_does_not_take_a_new_runner() -> None:
+    r = _rule()
+    for k in range(4):
+        r.feed(r.window_id(1, k, k * 60.0), 14030.0, "CQ K1AB", k * 60.0)
+    assert r.feed(r.window_id(2, 0, 700.0), 14030.0, "CQ K1AA", 700.0) == []
+    assert r.feed(r.window_id(2, 1, 760.0), 14030.0, "CQ K1AA", 760.0) == [("K1AA", 14030.0)]
+
+
+def test_short_call_heard_more_than_the_longer_one_is_not_merged() -> None:
+    r = _rule()
+    for k in range(2):
+        r.feed(r.window_id(1, k, k * 60.0), 14030.0, "K4NAX 5NN", k * 60.0)
+    for k in range(2, 6):
+        r.feed(r.window_id(1, k, k * 60.0), 14030.0, "K4N K4N", k * 60.0)
+    assert r._dominant("K4N") is None
+
+
+def test_noise_and_prosign_extensions_are_not_longer_calls() -> None:
+    r = _rule()
+    for k, text in enumerate(("AB0CDBT", "AB0CDAS", "AB0CDEE", "AB0CDEE")):
+        r.feed(r.window_id(1, k, k * 60.0), 14069.2, text, k * 60.0)
+    assert r._longer("AB0CD") == set()
+
+
+def test_equal_longer_candidates_resolve_by_call() -> None:
+    r = _rule()
+    for k in range(3):
+        r.feed(r.window_id(1, k, k * 60.0), 14030.0, "K4NAX K4NZZ", k * 60.0)
+    r.feed(r.window_id(1, 3, 180.0), 14030.0, "CQ K4N", 180.0)
+    assert r._dominant("K4N") == "K4NAX"
