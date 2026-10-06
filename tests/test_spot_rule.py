@@ -56,6 +56,15 @@ def test_call_not_in_scp_spots_on_repeats() -> None:
     assert r.feed(r.window_id(1, 1, 60.0), 14030.0, "CQ K9ZZZ", 60.0) == [("K9ZZZ", 14030.0)]
 
 
+def test_call_not_in_scp_needs_keyword_and_its_tier() -> None:
+    r = RepeatSpotRule(lambda _: 3)
+    for k in range(4):
+        assert r.feed(r.window_id(1, k, k * 60.0), 14030.0, "DE K9ZZZ K9ZZZ", k * 60.0) == []
+    assert r.feed(r.window_id(1, 4, 240.0), 14030.0, "CQ K9ZZZ", 240.0) == []
+    assert r.feed(r.window_id(1, 5, 300.0), 14030.0, "CQ K9ZZZ", 300.0) == []
+    assert r.feed(r.window_id(1, 6, 360.0), 14030.0, "CQ K9ZZZ", 360.0) == [("K9ZZZ", 14030.0)]
+
+
 def test_one_spot_per_hold_unless_moved() -> None:
     r = _rule()
     r.feed(r.window_id(1, 0, 0.0), 14030.0, "CQ K0TQ", 0.0)
