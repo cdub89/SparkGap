@@ -45,3 +45,13 @@ def test_cmd_returns_at_its_own_reply() -> None:
     assert rx._cmd("sub pan all", timeout=0.3, settle=0.1)[-1] == "S1|display pan 0x40000000"
     ours.close()
     radio.close()
+
+
+def test_slice_pans_maps_own_slices_to_their_pan() -> None:
+    from flex_iq import slice_pans
+
+    lines = [
+        "S1|slice 1 in_use=1 pan=0x40000001 client_handle=0x3CBB9746 RF_frequency=14.1",
+        "S1|slice 0 in_use=1 pan=0x40000000 client_handle=0x1A2B3C4D RF_frequency=7.053",
+    ]
+    assert slice_pans(lines, "3CBB9746") == {1: "0x40000001"}

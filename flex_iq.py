@@ -61,6 +61,17 @@ def owned_objects(lines, handle):
     return slices, pans
 
 
+def slice_pans(lines, handle):
+    """Owned slice number -> the pan it sits on, from slice status lines."""
+    out = {}
+    own = re.compile(r'client_handle=0x' + re.escape(handle) + r'\b', re.I) if handle else None
+    for line in lines:
+        m = re.search(r'\|slice (\d+) .*\bpan=(0x[0-9A-F]+)', line, re.I)
+        if m and own and own.search(line) and 'in_use=0' not in line:
+            out[int(m.group(1))] = m.group(2).lower()
+    return out
+
+
 class FlexIQReceiver:
     """DAX-IQ receiver for a FlexRadio 6000/8000 series.
 
@@ -169,12 +180,13 @@ class FlexIQReceiver:
         handle = next((l[1:].strip().upper() for l in hello if l.startswith('H')), '')
         log.info("[Flex] Client handle 0x%s", handle)
 
-        # Same order FlexLib uses: program, then gui, then station name at once,
-        # so other clients (SmartSDR, SmartStreamer4) never see a nameless or
-        # SmartSDR-named station.  "client gui" is required for pan and DAX-IQ
-        # creation (AetherSDR showed this for headless operation).
+        # Same order FlexLib uses: program, then gui, then station name.  The
+        # name is sent right behind "client gui" without waiting for its reply,
+        # so other clients (SmartSDR, SmartStreamer4) see a nameless station
+        # for only as long as the radio takes to read the next line.
+        # "client gui" is required for pan and DAX-IQ creation (AetherSDR).
         self._cmd(f"client program {STATION_NAME}")
-        self._cmd(f"client gui {str(uuid.uuid4()).upper()}")
+        self._send(f"client gui {str(uuid.uuid4()).upper()}")
         self._cmd(f"client station {STATION_NAME}")
         self._cmd(f"client udpport {self.udp_port}")
 
@@ -183,9 +195,17 @@ class FlexIQReceiver:
         # creates).  Reuse that pan and slice instead of removing and creating.
         status = self._cmd("sub pan all", settle=0.5) + self._cmd("sub slice all", settle=0.5)
         slices, pans = owned_objects(status, handle)
+        if not pans:
+            status += self._drain(1.0)     # the default pan's status can lag
+            slices, pans = owned_objects(status, handle)
         bw_mhz = self.sample_rate / 1e6
         if pans:
-            self._pan_id = int(sorted(pans)[0], 16)
+            on_pan = slice_pans(status, handle)
+            keep = next((p for p in sorted(pans) if p.lower() in on_pan.values()), sorted(pans)[0])
+            self._pan_id = int(keep, 16)
+            slices = {n for n, p in on_pan.items() if p == keep.lower()} or slices
+            for p in sorted(pans - {keep}):
+                self._cmd(f"display pan remove {p}")
             log.info("[Flex] Using the radio's default pan 0x%08x", self._pan_id)
         else:
             resp = self._cmd("display pan create x=1 y=1")
@@ -214,7 +234,8 @@ class FlexIQReceiver:
                 log.warning("[Flex] Slice create reply not understood: %s", resp[-3:])
             else:
                 log.info("[Flex] Slice created: %d", self._slice_id)
-        extra = set(slices) - {self._slice_id} if self._slice_id is not None else set()
+        all_slices, _ = owned_objects(self._cmd("sub slice all", settle=0.3), handle)
+        extra = all_slices - {self._slice_id} if self._slice_id is not None else set()
         for n in sorted(extra):
             self._cmd(f"slice remove {n}")
         if extra:
@@ -357,9 +378,9 @@ class FlexIQReceiver:
     # -- helpers -------------------------------------------------------------
 
     def _parse_hex_response(self, lines):
-        """Extract hex ID from an R<seq>|0|<hex_id> response."""
+        """Extract hex ID from the R<seq>|0|<hex_id> reply to the last command."""
         for line in lines:
-            if not line.startswith('R'):
+            if not line.startswith(f"R{self._seq}|"):
                 continue
             parts = line.split('|')
             if len(parts) >= 3 and parts[1] == '0' and parts[2].strip():
