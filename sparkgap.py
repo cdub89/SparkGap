@@ -2569,6 +2569,10 @@ class _ItilaScanner:
                 # (~0.6 s CPU per job -> ~100 jobs/min per core); 0 = unlimited.
                 # Counted in audio time so replay and live mean the same thing.
                 self._df_budget = float(sp.get('jobs_per_min', 0))
+                # ranking horizon: candidates gathered over this much audio are
+                # ranked together. 5 s batches see ~2-3 tokens at 30/min, so
+                # almost any ranking picks the same jobs (B1: 13 of 443 differed).
+                self._df_select_sec = float(sp.get('select_sec', DF_SELECT_SEC))
                 self._df_rate = float(sample_rate)
                 self._df_audio_t = 0.0
                 self._df_sel_t = 0.0
@@ -2609,7 +2613,7 @@ class _ItilaScanner:
         if self._df:
             self._df_audio_t += len(i_c) / self._df_rate
         self._process_ready()
-        if self._df and self._df_budget > 0 and self._df_audio_t - self._df_sel_t >= DF_SELECT_SEC:
+        if self._df and self._df_budget > 0 and self._df_audio_t - self._df_sel_t >= self._df_select_sec:
             self._df_select()
 
     def _process_ready(self):
