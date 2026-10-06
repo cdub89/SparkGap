@@ -51,7 +51,7 @@ typedef struct {
     int    active;
     double c_phase, s_phase;           /* oscillator state */
 
-    /* FIR stage 1: to 12k (up to 65 taps, complex I/Q) */
+    /* FIR stage 1: to 12k (up to 32 taps, complex I/Q) */
     double dl1_i[FIR_STAGE1_LEN];
     double dl1_q[FIR_STAGE1_LEN];
     int    dl1_count;                  /* samples fed since last output */
