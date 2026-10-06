@@ -2419,6 +2419,9 @@ class _ItilaChannel:
 # _ItilaScanner — band-wide ITILA channelizer (FFT energy scan)
 # ---------------------------------------------------------------------------
 
+DF_STALE_WINDOWS = 10   # second pass: re-check an identified bin after this many windows without a new call
+
+
 class _ItilaScanner:
     """Band-wide ITILA channelizer — thin Python wrapper over libitila_scanner.so.
 
@@ -2696,7 +2699,18 @@ class _ItilaScanner:
                             self._sc._lib.itila_sc_mark_evidence(
                                 self._sc._h, _ct.c_double(f_hz))
 
-        if df_iq is not None and (self._df_mode == 'all' or len(st['spotted']) == spotted_before):
+        # Rescue = bins ITILA hasn't identified: never spotted, or no new call
+        # for DF_STALE_WINDOWS windows (a different station may have taken
+        # the frequency).  Counted in decode windows, not wall time, so file
+        # mode measures the same rule.  (Rescuing every window without a NEW
+        # call re-decoded runners ITILA already copies -- "all" in practice.)
+        if len(st['spotted']) > spotted_before:
+            st['windows_since_call'] = 0
+        else:
+            st['windows_since_call'] = st.get('windows_since_call', 0) + 1
+        if df_iq is not None and (
+                self._df_mode == 'all' or not st['spotted']
+                or st['windows_since_call'] >= DF_STALE_WINDOWS):
             self._df.submit(f_hz, df_iq)
 
     def _process_ready_c(self):
