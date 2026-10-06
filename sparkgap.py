@@ -2931,7 +2931,11 @@ class _ItilaScanner:
         else in the bin's second-pass buffer if it saw CQ in the last 120 s."""
         if not self._df:
             return
-        if self._df_sync and self._df_budget > 0 and self._df_cands:
+        # File mode: honour the ranking horizon here too (collect() runs many
+        # times per chunk; forcing a selection on every call made the
+        # effective horizon "time between collects", whatever select_sec said).
+        if (self._df_sync and self._df_budget > 0 and self._df_cands
+                and self._df_audio_t - self._df_sel_t >= self._df_select_sec):
             self._df_select()
         done = self._df.flush() if self._df_sync else self._df.drain()
         now = time.time()
@@ -2996,6 +3000,8 @@ class _ItilaScanner:
                     lib.itila_free(h)
 
     def kill(self):
+        if self._df and self._df_budget > 0 and self._df_cands:
+            self._df_select()          # last partial horizon (file mode end)
         if self._df:
             log.info("second_pass stats: submitted=%d (first looks %d) decoded=%d dropped=%d "
                      "over_budget=%d budget=%g/min audio=%.0fs",
