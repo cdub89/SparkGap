@@ -1,7 +1,7 @@
 """RBN-archive confirmation (tools/eval/rbn_confirm.py), offline: archive rows built in memory."""
 
 import sys
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "eval"))
@@ -13,6 +13,7 @@ from rbn_confirm import (  # noqa: E402  # pyright: ignore[reportMissingImports]
     parse_spots,
 )
 
+UTC = timezone.utc  # datetime.UTC needs Python 3.11
 T0 = datetime(2026, 9, 23, 19, 41, tzinfo=UTC)
 T1 = datetime(2026, 9, 23, 19, 56, tzinfo=UTC)
 

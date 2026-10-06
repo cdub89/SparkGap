@@ -24,10 +24,12 @@ import urllib.request
 import zipfile
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ARCHIVE_URL = "https://data.reversebeacon.net/rbn_history/{day}.zip"
+USER_AGENT = "SparkGap-eval rbn_confirm.py"  # the archive returns 403 to urllib's default
+UTC = timezone.utc  # datetime.UTC needs Python 3.11
 DEFAULT_TOL_KHZ = 1.0
 DEFAULT_SLACK_MIN = 10
 
@@ -77,8 +79,11 @@ def load_day(day: str, archive_dir: Path) -> list[RbnSpot]:
     path = archive_dir / f"{day}.zip"
     if not path.exists():
         archive_dir.mkdir(parents=True, exist_ok=True)
-        print(f"fetching {ARCHIVE_URL.format(day=day)}", file=sys.stderr)
-        urllib.request.urlretrieve(ARCHIVE_URL.format(day=day), path)
+        url = ARCHIVE_URL.format(day=day)
+        print(f"fetching {url}", file=sys.stderr)
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req) as resp:
+            path.write_bytes(resp.read())
     with zipfile.ZipFile(path) as z:
         with z.open(z.namelist()[0]) as fh:
             text = io.TextIOWrapper(fh, "utf-8", errors="replace")
