@@ -70,15 +70,20 @@ class SecondPassWorker:
     (key, text, err) tuples; flush() waits for everything submitted so far
     (file mode, for deterministic replay)."""
 
-    def __init__(self, decoder, max_queue=256):
+    def __init__(self, decoder, max_queue=256, workers=1):
+        """workers > 1 runs that many decode threads on the same queue; the
+        decoder's decode_iq must then be thread-safe (DeepFist's is: numpy
+        front end + onnxruntime Session.run)."""
         self.decoder = decoder
         self.name = decoder.name
         self._jobs = queue.Queue(maxsize=max_queue)
         self._done = queue.Queue()
+        self._lock = threading.Lock()
         self.dropped = 0
         self.decoded = 0
-        threading.Thread(target=self._run, name='second-pass-' + self.name,
-                         daemon=True).start()
+        for i in range(max(1, int(workers))):
+            threading.Thread(target=self._run, name='second-pass-%s-%d' % (self.name, i),
+                             daemon=True).start()
 
     def _run(self):
         while True:
@@ -89,7 +94,8 @@ class SecondPassWorker:
                 self._done.put((key, '', repr(e)))
             else:
                 self._done.put((key, text or '', None))
-            self.decoded += 1
+            with self._lock:
+                self.decoded += 1
             self._jobs.task_done()
 
     def submit(self, key, iq, first_look=False):
@@ -97,7 +103,8 @@ class SecondPassWorker:
             self._jobs.put_nowait((key, iq, first_look))
             return True
         except queue.Full:
-            self.dropped += 1
+            with self._lock:
+                self.dropped += 1
             return False
 
     def drain(self):

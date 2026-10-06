@@ -2435,7 +2435,7 @@ def _df_priority(job):
     ITILA's text is nearly all 1-2 char noise tokens. At 75% of jobs this
     kept 47/48 (B1) and 18/18 (DK3QN) winning jobs vs 42 and 16 for
     (class, SNR)."""
-    _f, _win, cls, snr, cost, noise, ilen = job
+    _f, _win, cls, snr, cost, noise, ilen = job[:7]
     return (cls + float(np.log1p(ilen)) + 0.05 * snr
             - (1.0 if 0.0 <= cost < 0.06 else 0.0)
             - (0.5 if noise > 0.79 else 0.0))
@@ -2551,7 +2551,7 @@ class _ItilaScanner:
                                              _ct.POINTER(_ct.c_float), _ct.c_int]
             try:
                 from second_pass import load_decoder, SecondPassWorker
-                self._df = SecondPassWorker(load_decoder(sp))
+                self._df = SecondPassWorker(load_decoder(sp), workers=int(sp.get('workers', 1)))
             except Exception as e:
                 log.error("second_pass: decoder %r unavailable (%s) -- staying off",
                           sp.get('decoder'), e)
@@ -2662,6 +2662,7 @@ class _ItilaScanner:
             if got >= int(0.9 * self._df_n_iq):
                 df_iq = iq[:2 * got]
         spotted_before = len(st['spotted'])
+        spotted_before_set = set(st['spotted'])
         win_costs, win_raw = [], []          # ITILA features for second-pass job logging
 
         env100 = np.empty(self._window_samples, dtype=np.float64)
@@ -2792,7 +2793,9 @@ class _ItilaScanner:
                 noise = (sum(1 for t in toks if len(t) <= 2) / len(toks)) if toks else 1.0
                 ilen = len(' '.join(win_raw))
                 cost = min(win_costs) if win_costs else -1.0
-                job = (f_hz, win, cls, st.get('snr', 0.0), cost, noise, ilen)
+                new_calls = st['spotted'] - spotted_before_set     # ITILA's new call(s) this window
+                job = (f_hz, win, cls, st.get('snr', 0.0), cost, noise, ilen,
+                       ','.join(sorted(new_calls)) or '-')
                 # Optional prefilter: ITILA heard almost nothing and no CQ
                 # evidence -> DeepFist rarely wins (B1/DK3QN job logs: bottom
                 # third by ITILA text length = ~2% win rate vs ~10-21% top).
@@ -2911,14 +2914,16 @@ class _ItilaScanner:
             else:
                 self._df_over_budget += 1
 
-    def _log_job(self, job, text, spot):
+    def _log_job(self, job, text, spot, df_call=''):
         """One line per second-pass job, for finding what predicts a win:
         window, priority class, SNR, ITILA's best cost and short-token share
         for that window, ITILA text length, decoder text length, spot."""
-        f_hz, win, cls, snr, cost, noise, ilen = job
+        f_hz, win, cls, snr, cost, noise, ilen = job[:7]
+        itila_call = job[7] if len(job) > 7 else '-'
         log.info("SECONDPASS job f=%.1f win=%d cls=%d snr=%.1f itila_cost=%.2f "
-                 "itila_noise=%.2f itila_len=%d df_len=%d spot=%s",
-                 f_hz / 1000.0, win, cls, snr, cost, noise, ilen, len(text or ''), spot or '-')
+                 "itila_noise=%.2f itila_len=%d df_len=%d spot=%s df_call=%s itila_call=%s",
+                 f_hz / 1000.0, win, cls, snr, cost, noise, ilen, len(text or ''), spot or '-',
+                 df_call or '-', itila_call)
 
     def _apply_second_pass(self):
         """Apply finished second-pass decodes (runs on the scanner's thread).
@@ -2956,7 +2961,7 @@ class _ItilaScanner:
                              raw_text=self._df_tag + ': ' + text)
                 log.info("%s scan %.1f kHz: %s (raw: %s)", self._df_tag, f_khz, call, text[:60])
                 emitted = call
-            self._log_job(job, text, emitted)
+            self._log_job(job, text, emitted, call or '')
 
     def collect(self):
         """Returns list of SpotIntent records, one per ready window-extraction.
