@@ -132,6 +132,14 @@ struct ItilaSc {
     int    iq_n_alloc;                 /* slots that have one */
     float *iqbuf[SC_MAX_BINS];         /* interleaved I,Q at 1 kHz */
     int    iq_n[SC_MAX_BINS];
+    /* Copy of the baseband window itila_sc_decode_ready (C decode path)
+     * just decoded, so a caller can fetch it AFTER the result arrives
+     * (the live C worker decodes on its own thread, so "peek before
+     * decode" is impossible there).  seq increments per decoded window. */
+    float   *lastwin[SC_MAX_BINS];
+    int      lastwin_n[SC_MAX_BINS];
+    unsigned lastwin_seq[SC_MAX_BINS];
+    double   lastwin_f[SC_MAX_BINS];
 
     pthread_mutex_t lock;  /* protects bins/envelope during concurrent feed+decode */
 
@@ -618,7 +626,7 @@ void itila_sc_free(ItilaSc *sc)
     for (int i = 0; i < SC_MAX_BINS; i++)
         if (sc->bins[i].active) bin_free_decoders(sc, &sc->bins[i]);
     pthread_mutex_destroy(&sc->lock);
-    for (int i = 0; i < SC_MAX_BINS; i++) free(sc->iqbuf[i]);
+    for (int i = 0; i < SC_MAX_BINS; i++) { free(sc->iqbuf[i]); free(sc->lastwin[i]); }
     free(sc->scan_i);
     free(sc->scan_q);
     free(sc);
@@ -698,6 +706,44 @@ int itila_sc_ready_bins(ItilaSc *sc, double *f_hz_out, int max_out)
             f_hz_out[count++] = sc->bins[i].f_hz;
     }
     return count;
+}
+
+/* Keep a copy of the window about to be shifted out (see lastwin). */
+static void lastwin_save(ItilaSc *sc, int slot, double f_hz, int n_env)
+{
+    if (!sc->iqbuf[slot]) return;
+    int n = n_env * SC_IQ_PER_ENV;
+    if (n > sc->iq_n[slot]) n = sc->iq_n[slot];
+    if (!sc->lastwin[slot]) {
+        sc->lastwin[slot] = (float *)malloc(2 * SC_IQ_CAP * sizeof(float));
+        if (!sc->lastwin[slot]) return;
+    }
+    memcpy(sc->lastwin[slot], sc->iqbuf[slot], 2 * (size_t)n * sizeof(float));
+    sc->lastwin_n[slot] = n;
+    sc->lastwin_f[slot] = f_hz;
+    sc->lastwin_seq[slot]++;
+}
+
+/* Copy the most recently decoded window's baseband for the bin at f_hz.
+ * Returns complex samples copied (0 if none); *seq_out gets the window
+ * sequence number so a caller can act once per window. */
+int itila_sc_peek_lastwin(ItilaSc *sc, double f_hz, float *out, int max_complex,
+                          unsigned *seq_out)
+{
+    int n = 0;
+    pthread_mutex_lock(&sc->lock);
+    for (int i = 0; i < SC_MAX_BINS; i++) {
+        ScBin *b = &sc->bins[i];
+        if (!b->active || fabs(b->f_hz - f_hz) >= 1.0) continue;
+        if (sc->lastwin[i] && fabs(sc->lastwin_f[i] - f_hz) < 1.0) {
+            n = sc->lastwin_n[i] < max_complex ? sc->lastwin_n[i] : max_complex;
+            memcpy(out, sc->lastwin[i], 2 * (size_t)n * sizeof(float));
+            if (seq_out) *seq_out = sc->lastwin_seq[i];
+        }
+        break;
+    }
+    pthread_mutex_unlock(&sc->lock);
+    return n;
 }
 
 /* Drop the first n_env envelope-samples' worth of captured baseband. */
@@ -949,6 +995,7 @@ int itila_sc_decode_ready(ItilaSc *sc, int window_samples,
             memmove(b->env100, b->env100 + window_samples, rem * sizeof(double));
             memmove(b->env200, b->env200 + window_samples, rem * sizeof(double));
             b->env_n = rem;
+            lastwin_save(sc, (int)(b - sc->bins), b->f_hz, window_samples);
             iq_shift(sc, (int)(b - sc->bins), window_samples);
         }
     }
