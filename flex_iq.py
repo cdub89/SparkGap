@@ -40,6 +40,26 @@ VALID_RATES = (24000, 48000, 96000, 192000)
 # DAX-IQ floats are int16 full scale; FlexLib VitaIFDataPacket divides by 2**15.
 DAXIQ_FULL_SCALE = 32768.0
 
+STATION_NAME = 'SparkGap'   # shown in SmartSDR's station list (Multi-Flex)
+
+
+def owned_objects(lines, handle):
+    """Slice numbers and pan ids the radio reports as belonging to client `handle`."""
+    slices, pans = set(), set()
+    if not handle:
+        return slices, pans
+    own = re.compile(r'client_handle=0x' + re.escape(handle) + r'\b', re.I)
+    for line in lines:
+        if not own.search(line):
+            continue
+        m = re.search(r'\|slice (\d+) ', line)
+        if m and 'in_use=0' not in line:
+            slices.add(int(m.group(1)))
+        m = re.search(r'\|display pan (0x[0-9A-F]+) ', line, re.I)
+        if m:
+            pans.add(m.group(1))
+    return slices, pans
+
 
 class FlexIQReceiver:
     """DAX-IQ receiver for a FlexRadio 6000/8000 series.
@@ -138,18 +158,26 @@ class FlexIQReceiver:
         # Register as GUI client — required for pan/DAX-IQ creation.
         # AetherSDR showed this is the missing piece for headless operation.
         gui_uuid = str(uuid.uuid4()).upper()
-        resp = self._cmd(f"client gui {gui_uuid}")
-        # The radio gives a new GUI client its own pan (and slice). On 2-pan
-        # radios (6400) with a front panel that leaves none for the create below.
-        mine = set()
-        for line in resp if handle else []:
-            m = re.search(r'\|display pan (0x[0-9A-F]+) .*client_handle=0x' + handle + r'\b', line, re.I)
-            if m:
-                mine.add(m.group(1))
-        for pan in sorted(mine):
-            self._cmd(f"display pan remove {pan}")
+        status = self._cmd(f"client gui {gui_uuid}")
         self._cmd("client program SmartSDR-Win")
+        resp = self._cmd(f"client station {STATION_NAME}")
+        if not any(l.startswith(f"R{self._seq}|0|") for l in resp):
+            log.warning("[Flex] Station name not accepted: %s", resp[-1:])
         self._cmd(f"client udpport {self.udp_port}")
+        # The radio gives a new GUI client its own pan and slice (Slice A on the
+        # band default). On a 6600 they arrive after the client gui reply, so ask
+        # for slice and pan status and free everything this client owns.
+        status += self._cmd("sub slice all") + self._cmd("sub pan all")
+        slices, pans = owned_objects(status, handle)
+        for n in sorted(slices):
+            self._cmd(f"slice remove {n}")
+        for pan in sorted(pans):
+            self._cmd(f"display pan remove {pan}")
+        if slices or pans:
+            log.info("[Flex] Freed the radio's default slices %s and pans %s",
+                     sorted(slices), sorted(pans))
+        else:
+            log.info("[Flex] No default slice or pan to free for client 0x%s", handle)
 
         # Create a minimal panadapter (needed as IQ source infrastructure).
         # Use display pan create (no waterfall) to minimize overhead.
@@ -180,7 +208,7 @@ class FlexIQReceiver:
 
         # Create a slice to activate the receiver on this frequency.
         # Without an active slice, the Flex streams zeros (no RF path).
-        resp = self._cmd(f"slice create freq={self.freq_mhz:.6f} mode=CW")
+        resp = self._cmd(f"slice create pan=0x{self._pan_id:08x} freq={self.freq_mhz:.6f} mode=CW")
         self._slice_id = None
         for line in resp:
             if line.startswith('R') and '|0|' in line:
@@ -192,6 +220,8 @@ class FlexIQReceiver:
                         pass
         if self._slice_id is not None:
             log.info("[Flex] Slice created: %d", self._slice_id)
+        else:
+            log.warning("[Flex] Slice create reply not understood: %s", resp[-3:])
 
         # Create DAX-IQ stream
         resp = self._cmd(f"stream create type=dax_iq daxiq_channel={self.channel}")
