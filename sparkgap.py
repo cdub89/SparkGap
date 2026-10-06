@@ -2438,7 +2438,7 @@ class _ItilaScanner:
                  band_min_khz=0.0, band_max_khz=99999.0,
                  max_bins=80, use_pfb=False, valid_calls=None,
                  enable_caller_spotting=True,
-                 gate_timing_cost=False, timing_cost_max=30.0):
+                 gate_timing_cost=False, timing_cost_max=30.0, second_pass=None):
         self.valid_calls = valid_calls or set()
         self.enable_caller_spotting = bool(enable_caller_spotting)
         # ggmorse-inspired confidence gate on segmentation quality
@@ -2505,23 +2505,37 @@ class _ItilaScanner:
         else:
             self._c_decode = False
 
-        # EXPERIMENT (issue #5, branch deepfist-2pass): DeepFist second pass on
-        # bins whose ITILA window produced no spot.  Off unless
-        # SPARKGAP_DEEPFIST_CKPT is set; needs scanner baseband capture.
+        # Optional neural second pass (issue #5, PR #7).  Config:
+        #   "second_pass": {"decoder": "deepfist", "mode": "rescue"|"all",
+        #                   "max_bins": 50, "model": "models/deepfist.onnx",
+        #                   "threads": 1}
+        # rescue = only windows where ITILA found no new call; all = every
+        # window.  max_bins caps scanner slots with baseband capture (memory
+        # ~0.6 MB each).  Decodes run on a background thread; results are
+        # applied in collect().  Absent / decoder != deepfist -> off.
         self._df = None
-        ckpt = os.environ.get('SPARKGAP_DEEPFIST_CKPT')
-        if ckpt and self._sc and hasattr(self._sc._lib, 'itila_sc_peek_iq'):
+        sp = second_pass or {}
+        if (sp.get('decoder') == 'deepfist' and sp.get('mode', 'rescue') in ('rescue', 'all')
+                and self._sc and hasattr(self._sc._lib, 'itila_sc_peek_iq')):
             lib = self._sc._lib
             lib.itila_sc_enable_iq_capture.restype = None
             lib.itila_sc_enable_iq_capture.argtypes = [_ct.c_void_p, _ct.c_int]
             lib.itila_sc_peek_iq.restype = _ct.c_int
             lib.itila_sc_peek_iq.argtypes = [_ct.c_void_p, _ct.c_double,
                                              _ct.POINTER(_ct.c_float), _ct.c_int]
-            lib.itila_sc_enable_iq_capture(self._sc._h, 1)
-            from deepfist_pass import DeepFistPass
-            self._df = DeepFistPass(ckpt, os.environ['SPARKGAP_DEEPFIST_SRC'])
-            self._df_n_iq = self._window_samples * 5   # 1 kHz IQ per 200 Hz env sample
-            log.info("DeepFist second pass ENABLED (%s)", ckpt)
+            try:
+                from deepfist_pass import DeepFistWorker
+                self._df = DeepFistWorker(sp.get('model', 'models/deepfist.onnx'),
+                                          threads=int(sp.get('threads', 1)))
+            except Exception as e:
+                log.error("second_pass: DeepFist unavailable (%s) -- staying off", e)
+            if self._df:
+                lib.itila_sc_enable_iq_capture(self._sc._h, int(sp.get('max_bins', 50)))
+                self._df_mode = sp.get('mode', 'rescue')
+                self._df_sync = bool(sp.get('sync', False))
+                self._df_n_iq = self._window_samples * 5   # 1 kHz IQ per 200 Hz env sample
+                log.info("second_pass: DeepFist %s, max_bins=%d, model=%s",
+                         self._df_mode, int(sp.get('max_bins', 50)), sp.get('model'))
 
     def _ensure_bin_handles(self, f_hz):
         """Create itila decoder handles for a C-spawned bin if not yet tracked."""
@@ -2682,8 +2696,8 @@ class _ItilaScanner:
                             self._sc._lib.itila_sc_mark_evidence(
                                 self._sc._h, _ct.c_double(f_hz))
 
-        if df_iq is not None and len(st['spotted']) == spotted_before:
-            self._deepfist_pass({f_hz: df_iq}, {f_hz: spotted_before}, now)
+        if df_iq is not None and (self._df_mode == 'all' or len(st['spotted']) == spotted_before):
+            self._df.submit(f_hz, df_iq)
 
     def _process_ready_c(self):
         """C decode loop — all bin iteration + decode happens in C."""
@@ -2770,22 +2784,21 @@ class _ItilaScanner:
                             self._sc._lib.itila_sc_mark_evidence(
                                 self._sc._h, _ct.c_double(f_hz))
 
-    def _deepfist_pass(self, df_iq, spotted_before, now):
-        """EXPERIMENT (issue #5): decode bins whose ITILA window yielded no new
-        call with DeepFist; extract with the same runner-only logic as ITILA."""
-        for f_hz, iq in df_iq.items():
-            st = self._bins.get(f_hz)
-            if st is None:
-                st = self._bins[f_hz] = {
-                    'h100': None, 'h200': None, 'pending': [], 'wpm': 0, 'snr': 0.0,
-                    'text_buf': '', 'spotted': set(), 'last_cq_time': 0.0,
-                    'window_id_next': 0,
-                }
-            if len(st['spotted']) > spotted_before.get(f_hz, 0):
-                continue            # ITILA already got a call from this window
-            text = self._df.decode_iq(iq)
-            if not text:
+    def _apply_second_pass(self):
+        """Apply finished DeepFist decodes (runs on the scanner's thread).
+        Same runner-only extraction as ITILA: CQ-adjacent call in this text,
+        else in the bin's DeepFist buffer if it saw CQ in the last 120 s."""
+        if not self._df:
+            return
+        done = self._df.flush() if self._df_sync else self._df.drain()
+        now = time.time()
+        for f_hz, text, err in done:
+            if err:
+                log.warning("second_pass error %.1f kHz: %s", f_hz / 1000.0, err)
                 continue
+            st = self._bins.get(f_hz)
+            if st is None or not text:
+                continue            # bin evicted while decoding, or squelched
             f_khz = f_hz / 1000.0
             log.info("DEEPFIST raw %.1f kHz: %r", f_khz, text[:400])
             st['df_buf'] = (st.get('df_buf', '') + ' ' + text)[-512:]
@@ -2812,6 +2825,7 @@ class _ItilaScanner:
         Caller (InstanceManager.collect_all) is responsible for dispatching
         these to tracker.process_intent() rather than tracker.process().
         """
+        self._apply_second_pass()
         results = []
         for f_hz, st in self._bins.items():
             if not st['pending']:
@@ -4351,7 +4365,7 @@ class InstanceManager:
                  ml_max_channels=20, use_dispatcher=False,
                  use_pfb_dispatcher=False, use_itila=False,
                  itila_ev_thresh=2.0, itila_window_sec=60.0,
-                 itila_min_snr=8.0, itila_max_bins=200,
+                 itila_min_snr=8.0, itila_max_bins=200, second_pass=None,
                  use_pfb_scanner=False, valid_calls=None,
                  cw_min_khz=0.0, cw_max_khz=99999.0,
                  enable_caller_spotting=True,
@@ -4371,6 +4385,7 @@ class InstanceManager:
         self.itila_window_sec = float(itila_window_sec)
         self.itila_min_snr = float(itila_min_snr)
         self.itila_max_bins = int(itila_max_bins)
+        self.second_pass = second_pass
         self.use_pfb_scanner = bool(use_pfb_scanner)
         self.enable_caller_spotting = bool(enable_caller_spotting)
         # Plumbed through to _ItilaScanner; defaults gate-off, threshold 30.
@@ -4482,7 +4497,8 @@ class InstanceManager:
                     valid_calls=getattr(self, 'valid_calls', None),
                     enable_caller_spotting=self.enable_caller_spotting,
                     gate_timing_cost=getattr(self, 'gate_timing_cost', False),
-                    timing_cost_max=getattr(self, 'timing_cost_max', 30.0))
+                    timing_cost_max=getattr(self, 'timing_cost_max', 30.0),
+                    second_pass=getattr(self, 'second_pass', None))
             else:
                 self._itila_scanner.center_khz = center_khz
 
@@ -6783,6 +6799,7 @@ class SparkGap:
                 itila_window_sec=float(self.cfg.get('itila_window_sec', 60.0)),
                 itila_min_snr=min_snr_here,
                 itila_max_bins=int(self.cfg.get('itila_max_bins', 200)),
+                second_pass=self.cfg.get('second_pass'),
                 use_pfb_scanner=use_pfb_here,
                 valid_calls=calls,
                 cw_min_khz=float(self.cfg.get('cw_min_khz', 0)),
@@ -7840,6 +7857,7 @@ def run_file_mode(args, config):
         # in feedback_file_vs_live_config_divergence.md.
         itila_min_snr=float(config.get('signal_min_snr', 12)),
         itila_max_bins=int(config.get('itila_max_bins', 200)),
+        second_pass=dict(config['second_pass'], sync=True) if isinstance(config.get('second_pass'), dict) else None,
         use_pfb_scanner=bool(config.get('use_pfb_scanner', False)),
         valid_calls=calls,  # required for the SCP-bias path in extractor
         cw_min_khz=float(config.get('cw_min_khz', 0)),

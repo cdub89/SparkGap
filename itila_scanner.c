@@ -50,7 +50,9 @@
  * path stage-2 output (2 kHz complex) is kept at 1 kHz, 5 samples per 200 Hz
  * envelope sample, and shifted in lockstep with env100/env200 so a peek returns
  * the same window ITILA is about to decode.  Buffers are allocated per slot only
- * when capture is enabled. */
+ * when capture is enabled, and for at most iq_cap_max slots (a slot keeps its
+ * buffer for the next bin spawned into it), so memory is bounded at
+ * iq_cap_max * SC_IQ_CAP * 8 bytes (~0.6 MB per slot) whatever the density. */
 #define SC_IQ_PER_ENV 5
 #define SC_IQ_CAP     (SC_ENV_CAP * SC_IQ_PER_ENV)
 
@@ -126,6 +128,8 @@ struct ItilaSc {
     ScBin  bins[SC_MAX_BINS];
 
     int    iq_cap_on;                  /* see SC_IQ_PER_ENV */
+    int    iq_cap_max;                 /* max slots with a capture buffer */
+    int    iq_n_alloc;                 /* slots that have one */
     float *iqbuf[SC_MAX_BINS];         /* interleaved I,Q at 1 kHz */
     int    iq_n[SC_MAX_BINS];
 
@@ -520,8 +524,10 @@ static void process_bins(ItilaSc *sc, const double *i_full, const double *q_full
 
             /* Optional baseband capture: every 2nd 2 kHz sample -> 1 kHz */
             if (sc->iq_cap_on && (b->dl3_count & 1) == 0) {
-                if (!sc->iqbuf[bi])
+                if (!sc->iqbuf[bi] && sc->iq_n_alloc < sc->iq_cap_max) {
                     sc->iqbuf[bi] = (float *)malloc(2 * SC_IQ_CAP * sizeof(float));
+                    if (sc->iqbuf[bi]) sc->iq_n_alloc++;
+                }
                 int k = sc->iq_n[bi];
                 if (sc->iqbuf[bi] && k < SC_IQ_CAP) {
                     sc->iqbuf[bi][2 * k]     = (float)s2_200i;
@@ -705,9 +711,11 @@ static void iq_shift(ItilaSc *sc, int slot, int n_env)
     sc->iq_n[slot] = rem;
 }
 
-void itila_sc_enable_iq_capture(ItilaSc *sc, int on)
+/* max_slots > 0 enables capture for up to that many scanner slots; 0 disables. */
+void itila_sc_enable_iq_capture(ItilaSc *sc, int max_slots)
 {
-    sc->iq_cap_on = on ? 1 : 0;
+    sc->iq_cap_max = max_slots > 0 ? max_slots : 0;
+    sc->iq_cap_on  = max_slots > 0;
 }
 
 /* Copy up to max_complex captured 1 kHz baseband samples (interleaved I,Q)
