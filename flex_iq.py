@@ -185,7 +185,13 @@ class FlexIQReceiver:
         # so other clients (SmartSDR, SmartStreamer4) see a nameless station
         # for only as long as the radio takes to read the next line.
         # "client gui" is required for pan and DAX-IQ creation (AetherSDR).
+        # Name before gui: the radio creates the default pan the instant this
+        # becomes a GUI client, and other clients (SmartStreamer4) label it with
+        # whatever name the client has at that moment.  Sent again after gui in
+        # case the radio ignores a station name on a non-GUI client.
         self._cmd(f"client program {STATION_NAME}")
+        early = self._cmd(f"client station {STATION_NAME}")
+        log.info("[Flex] Station name before gui: %s", early[-1][:60] if early else "no reply")
         self._send(f"client gui {str(uuid.uuid4()).upper()}")
         self._cmd(f"client station {STATION_NAME}")
         self._cmd(f"client udpport {self.udp_port}")
