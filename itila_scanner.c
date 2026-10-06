@@ -51,7 +51,7 @@ typedef struct {
     int    active;
     double c_phase, s_phase;           /* oscillator state */
 
-    /* FIR stage 1: to 12k (up to 32 taps, complex I/Q) */
+    /* FIR stage 1: to 12k (up to 65 taps, complex I/Q) */
     double dl1_i[FIR_STAGE1_LEN];
     double dl1_q[FIR_STAGE1_LEN];
     int    dl1_count;                  /* samples fed since last output */
@@ -71,8 +71,8 @@ typedef struct {
     double env100[SC_ENV_CAP];
     double env200[SC_ENV_CAP];
     int    env_n;
-    int    created_sample;
-    int    last_evidence;
+    int64_t created_sample;            /* 12 kHz units; int64 so long runs never wrap */
+    int64_t last_evidence;
     double snr_db;
 
     /* ITILA decoder handles — created lazily, one per LPF path */
@@ -107,7 +107,7 @@ struct ItilaSc {
     double iq_res_i[SC_DEC1];
     double iq_res_q[SC_DEC1];
     int    iq_res_n;
-    int    total_samples;      /* running sample count for eviction timing */
+    int64_t total_samples;     /* running sample count for eviction timing */
 
     double *scan_i;
     double *scan_q;
@@ -125,11 +125,11 @@ struct ItilaSc {
     uint64_t spawn_promoted;     /* candidates that became bins */
 
     /* Lazy spawn candidate ring — see SC_MAX_CANDIDATES comment block */
-    int      scan_counter;
+    int64_t  scan_counter;
     struct {
         double f_hz;
         int    hits;
-        int    last_seen_scan;
+        int64_t last_seen_scan;
         int    in_use;
     } cand[SC_MAX_CANDIDATES];
 
@@ -297,7 +297,7 @@ static void run_scan(ItilaSc *sc, const double *seg_i, const double *seg_q)
     /* Bump scan counter and expire stale candidates (haven't been seen in
      * SC_CAND_EXPIRY_SCANS scans). Recycled slots fall to the allocator. */
     sc->scan_counter++;
-    int expiry_cutoff = sc->scan_counter - SC_CAND_EXPIRY_SCANS;
+    int64_t expiry_cutoff = sc->scan_counter - SC_CAND_EXPIRY_SCANS;
     for (int c = 0; c < SC_MAX_CANDIDATES; c++) {
         if (sc->cand[c].in_use &&
             sc->cand[c].last_seen_scan < expiry_cutoff) {
@@ -318,8 +318,8 @@ static void run_scan(ItilaSc *sc, const double *seg_i, const double *seg_q)
             if (!sc->bins[b].active) continue;
             /* Skip mid-decode bins — see ScBin.in_decode comment. */
             if (sc->bins[b].in_decode) continue;
-            int age      = sc->total_samples - sc->bins[b].created_sample;
-            int since_ev = sc->total_samples - sc->bins[b].last_evidence;
+            int64_t age      = sc->total_samples - sc->bins[b].created_sample;
+            int64_t since_ev = sc->total_samples - sc->bins[b].last_evidence;
             int stale    = 0;
             if (sc->bins[b].last_evidence == 0 && age > 300 * rate_12k) stale = 1;
             else if (sc->bins[b].last_evidence > 0 && since_ev > 300 * rate_12k) stale = 1;
@@ -368,7 +368,7 @@ static void run_scan(ItilaSc *sc, const double *seg_i, const double *seg_q)
         }
         if (cand_idx < 0) {
             /* Allocate a slot — first try unused, else oldest in_use */
-            int oldest_seen = sc->scan_counter + 1;
+            int64_t oldest_seen = sc->scan_counter + 1;
             int oldest_idx  = -1;
             for (int c = 0; c < SC_MAX_CANDIDATES; c++) {
                 if (!sc->cand[c].in_use) { cand_idx = c; break; }
@@ -396,14 +396,14 @@ static void run_scan(ItilaSc *sc, const double *seg_i, const double *seg_q)
          * after 120s, or produced evidence but went silent for 300s */
         if (sc->n_bins >= sc->max_bins) {
             int evicted = -1;
-            int oldest_age = 0;
+            int64_t oldest_age = 0;
             for (int b = 0; b < SC_MAX_BINS; b++) {
                 if (!sc->bins[b].active) continue;
                 /* Skip bins that decode_ready is currently using under
                  * released lock — see ScBin.in_decode comment. */
                 if (sc->bins[b].in_decode) continue;
-                int age = sc->total_samples - sc->bins[b].created_sample;
-                int since_ev = sc->total_samples - sc->bins[b].last_evidence;
+                int64_t age = sc->total_samples - sc->bins[b].created_sample;
+                int64_t since_ev = sc->total_samples - sc->bins[b].last_evidence;
                 /* Never produced evidence and >120s old
                  * total_samples counts in 12kHz units (n/SC_DEC1) */
                 int rate_12k = sc->sample_rate / sc->dec1;
@@ -481,7 +481,7 @@ static void process_bins(ItilaSc *sc, const double *i_full, const double *q_full
             int pos1 = b->dl1_count % sc->fir1_len;
             b->dl1_i[pos1] = mixed_i;
             b->dl1_q[pos1] = mixed_q;
-            b->dl1_count++;
+            if (++b->dl1_count == sc->fir1_len * sc->dec1) b->dl1_count = 0;  /* wrap: keeps both moduli */
 
             if (b->dl1_count % sc->dec1 != 0) continue;
             /* Output one 12k sample */
@@ -495,7 +495,7 @@ static void process_bins(ItilaSc *sc, const double *i_full, const double *q_full
             b->dl2_100q[pos2_100] = s1_q;
             b->dl2_200i[pos2_200] = s1_i;
             b->dl2_200q[pos2_200] = s1_q;
-            b->dl2_count++;
+            if (++b->dl2_count == FIR_S2_100_LEN * FIR_S2_200_LEN * SC_DEC2) b->dl2_count = 0;
 
             if (b->dl2_count % SC_DEC2 != 0) continue;
             /* Output one 2k sample per path */
@@ -512,7 +512,7 @@ static void process_bins(ItilaSc *sc, const double *i_full, const double *q_full
             int pos3 = b->dl3_count % FIR_STAGE3_LEN;
             b->dl3_100[pos3] = env2_100;
             b->dl3_200[pos3] = env2_200;
-            b->dl3_count++;
+            if (++b->dl3_count == FIR_STAGE3_LEN * SC_DEC3) b->dl3_count = 0;
 
             if (b->dl3_count % SC_DEC3 != 0) continue;
             /* Output one 200 Hz envelope sample */
@@ -734,7 +734,8 @@ int itila_sc_list_bin_ages(ItilaSc *sc, int *ages_out, int max_out)
     int count = 0;
     for (int i = 0; i < SC_MAX_BINS && count < max_out; i++) {
         if (sc->bins[i].active)
-            ages_out[count++] = sc->total_samples - sc->bins[i].created_sample;
+            ages_out[count++] = (sc->total_samples - sc->bins[i].created_sample) > INT32_MAX
+                                ? INT32_MAX : (int)(sc->total_samples - sc->bins[i].created_sample);
     }
     pthread_mutex_unlock(&sc->lock);
     return count;
