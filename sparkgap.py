@@ -2421,6 +2421,7 @@ class _ItilaChannel:
 
 DF_STALE_WINDOWS = 10   # second pass: re-check an identified bin after this many windows without a new call
 DF_CQ_LOOKBACK = 2      # "cq" mode: CQ evidence within this many windows qualifies a bin
+DF_SELECT_SEC = 5.0     # budget: rank candidates gathered over this much audio, then submit the best
 # CQ evidence for the second-pass trigger: looks inside tokens too, so merged
 # copy like "CQCWTWJ9B" or "TESTDK4A" counts (CQ_PATTERNS needs word boundaries).
 _DF_CQ_EVIDENCE = re.compile(r'CQ|TEST|CWT|SST|MST|QRZ')
@@ -2548,6 +2549,16 @@ class _ItilaScanner:
                 self._df_n_iq = self._window_samples * 5   # 1 kHz IQ per 200 Hz env sample
                 self._df_submitted = 0
                 self._df_looks = 0
+                # CPU budget: full-window jobs per minute of AUDIO per band
+                # (~0.6 s CPU per job -> ~100 jobs/min per core); 0 = unlimited.
+                # Counted in audio time so replay and live mean the same thing.
+                self._df_budget = float(sp.get('jobs_per_min', 0))
+                self._df_rate = float(sample_rate)
+                self._df_audio_t = 0.0
+                self._df_sel_t = 0.0
+                self._df_tokens = 0.0
+                self._df_cands = []
+                self._df_over_budget = 0
                 log.info("second_pass: DeepFist %s, max_bins=%d, model=%s",
                          self._df_mode, int(sp.get('max_bins', 50)), sp.get('model'))
 
@@ -2577,7 +2588,11 @@ class _ItilaScanner:
         i_c = np.ascontiguousarray(i_arr, dtype=np.float64)
         q_c = np.ascontiguousarray(q_arr, dtype=np.float64)
         self._sc.feed_iq(i_c, q_c)
+        if self._df:
+            self._df_audio_t += len(i_c) / self._df_rate
         self._process_ready()
+        if self._df and self._df_budget > 0 and self._df_audio_t - self._df_sel_t >= DF_SELECT_SEC:
+            self._df_select()
 
     def _process_ready(self):
         """Sync bin handles with C scanner and decode any ready windows."""
@@ -2747,9 +2762,15 @@ class _ItilaScanner:
                 look = self._df_first_look and unidentified and probe and not cq_recent
             if df_iq is not None and go:
                 first_look = self._df_mode == 'cq' and look
-                self._df.submit(f_hz, df_iq, first_look=first_look)
-                self._df_submitted += 1
-                self._df_looks += first_look
+                if self._df_budget > 0:
+                    # priority: recent CQ evidence > a bin's first window >
+                    # periodic probe; ties by SNR
+                    cls = 2 if (self._df_mode == 'cq' and cq_recent) else (1 if win == 0 else 0)
+                    self._df_cands.append(((cls, st.get('snr', 0.0)), f_hz, df_iq, first_look))
+                else:
+                    self._df.submit(f_hz, df_iq, first_look=first_look)
+                    self._df_submitted += 1
+                    self._df_looks += first_look
             st['df_win'] = win + 1
 
     def _process_ready_c(self):
@@ -2837,12 +2858,32 @@ class _ItilaScanner:
                             self._sc._lib.itila_sc_mark_evidence(
                                 self._sc._h, _ct.c_double(f_hz))
 
+    def _df_select(self):
+        """Budgeted submission: tokens accrue at jobs_per_min per audio minute
+        (burst capped at one minute's worth); the best-ranked candidates get
+        them, the rest are dropped -- a stale window isn't worth decoding."""
+        dt = self._df_audio_t - self._df_sel_t
+        self._df_sel_t = self._df_audio_t
+        self._df_tokens = min(self._df_tokens + self._df_budget * dt / 60.0, self._df_budget)
+        cands, self._df_cands = self._df_cands, []
+        cands.sort(key=lambda c: c[0], reverse=True)
+        for _pri, f_hz, iq, first_look in cands:
+            if self._df_tokens >= 1.0:
+                self._df_tokens -= 1.0
+                self._df.submit(f_hz, iq, first_look=first_look)
+                self._df_submitted += 1
+                self._df_looks += first_look
+            else:
+                self._df_over_budget += 1
+
     def _apply_second_pass(self):
         """Apply finished DeepFist decodes (runs on the scanner's thread).
         Same runner-only extraction as ITILA: CQ-adjacent call in this text,
         else in the bin's DeepFist buffer if it saw CQ in the last 120 s."""
         if not self._df:
             return
+        if self._df_sync and self._df_budget > 0 and self._df_cands:
+            self._df_select()
         done = self._df.flush() if self._df_sync else self._df.drain()
         now = time.time()
         for f_hz, text, err in done:
@@ -2902,8 +2943,10 @@ class _ItilaScanner:
 
     def kill(self):
         if self._df:
-            log.info("second_pass stats: submitted=%d (first looks %d) decoded=%d dropped=%d",
-                     self._df_submitted, self._df_looks, self._df.decoded, self._df.dropped)
+            log.info("second_pass stats: submitted=%d (first looks %d) decoded=%d dropped=%d "
+                     "over_budget=%d budget=%g/min audio=%.0fs",
+                     self._df_submitted, self._df_looks, self._df.decoded, self._df.dropped,
+                     self._df_over_budget, self._df_budget, self._df_audio_t)
         for f_hz in list(self._bins.keys()):
             self._free_bin_handles(f_hz)
         if self._sc:
