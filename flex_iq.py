@@ -154,6 +154,7 @@ class FlexIQReceiver:
         # Consume initial handshake (version, handle, status flood)
         hello = self._drain(3)
         handle = next((l[1:].strip().upper() for l in hello if l.startswith('H')), '')
+        log.info("[Flex] Client handle 0x%s", handle)
 
         # Register as GUI client — required for pan/DAX-IQ creation.
         # AetherSDR showed this is the missing piece for headless operation.
@@ -222,6 +223,16 @@ class FlexIQReceiver:
             log.info("[Flex] Slice created: %d", self._slice_id)
         else:
             log.warning("[Flex] Slice create reply not understood: %s", resp[-3:])
+        # Creating a pan makes the radio add its own band-default slice to it
+        # (seen on a 6600: Slice A at 7.175 MHz with DAX RX 1). Keep only ours.
+        extra = set()
+        if self._slice_id is not None:
+            extra, _ = owned_objects(self._cmd("sub slice all"), handle)
+            extra.discard(self._slice_id)
+        for n in sorted(extra):
+            self._cmd(f"slice remove {n}")
+        if extra:
+            log.info("[Flex] Freed extra slices %s", sorted(extra))
 
         # Create DAX-IQ stream
         resp = self._cmd(f"stream create type=dax_iq daxiq_channel={self.channel}")
