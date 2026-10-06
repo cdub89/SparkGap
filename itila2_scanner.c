@@ -174,7 +174,7 @@ struct ItilaSc {
      * stripe k % n_threads; stripe 0 runs on the calling thread. */
     int      n_threads;
     pthread_t workers[SC_MAX_THREADS];
-    struct ScWorker { struct ItilaSc *sc; int stripe; } worker_arg[SC_MAX_THREADS];
+    struct ScWorker { struct ItilaSc *sc; int stripe; uint64_t seen; } worker_arg[SC_MAX_THREADS];
     pthread_mutex_t pool_lock;
     pthread_cond_t  pool_go;
     pthread_cond_t  pool_done;
@@ -603,7 +603,7 @@ static void *scan_worker(void *arg)
 {
     struct ScWorker *w = (struct ScWorker *)arg;
     ItilaSc *sc = w->sc;
-    uint64_t seen = 0;
+    uint64_t seen = w->seen;    /* jobs before this worker started are not its own */
     for (;;) {
         pthread_mutex_lock(&sc->pool_lock);
         while (!sc->pool_stop && sc->pool_gen == seen)
@@ -673,6 +673,7 @@ int itila_sc_set_threads(ItilaSc *sc, int n)
     for (int k = 1; k < n; k++) {
         sc->worker_arg[k].sc = sc;
         sc->worker_arg[k].stripe = k;
+        sc->worker_arg[k].seen = sc->pool_gen;
         if (pthread_create(&sc->workers[k], NULL, scan_worker, &sc->worker_arg[k]) != 0)
             break;
         started++;
@@ -718,11 +719,16 @@ ItilaSc *itila_sc_create(int sample_rate, double center_hz,
 
     ItilaSc *sc = (ItilaSc *)calloc(1, sizeof(ItilaSc));
     if (!sc) return NULL;
+    pthread_mutex_init(&sc->lock, NULL);       /* before anything that can fail into itila_sc_free */
+    pthread_mutex_init(&sc->pool_lock, NULL);
+    pthread_cond_init(&sc->pool_go, NULL);
+    pthread_cond_init(&sc->pool_done, NULL);
+    sc->n_threads = 1;
     switch (sample_rate) {
     case 192000: sc->dec1 = 16; sc->fir1 = FIR1W_192K; sc->fir1_len = FIR1W_192K_LEN; break;
     case 96000:  sc->dec1 = 8;  sc->fir1 = FIR1W_96K;  sc->fir1_len = FIR1W_96K_LEN;  break;
     case 48000:  sc->dec1 = 4;  sc->fir1 = FIR1W_48K;  sc->fir1_len = FIR1W_48K_LEN;  break;
-    default:     free(sc); return NULL;
+    default:     itila_sc_free(sc); return NULL;
     }
     /* Scale the scan FFT with the rate: same bin width and scan period as 192 kHz */
     energy_win = energy_win * sc->dec1 / SC_DEC1;
@@ -747,11 +753,6 @@ ItilaSc *itila_sc_create(int sample_rate, double center_hz,
     sc->pre_i = (double *)calloc(sc->pre_len, sizeof(double));
     sc->pre_q = (double *)calloc(sc->pre_len, sizeof(double));
     if (!sc->scan_i || !sc->scan_q || !sc->pre_i || !sc->pre_q) { itila_sc_free(sc); return NULL; }
-    pthread_mutex_init(&sc->lock, NULL);
-    pthread_mutex_init(&sc->pool_lock, NULL);
-    pthread_cond_init(&sc->pool_go, NULL);
-    pthread_cond_init(&sc->pool_done, NULL);
-    sc->n_threads = 1;
 
     return sc;
 }
@@ -759,9 +760,11 @@ ItilaSc *itila_sc_create(int sample_rate, double center_hz,
 void itila_sc_free(ItilaSc *sc)
 {
     if (!sc) return;
+    pthread_mutex_lock(&sc->lock);             /* wait out an in-flight feed */
+    stop_workers(sc);
     for (int i = 0; i < SC_MAX_BINS; i++)
         if (sc->bins[i].active) bin_free_decoders(sc, &sc->bins[i]);
-    stop_workers(sc);
+    pthread_mutex_unlock(&sc->lock);
     pthread_mutex_destroy(&sc->lock);
     pthread_mutex_destroy(&sc->pool_lock);
     pthread_cond_destroy(&sc->pool_go);
