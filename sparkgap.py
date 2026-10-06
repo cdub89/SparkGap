@@ -7783,6 +7783,8 @@ def run_file_mode(args, config):
         enable_caller_spotting=bool(config.get('enable_caller_spotting', True)),
         exclude_ft8_freqs=bool(config.get('exclude_ft8_freqs', True)),
         exclude_ft4_freqs=bool(config.get('exclude_ft4_freqs', False)),
+        gate_timing_cost=bool(config.get('gate_timing_cost', False)),
+        timing_cost_max=float(config.get('timing_cost_max', 30.0)),
     )
 
     center_khz = args.center_khz
