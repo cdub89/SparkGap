@@ -6680,7 +6680,6 @@ class SparkGap:
             from spot_rule import RepeatSpotRule
             _trk = self.tracker
             _trk.spot_rule = RepeatSpotRule(
-                _trk.valid_calls,
                 lambda c: {'active': 2, 'rare': 3}.get(_trk._matches_patt3ch(c), 4))
         # If the gate is configured (peers listed), start the peer-tee
         # threads regardless of whether the gate is currently on. The
@@ -7884,7 +7883,6 @@ def run_file_mode(args, config):
         from spot_rule import RepeatSpotRule
         _trk = tracker
         _trk.spot_rule = RepeatSpotRule(
-            _trk.valid_calls,
             lambda c: {'active': 2, 'rare': 3}.get(_trk._matches_patt3ch(c), 4))
 
     # Determine file format and sample rate

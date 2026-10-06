@@ -1,15 +1,19 @@
 """Repeat-evidence spot rule (config spot_rule: "repeat"; cdub89/SparkGap#8 SP2).
 
 A call is spotted when, within the reputation horizon:
-  1. it is the first callsign within LOOKAHEAD tokens after CQ, TEST or CWT
+  1. it is the first callsign within LOOKAHEAD tokens after CQ or TEST
      (CQ CWT K0TQ, CQ POTA DE WX7V);
-  2. that happens in at least tier(call) decode windows (2, 3 or 4 by patt3ch.lst),
-     and the call is in SCP;
-  3. near-miss copies count toward it: a call one character off an SCP call that has
+  2. that happens in at least tier(call) decode windows (2, 3 or 4 by patt3ch.lst);
+  3. near-miss copies count toward it: a call one character off a call that has
      at least twice its windows on the same frequency is counted as that call;
   4. a call followed by a name and a number or state is a caller being sent the
      exchange, not a runner, and does not count.
 One spot per call per SPOT_HOLD_S unless it moves more than SPOT_MOVE_KHZ.
+
+Matches the reference, WX7V/5 (CW Skimmer at validation Normal, no Master.dta, through
+the Aggregator's CQ filter): patt3ch tiers and repeats, no SCP check (8 of the 12 calls
+it sent to RBN 2026-10-06 18:21-19:02Z are not in MASTER.SCP). CWT alone is not a
+keyword until a contest run shows CW Skimmer tags "TU CWT <call>" as CQ.
 
 A window is one decode window of one bin; both LPF paths of a window count once.
 """
@@ -19,7 +23,7 @@ from collections import Counter, defaultdict, deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
-KEYWORDS = frozenset({"CQ", "TEST", "CWT"})
+KEYWORDS = frozenset({"CQ", "TEST"})
 LOOKAHEAD = 3                 # tokens after a keyword searched for the sender's call
 SAME_FREQ_KHZ = 0.3           # near-miss copies must share a frequency within this
 MERGE_RATIO = 2               # the real call needs this many times the copy's windows
@@ -96,7 +100,7 @@ def is_exchange(toks: list[str], j: int) -> bool:
 
 
 def runner_calls(text: str) -> list[str]:
-    """Calls this text puts right after CQ, TEST or CWT (rules 1 and 4)."""
+    """Calls this text puts right after CQ or TEST (rules 1 and 4)."""
     toks = tokens(text)
     out = []
     for i, t in enumerate(toks):
@@ -134,8 +138,7 @@ _NEAR_BINS = range(-round(SAME_FREQ_KHZ * 10), round(SAME_FREQ_KHZ * 10) + 1)
 class RepeatSpotRule:
     """Feed every decode window; returns the spots the window completes."""
 
-    def __init__(self, valid_calls: set[str], tier: Callable[[str], int]) -> None:
-        self.valid_calls = valid_calls
+    def __init__(self, tier: Callable[[str], int]) -> None:
         self.tier = tier
         self._calls: dict[str, _Sightings] = {}
         self._index: dict[str, set[str]] = defaultdict(set)   # edit-1 keys -> calls
@@ -172,7 +175,7 @@ class RepeatSpotRule:
         for call in runner_calls(text):
             self._calls[call].keyed.setdefault(window, freq_khz)
             target = self._dominant(call) or call
-            if target not in self.valid_calls or not self._near(target, freq_khz):
+            if not self._near(target, freq_khz):
                 continue
             if self._keyed_windows(target) >= self.tier(target):
                 last = self._last_spot.get(target)
@@ -208,12 +211,11 @@ class RepeatSpotRule:
         return any(self._near(b, f / 10) for f in self._calls[a].bins)
 
     def _dominant(self, call: str) -> str | None:
-        """The SCP call this call is a near-miss copy of (rule 3), or None. The copy may itself
-        be in SCP: garbles often are (K1AA for K1AJ). A runner is decoded in nearly every
-        window, so it is never outnumbered 2:1 by a caller one character away."""
+        """The call this call is a near-miss copy of (rule 3), or None. A runner is decoded
+        in nearly every window, so it is never outnumbered 2:1 by a caller one character away."""
         best = None
         for d in self._neighbours(call):
-            if (d in self.valid_calls and self._n(d) >= MERGE_RATIO * self._n(call)
+            if (self._n(d) >= MERGE_RATIO * self._n(call)
                     and self._shares_freq(call, d)
                     and (best is None or self._n(d) > self._n(best))):
                 best = d
