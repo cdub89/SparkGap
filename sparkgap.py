@@ -2420,6 +2420,10 @@ class _ItilaChannel:
 # ---------------------------------------------------------------------------
 
 DF_STALE_WINDOWS = 10   # second pass: re-check an identified bin after this many windows without a new call
+DF_CQ_LOOKBACK = 2      # "cq" mode: CQ evidence within this many windows qualifies a bin
+# CQ evidence for the second-pass trigger: looks inside tokens too, so merged
+# copy like "CQCWTWJ9B" or "TESTDK4A" counts (CQ_PATTERNS needs word boundaries).
+_DF_CQ_EVIDENCE = re.compile(r'CQ|TEST|CWT|SST|MST|QRZ')
 
 
 class _ItilaScanner:
@@ -2509,16 +2513,19 @@ class _ItilaScanner:
             self._c_decode = False
 
         # Optional neural second pass (issue #5, PR #7).  Config:
-        #   "second_pass": {"decoder": "deepfist", "mode": "rescue"|"all",
-        #                   "max_bins": 50, "model": "models/deepfist.onnx",
+        #   "second_pass": {"decoder": "deepfist", "mode": "cq"|"rescue"|"all",
+        #                   "probe_every": 5, "max_bins": 50,
+        #                   "model": "models/deepfist.onnx",
         #                   "threads": 1}
-        # rescue = only windows where ITILA found no new call; all = every
-        # window.  max_bins caps scanner slots with baseband capture (memory
+        # cq (default) = bins ITILA hasn't identified that show CQ evidence
+        # (ITILA's or DeepFist's text) in the last DF_CQ_LOOKBACK windows,
+        # plus one probe every probe_every windows (default 5, 0 = off);
+        # rescue = every unidentified bin; all = every window.  max_bins caps scanner slots with baseband capture (memory
         # ~0.6 MB each).  Decodes run on a background thread; results are
         # applied in collect().  Absent / decoder != deepfist -> off.
         self._df = None
         sp = second_pass or {}
-        if (sp.get('decoder') == 'deepfist' and sp.get('mode', 'rescue') in ('rescue', 'all')
+        if (sp.get('decoder') == 'deepfist' and sp.get('mode', 'cq') in ('cq', 'rescue', 'all')
                 and self._sc and hasattr(self._sc._lib, 'itila_sc_peek_iq')):
             lib = self._sc._lib
             lib.itila_sc_enable_iq_capture.restype = None
@@ -2534,7 +2541,8 @@ class _ItilaScanner:
                 log.error("second_pass: DeepFist unavailable (%s) -- staying off", e)
             if self._df:
                 lib.itila_sc_enable_iq_capture(self._sc._h, int(sp.get('max_bins', 50)))
-                self._df_mode = sp.get('mode', 'rescue')
+                self._df_mode = sp.get('mode', 'cq')
+                self._df_probe = int(sp.get('probe_every', 5))   # cq mode; 0 = no probes
                 self._df_sync = bool(sp.get('sync', False))
                 self._df_n_iq = self._window_samples * 5   # 1 kHz IQ per 200 Hz env sample
                 log.info("second_pass: DeepFist %s, max_bins=%d, model=%s",
@@ -2640,6 +2648,10 @@ class _ItilaScanner:
                 continue
             cost = lib.itila_get_last_cost(h)
             log.info("ITILA raw %.1f kHz cost=%.2f: %r", f_khz, cost, raw[:400])
+            # Second-pass trigger evidence -- before the cost gate, since a
+            # garbled CQ is exactly what tends to fail it.
+            if self._df and _DF_CQ_EVIDENCE.search(raw):
+                st['df_cq_win'] = st.get('df_win', 0)
             # Timing-cost gate (off by default).  Drops the whole decode
             # window's call extraction when segmentation quality is too low;
             # logs the suppression with cost so we can tune the threshold
@@ -2704,14 +2716,26 @@ class _ItilaScanner:
         # the frequency).  Counted in decode windows, not wall time, so file
         # mode measures the same rule.  (Rescuing every window without a NEW
         # call re-decoded runners ITILA already copies -- "all" in practice.)
-        if len(st['spotted']) > spotted_before:
-            st['windows_since_call'] = 0
-        else:
-            st['windows_since_call'] = st.get('windows_since_call', 0) + 1
-        if df_iq is not None and (
-                self._df_mode == 'all' or not st['spotted']
-                or st['windows_since_call'] >= DF_STALE_WINDOWS):
-            self._df.submit(f_hz, df_iq)
+        if self._df:
+            if len(st['spotted']) > spotted_before:
+                st['windows_since_call'] = 0
+            else:
+                st['windows_since_call'] = st.get('windows_since_call', 0) + 1
+            unidentified = (not st['spotted']
+                            or st['windows_since_call'] >= DF_STALE_WINDOWS)
+            win = st.get('df_win', 0)
+            if self._df_mode == 'all':
+                go = True
+            elif self._df_mode == 'rescue':
+                go = unidentified
+            else:   # 'cq': ITILA (or DeepFist) saw CQ here but no call came out,
+                    # plus a periodic probe so ITILA-garbage bins get a look
+                cq_recent = win - st.get('df_cq_win', -10**9) <= DF_CQ_LOOKBACK
+                probe = self._df_probe > 0 and win % self._df_probe == 0
+                go = unidentified and (cq_recent or probe)
+            if df_iq is not None and go:
+                self._df.submit(f_hz, df_iq)
+            st['df_win'] = win + 1
 
     def _process_ready_c(self):
         """C decode loop — all bin iteration + decode happens in C."""
@@ -2818,6 +2842,8 @@ class _ItilaScanner:
             st['df_buf'] = (st.get('df_buf', '') + ' ' + text)[-512:]
             if CQ_PATTERNS.search(text):
                 st['df_last_cq'] = now
+            if _DF_CQ_EVIDENCE.search(text):
+                st['df_cq_win'] = st.get('df_win', 0)
             call = _itila_extract_cq_call(text, self.valid_calls)
             if not call and now - st.get('df_last_cq', 0.0) < 120.0:
                 call = _itila_extract_cq_call(st['df_buf'], self.valid_calls)
