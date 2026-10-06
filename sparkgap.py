@@ -1619,6 +1619,20 @@ def _select_cw_decoder(name):
     log.info("CW decoder: %s (%s, %s)", name, _itila_lib_path, _scanner_lib_path)
     return _itila_lib_path
 
+_SPOT_RULES = ('off', 'repeat')
+_spot_rule_on = False
+_window_seq = itertools.count(1)   # window keys for spot_rule; never reused, unlike id(bin state)
+
+def _select_spot_rule(name):
+    """Config key spot_rule: "repeat" sends whole ITILA decode windows to
+    spot_rule.RepeatSpotRule instead of the Path 1/Path 2 extraction (cdub89/SparkGap#8 SP2)."""
+    global _spot_rule_on
+    if name not in _SPOT_RULES:
+        raise ValueError("spot_rule must be one of %s, got %r" % (list(_SPOT_RULES), name))
+    _spot_rule_on = name == 'repeat'
+    log.info("Spot rule: %s", name)
+    return _spot_rule_on
+
 def _get_itila_lib():
     global _itila_lib
     if _itila_lib is None:
@@ -2615,6 +2629,7 @@ class _ItilaScanner:
         if snr > 0:
             st['snr'] = snr
         now = time.time()
+        window_key = next(_window_seq)
 
         for h, env in ((st['h100'], env100), (st['h200'], env200)):
             if h is None or h.value is None:
@@ -2649,6 +2664,10 @@ class _ItilaScanner:
             # Check for CQ trigger in this window's raw text
             if CQ_PATTERNS.search(raw):
                 st['last_cq_time'] = now
+
+            if _spot_rule_on:
+                _emit_window(st, f_khz, raw, wpm, window_key)
+                continue
 
             # Path 1: direct extraction from this window (standard)
             call = _itila_extract_cq_call(raw, self.valid_calls)
@@ -2705,6 +2724,7 @@ class _ItilaScanner:
             buf, _ct.c_int(max_results))
 
         now = time.time()
+        self._c_batch = next(_window_seq)
         for i in range(n):
             offset = i * result_size
             f_hz = _ct.c_double.from_buffer(buf, offset).value
@@ -2739,6 +2759,10 @@ class _ItilaScanner:
             st['text_buf'] = (st['text_buf'] + ' ' + raw)[-512:]
             if CQ_PATTERNS.search(raw):
                 st['last_cq_time'] = now
+
+            if _spot_rule_on:
+                _emit_window(st, f_khz, raw, wpm, self._c_batch)
+                continue
 
             # Path 1: direct CQ extraction
             call = _itila_extract_cq_call(raw, self.valid_calls)
@@ -4970,6 +4994,7 @@ class SpotIntent:
     window_id: int = 0     # monotonic per-bin counter; lets downstream group
                            # multiple intents from one window without text reparse
     bin_id:    int = 0     # id(bin_state) — stable for bin lifetime
+    window_text: str = ''  # spot_rule "repeat": whole decoded text, call empty
 
 
 def _emit_intent(st, f_khz, call, wpm, is_runner, raw_text=''):
@@ -4988,6 +5013,14 @@ def _emit_intent(st, f_khz, call, wpm, is_runner, raw_text=''):
     )
     st['window_id_next'] += 1
     st['pending'].append(intent)
+
+
+def _emit_window(st, f_khz, raw, wpm, window_key):
+    """spot_rule "repeat": queue one decoded text of a window for RepeatSpotRule.
+    Both LPF paths of a window share window_key, so they count as one sighting."""
+    st['pending'].append(SpotIntent(
+        call='', freq_khz=f_khz, snr_db=st['snr'], wpm=wpm, is_runner=True,
+        window_id=window_key, bin_id=id(st), window_text=raw))
 
 
 class SpotTracker:
@@ -5030,6 +5063,7 @@ class SpotTracker:
         self.valid_calls = valid_calls
         self.blacklist = blacklist
         self.respot_interval = respot_interval
+        self.spot_rule = None      # spot_rule.RepeatSpotRule when config spot_rule is "repeat"
         self.fuzzy_min_cycles = fuzzy_min_cycles
         self.add_calls = add_calls or set()
         # Gate config — start with defaults, override anything in gate_config arg
@@ -5941,6 +5975,17 @@ class SpotTracker:
         (extracted_call, is_runner, has_cq_context) to skip the
         re-parsing step.  Deferred until this wrapper proves stable.
         """
+        if intent.window_text:
+            # Same safety floor as process(): over-speed windows are not evidence,
+            # blacklisted calls never spot.
+            if not self.spot_rule or intent.wpm > self.MAX_WPM:
+                return []
+            now = time.time()
+            w = self.spot_rule.window_id(intent.bin_id, intent.window_id, now)
+            return [{'call': call, 'freq_khz': f, 'snr': intent.snr_db,
+                     'wpm': intent.wpm, 'method': 'repeat'}
+                    for call, f in self.spot_rule.feed(w, intent.freq_khz, intent.window_text, now)
+                    if call not in self.blacklist]
         # gate_short_scp_exact: require a second sighting at the same freq
         # for ≤3-char SCP calls coming via the ITILA [exact] path.  The
         # synthetic "CQ <call> " below auto-sets has_context in process(),
@@ -6591,6 +6636,12 @@ class SparkGap:
                                    scp_bypass_threshold=int(self.cfg.get('scp_bypass_threshold', 0)),
                                    gate_config=gate_config,
                                    recent_band_config=self.cfg.get('recent_band_floor'))
+        if _select_spot_rule(self.cfg.get('spot_rule', 'off')):
+            from spot_rule import RepeatSpotRule
+            _trk = self.tracker
+            _trk.spot_rule = RepeatSpotRule(
+                _trk.valid_calls,
+                lambda c: {'active': 2, 'rare': 3}.get(_trk._matches_patt3ch(c), 4))
         # If the gate is configured (peers listed), start the peer-tee
         # threads regardless of whether the gate is currently on. The
         # support map is cheap to maintain and we want it warm if the
@@ -7047,6 +7098,7 @@ class SparkGap:
                 n = self.receiver.lib.hpsdr_poll_results(
                     self.receiver._h, poll_buf, _ct.c_int(max_poll))
                 now = time.time()
+                self._poll_batch = next(_window_seq)
                 for i in range(n):
                     off = i * result_size
                     f_hz = _ct.c_double.from_buffer(poll_buf, off).value
@@ -7088,6 +7140,9 @@ class SparkGap:
                     st['text_buf'] = (st['text_buf'] + ' ' + raw)[-512:]
                     if CQ_PATTERNS.search(raw):
                         st['last_cq_time'] = now
+                    if _spot_rule_on:
+                        _emit_window(st, f_khz, raw, wpm, self._poll_batch)
+                        continue
                     call = _itila_extract_cq_call(raw, self.tracker.valid_calls)
                     if call and call not in st['spotted']:
                         st['spotted'].add(call)
@@ -7768,6 +7823,12 @@ def run_file_mode(args, config):
     tracker = SpotTracker(calls, blacklist, respot_interval=0, add_calls=add_calls,
                           scp_bypass_threshold=int(config.get('scp_bypass_threshold', 0)),
                           gate_config=gate_config)
+    if _select_spot_rule(config.get('spot_rule', 'off')):
+        from spot_rule import RepeatSpotRule
+        _trk = tracker
+        _trk.spot_rule = RepeatSpotRule(
+            _trk.valid_calls,
+            lambda c: {'active': 2, 'rare': 3}.get(_trk._matches_patt3ch(c), 4))
 
     # Determine file format and sample rate
     with open(args.file, 'rb') as f:
