@@ -70,7 +70,7 @@ class SecondPassWorker:
     (key, text, err) tuples; flush() waits for everything submitted so far
     (file mode, for deterministic replay)."""
 
-    def __init__(self, decoder, max_queue=256, workers=1):
+    def __init__(self, decoder, max_queue=256, workers=1, nice=10):
         """workers > 1 runs that many decode threads on the same queue; the
         decoder's decode_iq must then be thread-safe (DeepFist's is: numpy
         front end + onnxruntime Session.run)."""
@@ -81,11 +81,21 @@ class SecondPassWorker:
         self._lock = threading.Lock()
         self.dropped = 0
         self.decoded = 0
+        self._nice = int(nice)
         for i in range(max(1, int(workers))):
             threading.Thread(target=self._run, name='second-pass-%s-%d' % (self.name, i),
                              daemon=True).start()
 
     def _run(self):
+        # Lower this decode thread's scheduling priority (Linux: nice is per
+        # thread) so the primary decoder's threads always win the CPU -- the
+        # second pass must never starve ITILA / the receiver.
+        if self._nice:
+            try:
+                import os
+                os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), self._nice)
+            except (AttributeError, OSError):
+                pass
         while True:
             key, iq, first_look = self._jobs.get()
             try:

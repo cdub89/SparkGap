@@ -2462,7 +2462,8 @@ class _SecondPass:
 
     def __init__(self, sp, window_samples):
         from second_pass import load_decoder, SecondPassWorker
-        self.worker = SecondPassWorker(load_decoder(sp), workers=int(sp.get('workers', 1)))
+        self.worker = SecondPassWorker(load_decoder(sp), workers=int(sp.get('workers', 1)),
+                                       nice=int(sp.get('nice', 10)))
         self.name = self.worker.name
         self.tag = self.name.upper()
         self.mode = sp.get('mode', 'cq')
@@ -7147,6 +7148,37 @@ class SparkGap:
         except Exception:
             pass  # Don't let errors kill the receiver thread
 
+    def _df_live(self, owner, f_hz, st, raw, cost, spotted_before_set):
+        """Second pass on the live C path: the C worker already decoded this
+        window and shifted it out, so fetch the copy it kept (lastwin) from
+        the band scanner that owns f_hz, once per window (each window yields
+        two results, one per ITILA LPF path), and hand it to the shared
+        pool's consider(). `owner` holds the bin state (the C result loop
+        keeps every band's bins in the first scanner)."""
+        import ctypes as _ct
+        pool = owner._df
+        half = self.cfg.get('sample_rate', 192000) / 2.0
+        band_sc = None
+        for (_bn, ch, _ri), mgr in zip(self._band_meta, self.managers):
+            sc = mgr._itila_scanner
+            if sc and sc._sc and abs(f_hz - ch) < half:
+                band_sc = sc
+                break
+        if band_sc is None or not hasattr(band_sc._sc._lib, 'itila_sc_peek_lastwin'):
+            return
+        iq = np.empty(2 * pool.n_iq, dtype=np.float32)
+        seq = _ct.c_uint(0)
+        got = band_sc._sc._lib.itila_sc_peek_lastwin(
+            band_sc._sc._h, _ct.c_double(f_hz),
+            iq.ctypes.data_as(_ct.POINTER(_ct.c_float)), pool.n_iq, _ct.byref(seq))
+        if got < int(0.9 * pool.n_iq):
+            return                       # no capture slot for this bin, or short window
+        key = (id(band_sc), seq.value)
+        if st.get('df_seq') == key:
+            return                       # second result of the same window
+        st['df_seq'] = key
+        pool.consider(owner, f_hz, st, iq[:2 * got], spotted_before_set, [cost], [raw])
+
     async def run(self):
         use_c = getattr(self, '_use_c_receiver', False)
         if use_c:
@@ -7338,6 +7370,9 @@ class SparkGap:
                     st['snr'] = snr
                     if wpm > 0:
                         st['wpm'] = wpm
+                    spotted_before_set = set(st['spotted'])
+                    if scanner._df and _DF_CQ_EVIDENCE.search(raw):
+                        st['df_cq_win'] = st.get('df_win', 0)
                     st['text_buf'] = (st['text_buf'] + ' ' + raw)[-512:]
                     if CQ_PATTERNS.search(raw):
                         st['last_cq_time'] = now
@@ -7355,6 +7390,14 @@ class SparkGap:
                             _emit_intent(st, f_khz, call, wpm, is_runner=True, raw_text=raw)
                             log.info("ITILA context %.1f kHz: %s %d WPM",
                                      f_khz, call, wpm)
+                    if scanner._df:
+                        self._df_live(scanner, f_hz, st, raw, cost, spotted_before_set)
+                # live: wall-clock ranking horizon (runs even when no results
+                # arrived this poll; `scanner` is only bound inside the loop)
+                _pool = next((m._itila_scanner._df for m in self.managers
+                              if m._itila_scanner and getattr(m._itila_scanner, '_df', None)), None)
+                if _pool is not None:
+                    _pool.maybe_select()
 
             # ----------------------------------------------------------------
             # Periodic signal scan — one FFT per band
