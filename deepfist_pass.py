@@ -153,6 +153,10 @@ class DeepFistOnnx:
             cfg = {'model': cfg, 'threads': threads}
         model_path = cfg.get('model', 'models/deepfist.onnx')
         threads = int(cfg.get('threads', 1))
+        # Decode window and hop (s). The model was trained on 6 s clips;
+        # upstream's real-audio eval uses 15 s non-overlapping windows.
+        self.win_sec = float(cfg.get('win_sec', WIN_SEC))
+        self.hop_sec = float(cfg.get('hop_sec', self.win_sec))
         import onnxruntime as ort
         meta = json.load(open(model_path + '.json'))
         check_model_meta(meta)
@@ -186,8 +190,8 @@ class DeepFistOnnx:
         """Audio at SR -> text: 15 s windows, keying squelch, conditioner, net, CTC.
         first_look: decode only the single most-keyed window (the squelch score
         is ~8 ms per window, the net ~135 ms) -- a cheap look at a new bin."""
-        win = int(WIN_SEC * SR)
-        segs = [a[i:i + win] for i in range(0, len(a), win)]
+        win, hop = int(self.win_sec * SR), int(self.hop_sec * SR)
+        segs = [a[i:i + win] for i in range(0, max(len(a) - win, 0) + hop, hop)]
         scored = [(_keying_ratio(seg, SR), seg) for seg in segs if len(seg) >= SR]
         scored = [(k, seg) for k, seg in scored if k >= _SQUELCH_THRESH]
         if first_look and scored:
