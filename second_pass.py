@@ -117,6 +117,17 @@ class SecondPassWorker:
                 self.dropped += 1
             return False
 
+    def clear(self):
+        """Discard queued (not yet started) jobs; returns how many."""
+        n = 0
+        while True:
+            try:
+                self._jobs.get_nowait()
+            except queue.Empty:
+                return n
+            self._jobs.task_done()
+            n += 1
+
     def drain(self):
         out = []
         while True:

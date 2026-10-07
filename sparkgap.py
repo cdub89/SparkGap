@@ -2478,6 +2478,15 @@ class _SecondPass:
         self.budget = float(sp.get('jobs_per_min', 0))
         # ranking horizon: candidates gathered over this long are ranked together
         self.select_sec = float(sp.get('select_sec', DF_SELECT_SEC))
+        # Backoff (live): when ITILA starts dropping envelopes (its decoder
+        # can't keep up), pause the second pass for backoff_sec and discard
+        # queued jobs -- ITILA always wins. Measured on an 8-core box at 8
+        # dense bands: DF at nice 10 still raised ITILA's env_drops ~80%.
+        self.backoff_sec = float(sp.get('backoff_sec', 30))
+        self.paused_until = 0.0
+        self.backed_off = self.backoffs = 0
+        self._pressure = None     # last env_drops reading
+        self._pressure_t = 0.0
         self.audio_t = 0.0
         self.sel_t = None
         self.tokens = 0.0
@@ -2503,6 +2512,29 @@ class _SecondPass:
         self.worker.submit(job, iq, first_look=first_look)
         self.submitted += 1
         self.looks += first_look
+
+    def paused(self):
+        return self.now() < self.paused_until
+
+    def pressure(self, env_drops):
+        """Feed ITILA's cumulative env_drops counter (live path, any rate;
+        checked at most once a second). A rise starts or extends a pause."""
+        if self.backoff_sec <= 0 or self.sync:
+            return
+        t = self.now()
+        if t - self._pressure_t < 1.0:
+            return
+        self._pressure_t = t
+        prev, self._pressure = self._pressure, env_drops
+        if prev is None or env_drops <= prev:
+            return
+        if not self.paused():
+            self.backoffs += 1
+            log.info("%s backoff: ITILA dropped %d envelope samples; pausing second pass "
+                     "for %.0f s", self.tag, env_drops - prev, self.backoff_sec)
+        self.paused_until = t + self.backoff_sec
+        self.backed_off += len(self.cands) + self.worker.clear()
+        self.cands = []
 
     def maybe_select(self, force=False):
         if self.budget <= 0 or not self.cands:
@@ -2566,7 +2598,9 @@ class _SecondPass:
             job = (f_hz, win, cls, st.get('snr', 0.0), cost, noise, ilen,
                    ','.join(sorted(new_calls)) or '-')
             # Optional prefilter: ITILA heard almost nothing and no CQ evidence
-            if not (cls < 2 and ilen < self.min_ilen):
+            if self.paused():
+                self.backed_off += 1
+            elif not (cls < 2 and ilen < self.min_ilen):
                 first_look = self.mode == 'cq' and look
                 if self.budget > 0:
                     self.cands.append((_df_priority(job), owner, job, df_iq, first_look))
@@ -2601,9 +2635,9 @@ class _SecondPass:
         self._final = True
         self.maybe_select(force=True)       # last partial horizon (file mode end)
         log.info("second_pass stats: submitted=%d (first looks %d) decoded=%d dropped=%d "
-                 "over_budget=%d budget=%g/min audio=%.0fs",
+                 "over_budget=%d backed_off=%d (%d pauses) budget=%g/min audio=%.0fs",
                  self.submitted, self.looks, self.worker.decoded, self.worker.dropped,
-                 self.over_budget, self.budget, self.audio_t)
+                 self.over_budget, self.backed_off, self.backoffs, self.budget, self.audio_t)
 
 
 class _ItilaScanner:
@@ -7148,6 +7182,18 @@ class SparkGap:
         except Exception:
             pass  # Don't let errors kill the receiver thread
 
+    def _env_drops_total(self):
+        """Sum of every band scanner's envelope-cap drops (ITILA overload)."""
+        import ctypes as _ct
+        n = 0
+        for mgr in self.managers:
+            sc = getattr(getattr(mgr, '_itila_scanner', None), '_sc', None)
+            if sc and sc._h and hasattr(sc._lib, 'itila_sc_env_drops'):
+                f = sc._lib.itila_sc_env_drops
+                f.restype, f.argtypes = _ct.c_ulonglong, [_ct.c_void_p]
+                n += f(sc._h)
+        return n
+
     def _df_live(self, owner, f_hz, st, raw, cost, spotted_before_set):
         """Second pass on the live C path: the C worker already decoded this
         window and shifted it out, so fetch the copy it kept (lastwin) from
@@ -7397,6 +7443,7 @@ class SparkGap:
                 _pool = next((m._itila_scanner._df for m in self.managers
                               if m._itila_scanner and getattr(m._itila_scanner, '_df', None)), None)
                 if _pool is not None:
+                    _pool.pressure(self._env_drops_total())
                     _pool.maybe_select()
 
             # ----------------------------------------------------------------

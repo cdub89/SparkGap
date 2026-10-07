@@ -132,3 +132,42 @@ if __name__ == '__main__':
         except Exception as e:
             print('FAIL ', fn.__name__, type(e).__name__, e)
     print(f'\n{ok}/{len(fns)} passed'); sys.exit(0 if ok == len(fns) else 1)
+
+
+def test_backoff_pauses_on_env_drops():
+    """A rise in ITILA's env_drops pauses the pool, discards queued work,
+    and blocks new jobs until backoff_sec has passed."""
+    import sparkgap as S
+
+    class Stub:
+        name = 'stub'
+        def __init__(self, cfg): pass
+        def decode_iq(self, iq, first_look=False):
+            return ''
+    pool = S._SecondPass.__new__(S._SecondPass)
+    pool.worker = SP.SecondPassWorker(Stub({}))
+    pool.tag, pool.sync, pool.backoff_sec = 'STUB', False, 30.0
+    pool.paused_until, pool.backed_off, pool.backoffs = 0.0, 0, 0
+    pool._pressure, pool._pressure_t = None, 0.0
+    pool.cands = [(1.0, None, None, None, False)] * 3
+    t = [1000.0]
+    pool.now = lambda: t[0]
+    pool.pressure(500)                 # first reading: baseline only
+    assert not pool.paused()
+    t[0] += 2; pool.pressure(500)      # no rise
+    assert not pool.paused()
+    t[0] += 2; pool.pressure(900)      # ITILA dropping -> pause
+    assert pool.paused() and pool.backoffs == 1 and pool.backed_off == 3 and not pool.cands
+    t[0] += 0.5; pool.pressure(2000)   # < 1 s since last check: ignored
+    assert pool.backoffs == 1 and pool._pressure == 900
+    t[0] += 31; pool.pressure(900)     # no new drops, window passed
+    assert not pool.paused()
+    t[0] += 2; pool.pressure(1500)     # drops again -> second pause
+    assert pool.paused() and pool.backoffs == 2
+    t[0] += 20; pool.pressure(1600)    # still dropping -> pause extended, same episode
+    assert pool.paused() and pool.backoffs == 2 and pool.paused_until == t[0] + 30
+    t[0] += 31; pool.pressure(1600)
+    assert not pool.paused()
+    pool.backoff_sec = 0               # disabled
+    t[0] += 2; pool.pressure(9999)
+    assert not pool.paused()
