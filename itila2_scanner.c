@@ -48,6 +48,7 @@
 #define SC_CAND_HITS_REQUIRED  3
 #define SC_CAND_EXPIRY_SCANS   10
 #define SC_CAND_CLUSTER_HZ     150.0
+#define SC_CAND_AVG_HZ         25.0    /* hits averaged into the new bin's frequency */
 
 #include "itila_fir_coeffs.h"
 
@@ -195,6 +196,8 @@ struct ItilaSc {
     int64_t  scan_counter;
     struct {
         double f_hz;
+        double f_first, f_sum;   /* interpolated peak: first hit, sum of hits near it */
+        int    n_avg;
         int    hits;
         int64_t last_seen_scan;
         int    in_use;
@@ -374,14 +377,15 @@ static void run_scan(ItilaSc *sc, const double *seg_i, const double *seg_q)
      * File-mode A/B recovered HA9RE the same way.  Held until decode-
      * thread split (1cb74fc) addressed the bin-pressure ceiling that
      * tighter clustering would otherwise hit. */
-    double cluster_hz = 50.0;
+    double cluster_hz = 75.0;  /* one signal one bin; co-channel stations 100 Hz apart stay separate */
     for (int i = 0; i < np; i++) {
         double f_hz = peaks[i].f_hz;
 
-        /* Skip if within cluster_hz of any active bin - but update its SNR */
+        /* Skip if within cluster_hz of any active bin - but update its SNR.
+         * Bin and peak both at the interpolated frequency, so one signal is one bin. */
         int found = 0;
         for (int b = 0; b < SC_MAX_BINS; b++) {
-            if (sc->bins[b].active && fabs(sc->bins[b].f_hz - f_hz) < cluster_hz) {
+            if (sc->bins[b].active && fabs(sc->bins[b].f_hz - peaks[i].f_exact) <= cluster_hz) {
                 sc->bins[b].snr_db = peaks[i].snr;
                 found = 1; break;
             }
@@ -414,9 +418,16 @@ static void run_scan(ItilaSc *sc, const double *seg_i, const double *seg_q)
             if (cand_idx < 0) cand_idx = oldest_idx;
             sc->cand[cand_idx].f_hz   = f_hz;
             sc->cand[cand_idx].hits   = 0;
+            sc->cand[cand_idx].f_first = peaks[i].f_exact;
+            sc->cand[cand_idx].f_sum  = 0.0;
+            sc->cand[cand_idx].n_avg  = 0;
             sc->cand[cand_idx].in_use = 1;
         }
         sc->cand[cand_idx].hits++;
+        if (fabs(peaks[i].f_exact - sc->cand[cand_idx].f_first) <= SC_CAND_AVG_HZ) {
+            sc->cand[cand_idx].f_sum += peaks[i].f_exact;
+            sc->cand[cand_idx].n_avg++;
+        }
         sc->cand[cand_idx].last_seen_scan = sc->scan_counter;
         if (sc->cand[cand_idx].hits < SC_CAND_HITS_REQUIRED) {
             sc->spawn_gated++;
@@ -468,7 +479,7 @@ static void run_scan(ItilaSc *sc, const double *seg_i, const double *seg_q)
 
         ScBin *bin = &sc->bins[slot];
         memset(bin, 0, sizeof(ScBin));
-        bin->f_hz           = f_hz;
+        bin->f_hz           = sc->cand[cand_idx].f_sum / sc->cand[cand_idx].n_avg;
         bin->created_sample = sc->total_samples;
         bin->active  = 1;
         bin->c_phase = 1.0;
