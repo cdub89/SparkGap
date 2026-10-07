@@ -1,0 +1,113 @@
+<!-- markdownlint-disable MD013 -->
+# itila2: design and rationale
+
+itila2 is a second CW decoder chain for SparkGap, kept beside the original itila chain so the two can be compared on the same audio. It shares itila's architecture (wideband IQ, a scanner that spawns one channel per signal, an HMM decoder per channel) and changes the parts that measurement showed to be limiting. This note describes how itila2 works, what differs from itila, and the evidence behind each difference.
+
+Status: on `live/all` at `f9e0e94` (2026-10-07). Tracked in `cdub89/SparkGap#8`.
+
+## Selecting it
+
+| Config key | Value | Effect |
+| --- | --- | --- |
+| `cw_decoder` | `itila` (default) | `itila_core.c` + `itila_scanner.c`, Fred's chain, unchanged |
+| | `itila2` | `itila2_core.c` + `itila2_scanner.c` (`libitila2.so`, `libitila2_scanner.so`) |
+| `spot_rule` | `off` (default) | the original spot path (`_itila_extract_cq_call`, `SpotTracker.process`) |
+| | `repeat` | `spot_rule.py`: whole decode windows go to `RepeatSpotRule` |
+| `itila_decode_threads` | 1 (default) | number of bins decoded in parallel, and scanner DSP worker threads |
+
+Decoder and scanner are selected together: an itila2 decoder on itila's scanner (or the reverse) is never run. The spot rule is independent of the decoder, so both chains can be scored under either rule.
+
+## Signal chain
+
+```text
+SDR IQ (Flex DAX-IQ 48/96 kHz, HPSDR, or a WAV)
+  -> scanner: FFT scan (4096 points), CFAR peaks, spawn one bin per signal
+  -> per bin: mix to baseband, stage-1 FIR to 12 kHz, stage-2 FIRs to 2 kHz
+     on two paths (narrow and wide), magnitude, stage-3 FIR to 200 Hz envelope
+  -> decoder, per 60 s window per path:
+     level reference, EM-fitted two-state HMM, forward-backward posterior,
+     marks and spaces, despeckle, timing fit, beam search over Morse
+  -> decoded text per window
+  -> spot rule (CQ/TEST, repeats, copies merged) -> telnet DX spots
+```
+
+## Scanner (`itila2_scanner.c` against `itila_scanner.c`)
+
+| | itila | itila2 | Why, and evidence |
+| --- | --- | --- | --- |
+| FIR inner loop | modulo per tap | two straight loops, same taps in the same order (SC2) | Every decoded line identical on all recordings; CWT CPU 0.57 to 0.41 x real time |
+| Sample counters | `int`, overflow after about 6 h at 96 kHz (3 h at 192) | wrapped at common multiples, time counters `int64_t` (SC3) | Out-of-bounds writes after hours of running. Also in itila via `hotairfred/SparkGap#8` |
+| Stage-1 FIR | about 13 dB rejection at the 12/24/36 kHz fold bands | longer FIRs, 40 dB or more at the folds (SC9) | Strong stations were decoded and spotted 12 kHz away; alias pairs 230 to 6 on B1. Also in itila via `hotairfred/SparkGap#8` |
+| Narrow path | magnitude of the stage-2 output | 40 ms Hann window before the magnitude (SC5) | Sharper key-state on the narrow path; adopted in `e2a0958` |
+| New bin start | first element often lost | 1 s of IQ replayed into a new bin (SC7) | +4 calls on the fixed set |
+| Bin spacing | peaks snapped to a 50 Hz grid; a new bin blocked only when closer than 50 Hz, so the next grid point of the same signal always spawned | spacing 75 Hz measured on the interpolated peak frequency; the bin centred on the average of its candidate's peaks within 25 Hz (SC11) | One strong station took 2 to 5 bins: wasted CPU, and one transmission counted as several windows by the spot rule. CPU -41% (20m 1 h) and -43% (20m CWT); CWT spots CW Skimmer never heard 16 to 5. Co-channel stations 100 Hz apart (K1GU next to WJ9B) stay separate |
+| Bin lifetime | spot evidence only | spot evidence only | A word keep-alive was tried and removed: noise decodes (ES, IS, E5E) kept 170 of 219 bins alive and memory only grew |
+| Threads | one | per-bin DSP split over a worker pool (`itila_decode_threads`) | Main thread 99% to 15%; 4 min replay 101 s to 59 s, identical decodes |
+
+## Decoder (`itila2_core.c` against `itila_core.c`)
+
+Shared with itila: the 200 Hz envelope, a two-state HMM (mark, space) whose parameters EM fits per window, speed marginalised over 16 WPM bins, forward-backward posterior, run lengths, beam search over the Morse tree, callsign extraction. itila2 caps speed at 35 WPM (real CW here is 15 to 25 WPM).
+
+| | itila | itila2 | Why, and evidence |
+| --- | --- | --- | --- |
+| Level reference | the whole window divided by its 99th percentile: one mark level per 60 s | a two-way peak follower (0.2 s decay) gives each element the level of its neighbourhood; the floor is the larger of 10% of the window's range and 8x its noise; 55% of the local peak maps to full mark level (DC5) | W1AW's element level moves 3 to 4 times within seconds, so a window-wide level dropped and split weak elements. Known-text character error on W1AW 42/54/34% to 3.1/3.7/1.9% on three clips (one never used for tuning). The noise floor keeps steady signals intact: without it, 20m recall halved because noise between transmissions was stretched into text |
+| Carry | each window decoded on its own | the unfinished last word (up to 20 s) is carried raw into the next window and normalised together with it | Words cut at window boundaries |
+| Sub-dot runs | every run is an element or a gap | runs shorter than 0.4 dot (rounded) are absorbed into their neighbours, shortest first (DC6) | A 25 ms dip split a dah into a dah and a dit (ON read YN). Rounding up instead cost 3 confirmed CWT spots |
+| Dit unit for spaces | from the EM speed estimate | fitted from the window's own mark runs (C2) | The EM unit was often wrong on clean keying (11.3 samples for a true 13), so every gap threshold was mis-scaled. +1 to +2 calls on each of four recordings, nothing lost |
+| Dit and dah for marks | 1 and 3 units of the EM speed | fitted dit and dah from the marks, CWReader-style (C7); a second pass when dahs hide the dits (C10) | +1 held-out call, nothing lost |
+| Letter/word gap boundary | fixed 5 units | fitted from the window's gaps, idle time excluded, with a class-separation guard (C1) | Operators whose letter gaps run 4 to 5 units were split into extra letters (W6TED) |
+| Per-bin memory | none | last fitted dit and dah kept per handle, used when a window has too few marks to fit (DC1) | Short windows no longer fall back to a wrong unit |
+
+## Spot rule (`spot_rule.py`, `spot_rule: repeat`)
+
+The reference is WX7V/5: CW Skimmer at validation Normal with no Master.dta, feeding the Aggregator, which forwards only CQ-tagged spots. The rule mirrors what that node sends.
+
+1. The call is the first callsign within 3 words after CQ or TEST, or after DE when CQ or TEST came earlier in the window with no call between and the call is sent twice (`CQ SKCC DE K4DH K4DH`).
+2. It must happen in 2, 3 or 4 decode windows, by the call's pattern (patt3ch.lst), as CW Skimmer validates. No SCP check: 8 of the 12 calls WX7V/5 sent in a 41-minute sample were not in MASTER.SCP.
+3. Copies count toward the real call heard on the same frequency: a one-character copy with half the windows, a truncated call (KM7E for KM7EJE), a call missing its last letter (AA0R for AA0RQ), and a call with a K glued on (N7FULK). A greeting glued after the call (`DE NV4H GM` decoded as NV4HGM) is not a longer call. Merge targets must have been heard in the last 5 minutes; possible copies wait at most 2 windows.
+4. A call followed by a name and a number (a caller being sent the exchange) does not count.
+5. One spot per call per 10 minutes unless it moves more than 2 kHz.
+
+Against the original path: the original spots an SCP call on its first CQ sighting or after repeat sightings without CQ (so callers can spot), spots non-SCP calls as `[unverified]`, and substitutes nearby SCP calls (W8HO became W8HOT). Live spots from the repeat rule match its replay scoring.
+
+## How it is measured
+
+| Measure | Source | Used for |
+| --- | --- | --- |
+| Character error against known text | W1AW code practice and bulletins (CW Skimmer copies them nearly perfectly); clips and harness in the bench folder | Decoder changes: tune on one clip, check on held-out clips |
+| Spots shared with the reference | WX7V/5 Aggregator log (CQ spots sent to RBN) on the same radio | Spot-level recall at the Lakehouse |
+| Confirmed | `tools/eval/rbn_confirm.py`: another RBN skimmer heard the call within 1 kHz | Precision; WX7V/5's own spots excluded |
+| CPU and memory | `/usr/bin/time` on replays; bins and RSS on the status line live | Cost; every change must be CPU-neutral or cheaper |
+
+Call-count scoring alone (5 to 33 calls per recording) could not separate real gains from noise; the known-text measure is what made DC5 and DC6 visible.
+
+## Results (itila2 at `f9e0e94`)
+
+| Recording | itila | itila2 |
+| --- | --- | --- |
+| W1AW clips A / B / C, character error vs true text | 42 / 54 / 34% (itila2 before DC5) | 3.1 / 3.7 / 1.9% |
+| 20m 2026-10-06, 1 h: spots / confirmed | 5 / 4 (spot rule at `fd6a20c`) | 16 / 15 |
+| 20m CWT 2026-09-23: spots / confirmed / shared with CW Skimmer's CQ calls | | 61 / 55 / 46 of 57 |
+| CPU, 20m 1 h replay | | SC11 -41%, then DC5 and DC6 a further -8% |
+
+Where both itila2 and CW Skimmer misread W1AW, the received element itself is cut (a dah reads short or a dit is missing): RUN TO BE, EDT, THURSDAY, FROM, W1AW. On a hand-keyed 40m net both produce nearly the same text, oddities included.
+
+## Tried and rejected
+
+| Change | Result |
+| --- | --- |
+| Fade gain applied to the fitted mark level after EM (C3 to C5) | Damaged steady signals, or did nothing once tamed |
+| 30 Hz matched envelope channel (C6) | Rounded mark edges; fewer spots |
+| Four times longer scan FFT (C8) | Separated close carriers but lost calls |
+| Mark level per segment after the gate (C9) | Fewer calls |
+| Per-state variances, soft decisions (DC2, DC3) | No gain |
+| Window continuity alone (DC4) | No gain |
+| Word keep-alive (SC6, SC10) | Noise kept bins alive; memory grew |
+| Peak-prominence mask at spawn | No gain beyond SC11 |
+| Level reference with a range-only floor | Halved 20m recall (noise stretched into text) |
+
+## Open
+
+- Hand-keyed fists (bugs, sideswipers, straight keys): dah lengths vary, and a net puts several fists in one 60 s window. Next candidate: fit the timing per transmission instead of per window.
+- A CQ at the end of one window with `DE call` at the start of the next is not linked by the spot rule (NV4H on 40m).
+- `itila_feed_online` has the level reference but is not used by SparkGap.
