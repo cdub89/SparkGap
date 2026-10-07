@@ -7,9 +7,10 @@ A call is spotted when, within the reputation horizon:
   2. that happens in at least tier(call) decode windows (2, 3 or 4 by patt3ch.lst);
   3. near-miss copies count toward it: a call one character off a call that has
      at least twice its windows on the same frequency is counted as that call, and so is
-     a truncated call (KM7E, two or more letters lost) when a call it begins (KM7EJE)
-     reaches its own tier there; a truncated call is not spotted while such a call is
-     being heard; merge targets must have been decoded within MERGE_RECENT_S;
+     a truncated call (KM7E) when a call it begins (KM7EJE) reaches its own tier there
+     (one lost letter, AA0R for AA0RQ, only when the longer call is heard as often), and
+     a call with a K glued on (N7FULK) counts as the call (N7FUL); such copies are not
+     spotted while their call is being heard; merge targets must be recent (MERGE_RECENT_S);
   4. a call followed by a name and a number or state is a caller being sent the
      exchange, not a runner, and does not count.
 One spot per call per SPOT_HOLD_S unless it moves more than SPOT_MOVE_KHZ.
@@ -33,6 +34,7 @@ DE_LOOKBACK = 6               # tokens before DE searched for CQ or TEST
 SAME_FREQ_KHZ = 0.3           # near-miss copies must share a frequency within this
 MERGE_RATIO = 2               # the real call needs this many times the copy's windows
 TRUNC_MIN = 3                 # shortest truncated call merged into a longer one (K4N)
+COPY_WAIT_WINDOWS = 2         # a possible one-character copy waits at most this many windows
 MERGE_RECENT_S = 300.0        # a merge target decoded longer ago than this is another station
 _GLUED = frozenset({"KN", "AR", "BK", "SK", "TU", "DE", "BT", "AS", "KA", "VA"})  # AB0CDKN
 _NOISE = frozenset("EISHT5")  # an extension of only these is dit/dah noise, not lost letters
@@ -203,6 +205,9 @@ class RepeatSpotRule:
             target = self._dominant(call) or call
             if not self._near(target, freq_khz) or self._longer(target):
                 continue
+            if (self._may_be_copy(target)
+                    and self._keyed_windows(target) < self.tier(target) + COPY_WAIT_WINDOWS):
+                continue
             if self._keyed_windows(target) >= self.tier(target):
                 last = self._last_spot.get(target)
                 if (last is None or now - last[0] >= SPOT_HOLD_S
@@ -217,7 +222,7 @@ class RepeatSpotRule:
         for i in range(len(call)):
             yield call[:i] + "*" + call[i + 1:]
             yield call[:i] + call[i + 1:]
-        for k in range(TRUNC_MIN, len(call) - 1):
+        for k in range(TRUNC_MIN, len(call)):
             yield "^" + call[:k]
 
     def _neighbours(self, call: str) -> set[str]:
@@ -227,15 +232,45 @@ class RepeatSpotRule:
         return {c for c in near if c != call and _lev1(c, call)}
 
     def _longer(self, call: str) -> set[str]:
-        """Recent calls on call's frequency that begin with call plus two or more
-        characters, not a glued prosign: what a truncated call may be a copy of."""
-        return {d for d in self._index.get("^" + call, set())
-                if d[len(call):] not in _GLUED and not set(d[len(call):]) <= _NOISE
-                and self._recent(d) and self._shares_freq(call, d)}
+        """Recent calls on call's frequency that begin with call plus lost characters (not a
+        glued prosign or noise): what a truncated call may be a copy of.  One lost character
+        (AA0R for AA0RQ) counts only when the longer call is heard at least as often."""
+        out = set()
+        for d in self._index.get("^" + call, set()):
+            ext = d[len(call):]
+            if len(ext) == 1:
+                ok = ext not in _NOISE and ext != "K" and self._n(d) >= self._n(call)
+            else:
+                ok = ext not in _GLUED and not set(ext) <= _NOISE
+            if ok and self._recent(d) and self._shares_freq(call, d):
+                out.add(d)
+        return out
+
+    def _may_be_copy(self, call: str) -> bool:
+        """A call that may be a one-character copy (N7FULK of N7FUL, AA0R of AA0RQ) waits
+        while that call is heard on its frequency; the merge decides once both have windows."""
+        base = call[:-1]
+        if (call.endswith("K") and len(base) >= TRUNC_MIN and base in self._calls
+                and self._recent(base) and self._shares_freq(call, base)):
+            return True
+        return any(len(d) == len(call) + 1 and d[-1] not in _NOISE and d[-1] != "K"
+                   and self._recent(d) and self._shares_freq(call, d)
+                   for d in self._index.get("^" + call, set()))
+
+    def _glued_base(self, call: str) -> str | None:
+        """N7FUL for N7FULK: the call with a K glued on, when the call itself is heard
+        recently on this frequency at least as often."""
+        base = call[:-1]
+        if (call.endswith("K") and len(base) >= TRUNC_MIN
+                and call in self._calls and base in self._calls
+                and self._n(base) >= self._n(call) and self._recent(base)
+                and self._shares_freq(call, base)):
+            return base
+        return None
 
     def _prefixes(self, call: str) -> set[str]:
         """Decoded calls that call begins with: its possible truncated copies."""
-        return {call[:k] for k in range(TRUNC_MIN, len(call) - 1) if call[:k] in self._calls}
+        return {call[:k] for k in range(TRUNC_MIN, len(call)) if call[:k] in self._calls}
 
     def _recent(self, call: str) -> bool:
         return self._calls[call].last >= self._now - MERGE_RECENT_S
@@ -256,10 +291,13 @@ class RepeatSpotRule:
         """The call this call is a near-miss or truncated copy of (rule 3), or None. A runner
         is decoded in nearly every window, so it is never outnumbered 2:1 by a caller one
         character away."""
+        glued = self._glued_base(call)
         best = None
         longer = self._longer(call)
         for d in self._neighbours(call) | longer:
-            if d in longer:
+            if d == glued:
+                ok = True
+            elif d in longer:
                 ok = self._n(d) >= self.tier(d) and self._n(d) > self._n(call)
             else:
                 ok = self._n(d) >= MERGE_RATIO * self._n(call)

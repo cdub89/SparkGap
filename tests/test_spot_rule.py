@@ -224,3 +224,52 @@ def test_call_after_de_counts_when_cq_came_first_and_it_is_sent_twice() -> None:
     assert runner_calls("CQ SKCC CG EKCC DEW1AW W1AW") == ["W1AW"]
     assert runner_calls("CQ K1ABC? FOO BAR BAZ DE W1XYZ W1XYZ") == []
     assert runner_calls("CQ K1ABC? FOO BAR BAZ DEW1XYZ W1XYZ") == []
+
+
+def test_glued_k_counts_toward_the_call() -> None:
+    r = _rule()
+    for k in range(3):
+        r.feed(r.window_id(1, k, k * 60.0), 7014.0, "CQ N7FUL", k * 60.0)
+    r.feed(r.window_id(1, 3, 180.0), 7014.0, "CQ N7FULK", 180.0)
+    assert r._dominant("N7FULK") == "N7FUL"
+
+
+def test_one_lost_character_merges_into_the_call_heard_more() -> None:
+    r = _rule()
+    for k in range(3):
+        r.feed(r.window_id(1, k, k * 60.0), 7034.0, "CQ AA0RQ", k * 60.0)
+    r.feed(r.window_id(1, 3, 180.0), 7034.0, "CQ AA0R", 180.0)
+    assert r._dominant("AA0R") == "AA0RQ"
+
+
+def test_one_noise_character_is_not_a_longer_call() -> None:
+    r = _rule()
+    for k in range(3):
+        r.feed(r.window_id(1, k, k * 60.0), 7034.0, "K5OHE", k * 60.0)
+    assert r._longer("K5OH") == set()
+
+
+def test_possible_copy_waits_while_its_call_is_heard() -> None:
+    r = _rule()
+    r.feed(r.window_id(1, 0, 0.0), 7014.0, "N7FUL 5NN", 0.0)
+    for k in range(1, 4):
+        assert r.feed(r.window_id(1, k, k * 60.0), 7014.0, "CQ N7FULK", k * 60.0) == []
+
+
+def test_glued_k_does_not_override_a_call_heard_twice_as_often() -> None:
+    r = _rule()
+    for k in range(4):
+        r.feed(r.window_id(1, k, k * 60.0), 7014.0, "CQ N7FUK", k * 60.0)
+    for k in range(4, 6):
+        r.feed(r.window_id(1, k, k * 60.0), 7014.0, "N7FUL N7FULK", k * 60.0)
+    assert r._dominant("N7FULK") == "N7FUK"
+
+
+def test_stray_longer_decode_only_delays_a_real_short_call() -> None:
+    r = _rule()
+    r.feed(r.window_id(1, 0, 0.0), 7034.0, "CQ AA0R", 0.0)
+    r.feed(r.window_id(1, 1, 60.0), 7034.0, "CQ AA0RQ", 60.0)
+    spots = []
+    for k in range(2, 6):
+        spots += r.feed(r.window_id(1, k, k * 60.0), 7034.0, "CQ AA0R", k * 60.0)
+    assert spots == [("AA0R", 7034.0)]
