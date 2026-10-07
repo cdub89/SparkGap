@@ -130,7 +130,8 @@ typedef struct {
      * the next one so nothing sent across a window edge is split. */
     double       *carry_env;        /* CARRY_MAX */
     int           carry_n;
-    double       *feed_env;         /* MAX_ENV, carry + new window */
+    double       *feed_env;         /* MAX_ENV, carry + new window, level-normalised */
+    double       *feed_raw;         /* MAX_ENV, carry + new window as received */
     double        lw_units_prev;    /* last fitted letter/word boundary, in units */
     double        dit_prev, dah_prev; /* last two-class mark fit on this handle, samples */
 
@@ -1039,6 +1040,9 @@ static int beam_score_cmp(const void *a, const void *b) {
 /* Returns number of texts written into out_texts (each MAX_TEXT chars).
  * st provides per-handle scratch buffers (sc_runs, sc_beamA, sc_beamB,
  * sc_dedup) that used to be function-local statics. */
+#define DESPECKLE_UNITS 0.4   /* runs shorter than this many units (rounded) are absorbed;
+                                 * rounding up instead cost 3 confirmed CWT spots */
+
 static int decode_runs_beam(
     itila_state_t *st,
     const int8_t *marks, int T,
@@ -1064,6 +1068,29 @@ static int decode_runs_beam(
         }
     }
     if (n_runs < MAX_ENV) { runs[n_runs].is_mark=val; runs[n_runs].dur=cnt; n_runs++; }
+
+    {   /* A run shorter than DESPECKLE_UNITS is not an element or a gap: absorb it into
+         * its neighbours, shortest first.  One linear pass per length. */
+        int minlen = (int)(DESPECKLE_UNITS * unit + 0.5);
+        for (int len = 1; len < minlen && n_runs >= 2; len++) {
+            int w = 0;
+            for (int i = 0; i < n_runs; i++) {
+                run_t r = runs[i];
+                if (r.dur == len && w > 0 && i + 1 < n_runs) {
+                    /* internal: previous run absorbs this one and the next */
+                    runs[w - 1].dur += r.dur + runs[i + 1].dur; i++; continue;
+                }
+                if (r.dur == len && (w == 0 || i + 1 == n_runs)) {
+                    /* edge: becomes part of its only neighbour */
+                    if (w > 0) { runs[w - 1].dur += r.dur; continue; }
+                    if (i + 1 < n_runs) { runs[i + 1].dur += r.dur; continue; }
+                }
+                if (w > 0 && runs[w - 1].is_mark == r.is_mark) runs[w - 1].dur += r.dur;
+                else runs[w++] = r;
+            }
+            n_runs = w;
+        }
+    }
 
     int unit_fitted = 0;
     double dah_sp = 0.0;
@@ -1423,12 +1450,13 @@ itila_t itila_create(int sample_rate, double lpf_hz) {
     st->sc_primary   = (char*)        malloc(MAX_TEXT * sizeof(char));
     st->carry_env    = (double*)      malloc(CARRY_MAX * sizeof(double));
     st->feed_env     = (double*)      malloc(MAX_ENV * sizeof(double));
+    st->feed_raw     = (double*)      malloc(MAX_ENV * sizeof(double));
 
     if (!st->log_B || !st->log_alpha || !st->log_beta ||
         !st->gamma || !st->gamma_marg || !st->env_norm || !st->marks ||
         !st->sc_runs || !st->sc_beamA || !st->sc_beamB || !st->sc_dedup ||
         !st->sc_up || !st->sc_tokens || !st->sc_calls ||
-        !st->sc_out_texts || !st->sc_primary || !st->carry_env || !st->feed_env) {
+        !st->sc_out_texts || !st->sc_primary || !st->carry_env || !st->feed_env || !st->feed_raw) {
         itila_free(st); return NULL;
     }
 
@@ -1437,6 +1465,36 @@ itila_t itila_create(int sample_rate, double lpf_hz) {
         st->speed_bins[i] = WPM_MIN + (WPM_MAX - WPM_MIN) * i / (N_SPEED_BINS - 1);
 
     return (itila_t)st;
+}
+
+/* Level reference that follows the element level: a peak follower run both ways
+ * (0.2 s decay, floor 10% of the block's range and at least 8x its noise), so each
+ * element is judged against its own neighbourhood instead of one level per window
+ * (W1AW's element level moves 3-4x within seconds).  Scaled so 55% of the local peak
+ * sits at full mark level. */
+#define LEVEL_TAU_S  0.2
+#define LEVEL_FLOOR  0.10
+#define LEVEL_SCALE  0.55
+#define LEVEL_NOISE_X 8.0   /* floor at least 8x the noise (18 dB): noise is never stretched up */
+static void level_follow(itila_state_t *st, const double *x, int n, double *y) {
+    double nz  = percentile(x, n, 20.0, st->env_norm);
+    double top = percentile(x, n, 97.0, st->env_norm);
+    if (top - nz < 1e-30) { memcpy(y, x, (size_t)n * sizeof(double)); return; }
+    double fl = fmax(nz + LEVEL_FLOOR * (top - nz), LEVEL_NOISE_X * nz);
+    double a = exp(-1.0 / (LEVEL_TAU_S * st->sample_rate));
+    double *fw = st->log_B;   /* scratch: EM has not run yet */
+    double p = fl;
+    for (int i = 0; i < n; i++) {
+        double xi = isfinite(x[i]) ? x[i] : nz;
+        p = xi > p ? xi : fmax(fl, p * a); fw[i] = p;
+    }
+    p = fl;
+    for (int i = n - 1; i >= 0; i--) {
+        double xi = isfinite(x[i]) ? x[i] : nz;
+        p = xi > p ? xi : fmax(fl, p * a);
+        double v = (xi - nz) / (fmax(fw[i], p) - nz) / LEVEL_SCALE;
+        y[i] = v < 0.0 ? 0.0 : (v > 1.2 ? 1.2 : v);
+    }
 }
 
 const char* itila_feed(itila_t h, const double* envelope, int n,
@@ -1449,10 +1507,12 @@ const char* itila_feed(itila_t h, const double* envelope, int n,
     st->carry_n = 0;
     if (n < st->sample_rate || n > MAX_ENV) return st->result_buf;
     if (carry + n > MAX_ENV) carry = 0;
-    memcpy(st->feed_env, st->carry_env, (size_t)carry * sizeof(double));
-    memcpy(st->feed_env + carry, envelope, (size_t)n * sizeof(double));
-    envelope = st->feed_env;
+    /* carry_env holds raw samples: normalise carry and new block together (no seam) */
+    memcpy(st->feed_raw, st->carry_env, (size_t)carry * sizeof(double));
+    memcpy(st->feed_raw + carry, envelope, (size_t)n * sizeof(double));
     n += carry;
+    level_follow(st, st->feed_raw, n, st->feed_env);
+    envelope = st->feed_env;
 
     /* EM estimation, warm-start from previous call if available */
     double A, noise_mean, sigma2_obs, wpm_em;
@@ -1487,7 +1547,7 @@ const char* itila_feed(itila_t h, const double* envelope, int n,
 
     int n_dec = find_carry_cut(st, st->marks, n, wpm_cands[0]);
     st->carry_n = n - n_dec;
-    memcpy(st->carry_env, envelope + n_dec, (size_t)st->carry_n * sizeof(double));
+    memcpy(st->carry_env, st->feed_raw + n_dec, (size_t)st->carry_n * sizeof(double));
 
     /* Per-handle scratch, was function-local static; live mode races. */
     callsign_t *calls = st->sc_calls;
@@ -1549,6 +1609,8 @@ const char* itila_feed_online(itila_t h, const double *envelope, int n,
     itila_state_t *st = (itila_state_t*)h;
     st->result_buf[0] = '\0';
     if (n < 10 || n > MAX_ENV) return st->result_buf;
+    level_follow(st, envelope, n, st->feed_env);
+    envelope = st->feed_env;
 
     /* Normalize to [0,1] via p99, keeps FB numerics stable */
     double env_scale = percentile(envelope, n, 99.0, st->env_norm);
@@ -1749,7 +1811,7 @@ void itila_free(itila_t h) {
     free(st->sc_beamA); free(st->sc_beamB); free(st->sc_dedup);
     free(st->sc_up); free(st->sc_tokens);
     free(st->sc_calls); free(st->sc_out_texts); free(st->sc_primary);
-    free(st->carry_env); free(st->feed_env);
+    free(st->carry_env); free(st->feed_env); free(st->feed_raw);
     free(st);
 }
 
