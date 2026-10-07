@@ -37,6 +37,8 @@ TRUNC_MIN = 3                 # shortest truncated call merged into a longer one
 COPY_WAIT_WINDOWS = 2         # a possible one-character copy waits at most this many windows
 MERGE_RECENT_S = 300.0        # a merge target decoded longer ago than this is another station
 _GLUED = frozenset({"KN", "AR", "BK", "SK", "TU", "DE", "BT", "AS", "KA", "VA"})  # AB0CDKN
+_FOLLOW = ("GM", "GA", "GE", "GN", "UR", "FB", "ES", "RR", "OM", "HW", "PSE", "QSL", "TNX",
+           "5NN", "599", "579", "589", "559")  # DE NV4H GM decoded as NV4HGM
 _NOISE = frozenset("EISHT5")  # an extension of only these is dit/dah noise, not lost letters
 SPOT_HOLD_S = 600.0           # one spot per call per 10 minutes...
 SPOT_MOVE_KHZ = 2.0           # ...unless it moves more than this
@@ -238,6 +240,8 @@ class RepeatSpotRule:
         out = set()
         for d in self._index.get("^" + call, set()):
             ext = d[len(call):]
+            if ext.startswith(_FOLLOW) and not self._calls[d].keyed:
+                continue          # NV4HGM: never after CQ, a greeting glued on
             if len(ext) == 1:
                 ok = ext not in _NOISE and ext != "K" and self._n(d) >= self._n(call)
             else:
@@ -253,7 +257,7 @@ class RepeatSpotRule:
         if (call.endswith("K") and len(base) >= TRUNC_MIN and base in self._calls
                 and self._recent(base) and self._shares_freq(call, base)):
             return True
-        return any(len(d) == len(call) + 1 and d[-1] not in _NOISE and d[-1] != "K"
+        return any(len(d) == len(call) + 1 and d[-1] not in _NOISE and d[-1] not in "KG"
                    and self._recent(d) and self._shares_freq(call, d)
                    for d in self._index.get("^" + call, set()))
 

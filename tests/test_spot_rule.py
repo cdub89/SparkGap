@@ -273,3 +273,20 @@ def test_stray_longer_decode_only_delays_a_real_short_call() -> None:
     for k in range(2, 6):
         spots += r.feed(r.window_id(1, k, k * 60.0), 7034.0, "CQ AA0R", k * 60.0)
     assert spots == [("AA0R", 7034.0)]
+
+
+def test_greeting_glued_after_the_call_is_not_a_longer_call() -> None:
+    r = _rule()
+    spots = []
+    for k, text in enumerate(("CQ POTA DE NV4H", "DE NV4HGM JOE 5NN", "NV4HG TVINK",
+                              "CQ POTA DE NV4H", "DENV4HGMJOE 5NN")):
+        spots += r.feed(r.window_id(1, k, k * 60.0), 7062.4, text, k * 60.0)
+    assert spots == [("NV4H", 7062.4)]
+
+
+def test_real_longer_call_after_cq_still_takes_its_truncation() -> None:
+    r = _rule()
+    for k in range(3):
+        r.feed(r.window_id(1, k, k * 60.0), 7030.0, "CQ K1AGA", k * 60.0)
+    r.feed(r.window_id(1, 3, 180.0), 7030.0, "CQ K1A", 180.0)
+    assert r._dominant("K1A") == "K1AGA"
