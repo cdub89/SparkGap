@@ -106,6 +106,33 @@ Where both itila2 and CW Skimmer misread W1AW, the received element itself is cu
 | Peak-prominence mask at spawn | No gain beyond SC11 |
 | Level reference with a range-only floor | Halved 20m recall (noise stretched into text) |
 
+## Future work
+
+### Web-888 and HPSDR multi-band, alongside the Flex
+
+itila2 has been developed and measured on one band from a Flex (DAX-IQ, 96 kHz). The next platform is the Web-888 SDR receiver, which SparkGap reaches through HPSDR protocol 1: the multi-band C receiver path (`hpsdr_fast.c`), the same path Fred runs in production (`sk_5band.json`, 8 bands). The Flex path stays; the two are complementary (a Flex operator skimming one band on a spare panadapter, a Web-888 skimming several bands at once).
+
+What carries over: the decoder changes (DC5, DC6, C1 to C10) live in `itila_feed` and run unchanged on the C path; the scanner changes (SC2, SC3, SC9, SC11) and the scanner worker pool are inside the scanner library both paths share. The spot rule applies to any decoded window.
+
+What needs checking or work before itila2 can run there unattended:
+
+| Item | Why it matters |
+| --- | --- |
+| itila2 on the C decode path, measured | So far only the Flex and file paths are measured; the C path decodes inside the scanner's worker thread |
+| Multi-band poll loop never marks bin evidence (`cdub89/SparkGap#5` L2) | Bins with real stations are evicted and respotting breaks |
+| No exception isolation in the main poll loop (L4) | One bad result stops the daemon |
+| HPSDR packet loss never counted; `hpsdr_stop` can hang; IQ ring without memory barriers | Silent audio loss, and failures on ARM single-board computers |
+| CPU across bands: Fred's 8-band replay saturates at about 1,470 bins (1.5 M envelope drops in 6.5 min) | SC11 removes about a third of the bins; Fred has offered to run his 8-band test on it |
+| Replay tools: `hpsdr_proxy` multi-receiver WAV replay (`hotairfred/SparkGap#12`) and the all-band 24-bit recorder (`hotairfred/SparkGap#11`) | A Web-888 capture can then be replayed band for band, as the Flex recordings are today |
+| A reference for each band | The Lakehouse comparison uses one CW Skimmer on one band; a multi-band reference has to be chosen |
+
+Order: a single band from the Web-888 first, scored the same way as the Flex runs; then the bands Fred runs; then unattended operation.
+
+### Other
+
+- Hand-keyed fists (bugs, sideswipers, straight keys): fit the timing per transmission instead of per 60 s window; a daily hand-keyed 40m net and the operator's own sideswiper make known-text test material.
+- Windows support (`cdub89/SparkGap#5`): most RBN nodes run Windows; the native libraries need Windows builds.
+
 ## Open
 
 - Hand-keyed fists (bugs, sideswipers, straight keys): dah lengths vary, and a net puts several fists in one 60 s window. Next candidate: fit the timing per transmission instead of per window.
