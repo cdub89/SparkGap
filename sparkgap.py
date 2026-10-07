@@ -2463,7 +2463,8 @@ class _SecondPass:
     def __init__(self, sp, window_samples):
         from second_pass import load_decoder, SecondPassWorker
         self.worker = SecondPassWorker(load_decoder(sp), workers=int(sp.get('workers', 1)),
-                                       nice=int(sp.get('nice', 10)))
+                                       nice=int(sp.get('nice', 10)),
+                                       batch_jobs=int(sp.get('batch_jobs', 1)))
         self.name = self.worker.name
         self.tag = self.name.upper()
         self.mode = sp.get('mode', 'cq')

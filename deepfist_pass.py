@@ -145,7 +145,9 @@ def check_model_meta(meta):
 
 class DeepFistOnnx:
     """second_pass decoder "deepfist". Config keys: model (path to the .onnx;
-    its .json sidecar must sit next to it), threads (onnxruntime intra-op)."""
+    its .json sidecar must sit next to it), threads (onnxruntime intra-op),
+    win_sec/hop_sec (decode windows), device ("cpu" or "cuda"), batch (max
+    windows per network run; default 1 on CPU, 32 on CUDA)."""
     name = 'deepfist'
 
     def __init__(self, cfg, threads=1):
@@ -165,12 +167,23 @@ class DeepFistOnnx:
         so = ort.SessionOptions()
         so.intra_op_num_threads = threads
         so.inter_op_num_threads = 1
-        self._sess = ort.InferenceSession(model_path, so, providers=['CPUExecutionProvider'])
+        self.device = cfg.get('device', 'cpu')
+        providers = ['CPUExecutionProvider']
+        if self.device == 'cuda':
+            if hasattr(ort, 'preload_dlls'):      # CUDA/cuDNN from the nvidia-* pip wheels
+                ort.preload_dlls()
+            providers.insert(0, 'CUDAExecutionProvider')
+        self._sess = ort.InferenceSession(model_path, so, providers=providers)
+        if self.device == 'cuda' and self._sess.get_providers()[0] != 'CUDAExecutionProvider':
+            # Running every-bin load on the CPU by surprise would starve ITILA.
+            raise RuntimeError('second_pass device "cuda" requested but onnxruntime '
+                               'could not start CUDA (providers: %s)' % self._sess.get_providers())
+        self.batch = max(1, int(cfg.get('batch', 32 if self.device == 'cuda' else 1)))
         self._in = self._sess.get_inputs()[0].name
 
-    def _ctc(self, log_probs):
+    def _ctc(self, log_probs, b=0):
         out, prev = [], None
-        for s in log_probs[:, 0, :].argmax(-1):
+        for s in log_probs[:, b, :].argmax(-1):
             if s != prev and s != self._blank:
                 out.append(self._tokens[s])
             prev = s
@@ -186,23 +199,52 @@ class DeepFistOnnx:
         a = np.real(z * np.exp(2j * np.pi * _OUT_PITCH * t))
         return (a / (np.abs(a).max() + 1e-12) * 0.9).astype(np.float32)
 
-    def decode_audio(self, a, first_look=False):
-        """Audio at SR -> text: 15 s windows, keying squelch, conditioner, net, CTC.
-        first_look: decode only the single most-keyed window (the squelch score
-        is ~8 ms per window, the net ~135 ms) -- a cheap look at a new bin."""
+    def _specs(self, a, first_look=False):
+        """Audio at SR -> spectrograms of the windows that pass the keying
+        squelch. first_look: only the single most-keyed window (the squelch
+        score is ~8 ms per window, the net ~100 ms on one CPU core)."""
         win, hop = int(self.win_sec * SR), int(self.hop_sec * SR)
         segs = [a[i:i + win] for i in range(0, max(len(a) - win, 0) + hop, hop)]
         scored = [(_keying_ratio(seg, SR), seg) for seg in segs if len(seg) >= SR]
         scored = [(k, seg) for k, seg in scored if k >= _SQUELCH_THRESH]
         if first_look and scored:
             scored = [max(scored, key=lambda ks: ks[0])]
-        parts = []
-        for _k, seg in scored:
-            spec = _spectrogram(_condition(seg))[None, None]
-            text = self._ctc(self._sess.run(None, {self._in: spec})[0])
-            if text.strip():
-                parts.append(text)
-        return ' '.join(parts)
+        return [_spectrogram(_condition(seg)) for _k, seg in scored]
+
+    def _decode_specs(self, specs):
+        """Run the net over spectrograms, up to self.batch per run (windows of
+        equal length are stacked; each sample's output is independent of its
+        batch-mates). Returns one text per spectrogram."""
+        texts = [''] * len(specs)
+        by_len = {}
+        for i, sp in enumerate(specs):
+            by_len.setdefault(sp.shape[1], []).append(i)
+        for idx in by_len.values():
+            for k in range(0, len(idx), self.batch):
+                chunk = idx[k:k + self.batch]
+                x = np.stack([specs[i] for i in chunk])[:, None]
+                lp = self._sess.run(None, {self._in: x})[0]
+                for b, i in enumerate(chunk):
+                    texts[i] = self._ctc(lp, b)
+        return texts
+
+    def decode_audio(self, a, first_look=False):
+        """Audio at SR -> text: windows, keying squelch, conditioner, net, CTC."""
+        return ' '.join(t for t in self._decode_specs(self._specs(a, first_look)) if t.strip())
 
     def decode_iq(self, iq_interleaved, first_look=False):
         return self.decode_audio(self.iq_to_audio(iq_interleaved), first_look)
+
+    def decode_iq_batch(self, jobs):
+        """[(iq, first_look), ...] -> [text, ...]: the front end per job on
+        the CPU, then all their windows through the net in batches (GPU)."""
+        specs, owner = [], []
+        for j, (iq, first_look) in enumerate(jobs):
+            for sp in self._specs(self.iq_to_audio(iq), first_look):
+                specs.append(sp)
+                owner.append(j)
+        parts = [[] for _ in jobs]
+        for j, t in zip(owner, self._decode_specs(specs)):
+            if t.strip():
+                parts[j].append(t)
+        return [' '.join(p) for p in parts]

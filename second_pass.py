@@ -70,10 +70,13 @@ class SecondPassWorker:
     (key, text, err) tuples; flush() waits for everything submitted so far
     (file mode, for deterministic replay)."""
 
-    def __init__(self, decoder, max_queue=256, workers=1, nice=10):
+    def __init__(self, decoder, max_queue=256, workers=1, nice=10, batch_jobs=1):
         """workers > 1 runs that many decode threads on the same queue; the
         decoder's decode_iq must then be thread-safe (DeepFist's is: numpy
-        front end + onnxruntime Session.run)."""
+        front end + onnxruntime Session.run). batch_jobs > 1: a worker takes
+        up to that many queued jobs at once and hands them to the decoder's
+        optional decode_iq_batch([(iq, first_look), ...]) -> [text, ...]
+        (GPU batching); without that method jobs run one at a time."""
         self.decoder = decoder
         self.name = decoder.name
         self._jobs = queue.Queue(maxsize=max_queue)
@@ -82,6 +85,8 @@ class SecondPassWorker:
         self.dropped = 0
         self.decoded = 0
         self._nice = int(nice)
+        self._batch = max(1, int(batch_jobs)) if callable(
+            getattr(decoder, 'decode_iq_batch', None)) else 1
         for i in range(max(1, int(workers))):
             threading.Thread(target=self._run, name='second-pass-%s-%d' % (self.name, i),
                              daemon=True).start()
@@ -97,16 +102,27 @@ class SecondPassWorker:
             except (AttributeError, OSError):
                 pass
         while True:
-            key, iq, first_look = self._jobs.get()
+            jobs = [self._jobs.get()]
+            while len(jobs) < self._batch:          # whatever else is already queued
+                try:
+                    jobs.append(self._jobs.get_nowait())
+                except queue.Empty:
+                    break
             try:
-                text = self.decoder.decode_iq(iq, first_look)
-            except Exception as e:      # one bad window must not kill the worker
-                self._done.put((key, '', repr(e)))
-            else:
-                self._done.put((key, text or '', None))
+                if len(jobs) == 1:
+                    key, iq, first_look = jobs[0]
+                    out = [(key, self.decoder.decode_iq(iq, first_look) or '', None)]
+                else:
+                    texts = self.decoder.decode_iq_batch([(iq, fl) for _k, iq, fl in jobs])
+                    out = [(k, t or '', None) for (k, _iq, _fl), t in zip(jobs, texts)]
+            except Exception as e:      # one bad batch must not kill the worker
+                out = [(k, '', repr(e)) for k, _iq, _fl in jobs]
+            for r in out:
+                self._done.put(r)
             with self._lock:
-                self.decoded += 1
-            self._jobs.task_done()
+                self.decoded += len(jobs)
+            for _ in jobs:
+                self._jobs.task_done()
 
     def submit(self, key, iq, first_look=False):
         try:

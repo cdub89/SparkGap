@@ -171,3 +171,50 @@ def test_backoff_pauses_on_env_drops():
     pool.backoff_sec = 0               # disabled
     t[0] += 2; pool.pressure(9999)
     assert not pool.paused()
+
+
+def test_worker_batches_queued_jobs():
+    """batch_jobs > 1: jobs queued while the worker is busy reach
+    decode_iq_batch together (never more than batch_jobs), results map back
+    to their keys, and a failing call reports an error for every job in it."""
+    import threading
+    import numpy as np
+    gate = threading.Event()
+    sizes = []
+
+    class Batcher:
+        name = 'batcher'
+        def decode_iq(self, iq, first_look=False):
+            return self.decode_iq_batch([(iq, first_look)])[0]
+        def decode_iq_batch(self, jobs):
+            gate.wait(5)                     # hold the first call until all are queued
+            sizes.append(len(jobs))
+            return ['t%d' % int(iq[0]) for iq, _fl in jobs]
+    w = SP.SecondPassWorker(Batcher(), batch_jobs=4)
+    for i in range(10):
+        w.submit('k%d' % i, np.array([float(i)], np.float32))
+    gate.set()
+    got = {k: t for k, t, _e in w.flush()}
+    assert got == {'k%d' % i: 't%d' % i for i in range(10)}
+    assert sum(sizes) == 10 and max(sizes) == 4 and w.decoded == 10
+
+    class Broken:
+        name = 'broken'
+        def decode_iq(self, iq, first_look=False):
+            raise ValueError('boom')
+        def decode_iq_batch(self, jobs):
+            raise ValueError('boom')
+    w = SP.SecondPassWorker(Broken(), batch_jobs=4)
+    for i in range(5):
+        w.submit(i, np.zeros(2, np.float32))
+    res = w.flush()
+    assert len(res) == 5 and all(t == '' and 'boom' in e for _k, t, e in res)
+
+
+def test_worker_without_batch_method_runs_singly():
+    class Plain:
+        name = 'plain'
+        def decode_iq(self, iq, first_look=False):
+            return 'x'
+    w = SP.SecondPassWorker(Plain(), batch_jobs=8)
+    assert w._batch == 1
