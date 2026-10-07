@@ -2474,8 +2474,9 @@ class _SecondPass:
         self.sync = bool(sp.get('sync', False))
         self.n_iq = window_samples * 5                        # 1 kHz IQ per 200 Hz env sample
         self.max_bins = int(sp.get('max_bins', 50))
-        # CPU budget: full-window jobs per minute (~0.6 s CPU per job -> ~100
-        # jobs/min per core); 0 = unlimited. Skimmer-wide, not per band.
+        # CPU budget: full-window jobs per minute (~1 s CPU per job with the
+        # default 8 s / 4 s DeepFist windows -> ~60 jobs/min per core; about
+        # 0.6 s with 15 s windows); 0 = unlimited. Skimmer-wide, not per band.
         self.budget = float(sp.get('jobs_per_min', 0))
         # ranking horizon: candidates gathered over this long are ranked together
         self.select_sec = float(sp.get('select_sec', DF_SELECT_SEC))

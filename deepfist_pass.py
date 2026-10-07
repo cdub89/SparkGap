@@ -31,7 +31,12 @@ from scipy.signal import lfilter, resample_poly, stft
 
 IQ_RATE = 1000          # scanner capture rate (complex)
 SR = 3200               # DeepFist model rate
-WIN_SEC = 15.0          # DeepFist eval window
+# Decode windows: 8 s, hop 4 s (the model was trained on 6 s clips).
+# DeepFist on every bin, 2026-10-07: DK3QN 55/110 vs CW Skimmer (15 s
+# non-overlapping: 48, 6/3 s: 49, 15/7.5 s: 52); B1 RBN-confirmed 91 at 34%
+# (15 s: 86 at 34%). Costs ~1.9x the network time of 15 s windows.
+WIN_SEC = 8.0
+HOP_SEC = 4.0
 
 # conditioner (deepfist/features/conditioner.py)
 _TONE_NFFT = 4096
@@ -155,10 +160,10 @@ class DeepFistOnnx:
             cfg = {'model': cfg, 'threads': threads}
         model_path = cfg.get('model', 'models/deepfist.onnx')
         threads = int(cfg.get('threads', 1))
-        # Decode window and hop (s). The model was trained on 6 s clips;
-        # upstream's real-audio eval uses 15 s non-overlapping windows.
+        # Decode window and hop (s); see WIN_SEC. Upstream's real-audio eval
+        # uses 15 s non-overlapping windows (win_sec 15, hop_sec 15).
         self.win_sec = float(cfg.get('win_sec', WIN_SEC))
-        self.hop_sec = float(cfg.get('hop_sec', self.win_sec))
+        self.hop_sec = float(cfg.get('hop_sec', self.win_sec * HOP_SEC / WIN_SEC))
         import onnxruntime as ort
         meta = json.load(open(model_path + '.json'))
         check_model_meta(meta)
