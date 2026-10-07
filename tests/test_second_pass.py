@@ -96,6 +96,19 @@ def test_deepfist_registered_and_compat_check():
         assert 'hop_length' in str(e)
     else:
         raise AssertionError('different preprocessing must be refused')
+    # conditioning: absent (exp27_bt) or true is fine; a raw-audio model is refused
+    meta = {'preprocessing': dict(P._PREPROC, conditioned=True),
+            'input': {'layout': '[batch,1,freq=65,time]'}, 'ctc': {'time_downsample': 2}}
+    P.check_model_meta(meta)
+    for key, val in (('conditioned', False), ('time_downsample', 4)):
+        m = {'preprocessing': dict(meta['preprocessing']), 'input': meta['input'], 'ctc': dict(meta['ctc'])}
+        (m['preprocessing'] if key == 'conditioned' else m['ctc'])[key] = val
+        try:
+            P.check_model_meta(m)
+        except ValueError as e:
+            assert key in str(e)
+        else:
+            raise AssertionError('%s=%r must be refused' % (key, val))
 
 
 def test_df_priority_ranking():

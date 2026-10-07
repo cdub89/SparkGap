@@ -126,8 +126,18 @@ def check_model_meta(meta):
     what this module implements."""
     pre = meta.get('preprocessing', {})
     bad = {k: (pre.get(k), v) for k, v in _PREPROC.items() if pre.get(k) != v}
+    # We always run _condition() before the spectrogram. Conditioned and raw
+    # features differ by several sigma, so a model trained on raw audio must
+    # be refused, not silently fed conditioned input. exp27_bt predates the
+    # field (and requires conditioning), so a missing field means True.
+    if pre.get('conditioned', True) is not True:
+        bad['conditioned'] = (pre.get('conditioned'), True)
     if meta.get('input', {}).get('layout') != '[batch,1,freq=65,time]':
         bad['input.layout'] = (meta.get('input', {}).get('layout'), '[batch,1,freq=65,time]')
+    # Greedy CTC doesn't depend on the output frame rate; check it anyway so a
+    # changed architecture is noticed.
+    if meta.get('ctc', {}).get('time_downsample', 2) != 2:
+        bad['ctc.time_downsample'] = (meta['ctc']['time_downsample'], 2)
     if bad:
         raise ValueError('model preprocessing differs from deepfist_pass.py '
                          '(model, ours): %r -- port the new front end first' % bad)
