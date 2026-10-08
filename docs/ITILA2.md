@@ -28,7 +28,7 @@ SDR IQ (Flex DAX-IQ 48/96 kHz, HPSDR, or a WAV)
      level reference, EM-fitted two-state HMM, forward-backward posterior,
      marks and spaces, despeckle, timing fit, beam search over Morse
   -> decoded text per window
-  -> spot rule (CQ/TEST, repeats, copies merged) -> telnet DX spots
+  -> spot rule (CQ/TEST, exact repeats, one-edit vote) -> telnet DX spots
 ```
 
 ## Scanner (`itila2_scanner.c` against `itila_scanner.c`)
@@ -63,10 +63,14 @@ Shared with itila: the 200 Hz envelope, a two-state HMM (mark, space) whose para
 The reference is WX7V/5: CW Skimmer at validation Normal with no Master.dta, feeding the Aggregator, which forwards only CQ-tagged spots. The rule mirrors what that node sends.
 
 1. The call is the first callsign within 3 words after CQ or TEST, or after DE when CQ or TEST came earlier in the window with no call between and the call is sent twice (`CQ SKCC DE K4DH K4DH`).
-2. It must happen in 2, 3 or 4 decode windows, by the call's pattern (patt3ch.lst), as CW Skimmer validates. No SCP check: 8 of the 12 calls WX7V/5 sent in a 41-minute sample were not in MASTER.SCP.
-3. Copies count toward the real call heard on the same frequency: a one-character copy with half the windows, a truncated call (KM7E for KM7EJE), a call missing its last letter (AA0R for AA0RQ), and a call with a K glued on (N7FULK). A greeting glued after the call (`DE NV4H GM` decoded as NV4HGM) is not a longer call. Merge targets must have been heard in the last 5 minutes; possible copies wait at most 2 windows.
+2. The exact call must be copied in 2, 3 or 4 decode windows, by its pattern (patt3ch.lst), as CW Skimmer validates, within 0.5 kHz and the last 10 minutes. No SCP check: 8 of the 12 calls WX7V/5 sent in a 41-minute sample were not in MASTER.SCP. Portable calls stay whole (HK3/NP4Z, N5AW/0).
+3. One vote on garbled decodes: a call does not spot while a call one edit from it has as many copies or more near the same frequency; a tie waits for the next window. Nothing is renamed and no copies are pooled, so near-identical real calls on one frequency (N4VI next to N4ZZ, K3WW next to K2TW) both spot.
 4. A call followed by a name and a number (a caller being sent the exchange) does not count.
-5. One spot per call per 10 minutes unless it moves more than 2 kHz.
+5. The spot goes out on the strongest copy (bin SNR), once per call per 10 minutes unless it moves 1 kHz or more (CW Skimmer re-sent runners after 1 kHz moves on the 40m CWT).
+
+Rules 2 and 3 replaced six near-miss special cases (truncation, glued K, glued greeting, lost letter, copy wait, 2:1 merge) and their word lists. Those interacted: one garbled "CQ CWT K8BZTRQ" held back K8BZ's 26 clean CQ windows. On audio-time replays against WX7V/5 the simple rule shares as many calls (40m CWT 75 of 91 against 76, 20m CWT 49 of 57 against 48) with fewer it never sent (33 against 40) and fewer busts of nearby runners (18 against 26). Our decoder repeats some busts exactly (W6AYK for W6AYC, AD4E for AD4EB), which is why exact repeats alone are not enough here; CW Skimmer's own output lists near-identical real calls on one frequency (62 pairs on the 40m CWT), which is why the vote never merges.
+
+In file mode the rule counts in audio time (`SpotTracker.clock`), as live; replays run about 3x real time.
 
 Against the original path: the original spots an SCP call on its first CQ sighting or after repeat sightings without CQ (so callers can spot), spots non-SCP calls as `[unverified]`, and substitutes nearby SCP calls (W8HO became W8HOT). Live spots from the repeat rule match its replay scoring.
 
@@ -103,6 +107,9 @@ Where both itila2 and CW Skimmer misread W1AW, the received element itself is cu
 | Per-state variances, soft decisions (DC2, DC3) | No gain |
 | Window continuity alone (DC4) | No gain |
 | Word keep-alive (SC6, SC10) | Noise kept bins alive; memory grew |
+| Spot rule: one runner per frequency (plurality tally) | Junk 44 to 7 but 15 real runners lost: runners share frequencies in a CWT (K5SJC and N7US on 7037.5) |
+| Spot rule: family vote over similar calls (edit distance and prefixes) | Renames real stations (N4F inside N4FOX), lets glued text win (AB0CDKN); more junk than it removed |
+| Spot rule: exact repeats only, as CW Skimmer | Best recall, but our decoder repeats its busts exactly: junk 44 to 92 |
 | Peak-prominence mask at spawn | No gain beyond SC11 |
 | Level reference with a range-only floor | Halved 20m recall (noise stretched into text) |
 
