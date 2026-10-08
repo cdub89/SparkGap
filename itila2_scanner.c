@@ -1,9 +1,10 @@
 /*
- * itila2_scanner.c: itila_scanner.c plus WX7V's scanner changes (config cw_scanner: "itila2").
+ * itila2_scanner.c: itila_scanner.c plus WX7V's scanner changes (selected with cw_decoder: "itila2").
  * Same API and symbols as itila_scanner.c; built as libitila2_scanner.so. Changes:
  *   - 40 ms Hann window on the 100 Hz path I/Q at 2 kHz, before the magnitude
  *   - a new bin is fed the last 1 s of IQ (pre-roll) so the first characters are not lost
- *   - stage-1 FIRs from hotairfred/SparkGap#8 (40 dB at the 12 kHz fold, same tap counts)
+ *   - one bin per signal: spawn spacing 75 Hz on interpolated frequencies, bin at the mean of its candidate's peaks
+ *   - per-bin DSP split over itila_decode_threads workers (itila_sc_set_threads)
  *   - fir_dot without the per-tap modulo
  * Bin keep-alive is the same as itila_scanner.c: spot evidence only (word keep-alive kept noise bins alive, removed 2026-10-06).
  *
