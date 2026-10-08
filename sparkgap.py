@@ -7297,6 +7297,22 @@ class SparkGap:
                          "%d chars, %.0fs",
                          self.spot_count, total_decoders, len(self.managers),
                          self.telnet.client_count, total_chars, elapsed)
+                # "decoders" above counts the per-signal decoder instances; the
+                # ITILA path decodes scanner bins instead, so report those too.
+                itila_bins = 0
+                for mgr in self.managers:
+                    w = getattr(mgr, '_itila_scanner', None)
+                    sc = getattr(w, '_sc', None) if w else None
+                    if sc and sc._h:
+                        itila_bins += sc._lib.itila_sc_bin_count(sc._h)
+                if itila_bins:
+                    rss_mb = 0
+                    try:
+                        with open('/proc/self/statm') as fh:
+                            rss_mb = int(fh.read().split()[1]) * os.sysconf('SC_PAGE_SIZE') // 1048576
+                    except (OSError, ValueError):
+                        pass
+                    log.info("ITILA bins: %d active, memory %d MB", itila_bins, rss_mb)
                 if not use_c and self.receiver:
                     log.info("IQ trimmed before scanner: %.1fs total", self._iq_trimmed / live_rate)
                 # Ring + env-cap drop telemetry (added 2026-04-26 to verify
