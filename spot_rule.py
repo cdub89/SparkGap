@@ -28,8 +28,8 @@ NEAR_KHZ = 0.5                # copies within this of each other are one frequen
 REPEAT_S = 600.0              # copies count for 10 minutes; one spot per call per 10 minutes
 MOVE_KHZ = 1.0                # ...unless it moves more than this (CW Skimmer re-spots 1 kHz moves)
 
-CALL_RE = re.compile(r"^(?:[A-Z]{1,2}|[0-9][A-Z])[0-9]{1,4}[A-Z]{1,6}$")
-_SPLIT_RE = re.compile(r"[^A-Z0-9?]+")
+CALL_RE = re.compile(r"^(?:[A-Z0-9]{1,3}/)?(?:[A-Z]{1,2}|[0-9][A-Z])[0-9]{1,4}[A-Z]{1,6}(?:/[A-Z0-9]{1,3})?$")
+_SPLIT_RE = re.compile(r"[^A-Z0-9?/]+")   # keep / for HK3/NP4Z, N5AW/0
 _MERGED_PREFIXES = ("CQ", "TEST", "CWT", "SST", "MST", "DE")
 _TRIGGER_WORDS = ("CQ", "TEST", "CWT", "SST", "MST")
 _STOP_WORDS = frozenset({"TU", "DE", "CQ", "TEST", "CWT", "SST", "MST", "QRZ", "AGN",
@@ -57,6 +57,7 @@ def tokens(text: str) -> list[str]:
     """Upper-case word tokens of decoded text, merged keyword prefixes split off."""
     out: list[str] = []
     for t in _SPLIT_RE.split(text.upper()):
+        t = t.strip("/")
         if t:
             out.extend(_split_merged(t))
     return out

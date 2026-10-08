@@ -221,3 +221,12 @@ def test_file_mode_counts_repeats_in_audio_time() -> None:
     assert tracker.process_intent(window(1)) == []
     audio[0] = REPEAT_S + 60.0          # the second copy comes 11 audio minutes later
     assert tracker.process_intent(window(2)) == []
+
+
+def test_portable_calls_stay_whole() -> None:
+    """40m CWT 2026-10-08: WX7V/5 sent HK3/NP4Z and N5AW/0; split at / they spotted as pieces."""
+    assert runner_calls("CQ CWT N5AW/0 N5AW/0") == ["N5AW/0"]
+    assert runner_calls("TEST HK3/NP4Z TEST") == ["HK3/NP4Z"]
+    assert runner_calls("CQ W1AW/5") == ["W1AW/5"]
+    assert runner_calls("CQ CWT N5AW/ T") == ["N5AW"]
+    assert runner_calls("CQ CWT EE/E") == []
