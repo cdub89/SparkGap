@@ -64,6 +64,7 @@
 #define UNIT_FIT_NOISE_FRAC  0.5   /* marks shorter than this fraction of the median are noise */
 #define UNIT_FIT_SOLO_LO     0.7   /* one-cluster case: accept only if near the passed unit */
 #define UNIT_FIT_SOLO_HI     1.4
+#define PITCH_MIN_N          8     /* fewer element pitches: report the WPM estimate */
 #define CARRY_MAX    4000   /* 20 s: longest unfinished word carried into the next window */
 #define FLUSH_MARGIN 1000   /* 5 s decoded after a carried word when the signal ends */
 #define GAP_SD_ELEM   0.45  /* log-normal spread of element, letter and word gaps */
@@ -166,6 +167,7 @@ typedef struct {
     /* Output */
     char result_buf[RESULT_BUF];
     double last_wpm;          /* WPM from most recent successful decode */
+    double pitch_wpm;         /* WPM from mark + element gap pitch, 0 if too few */
     double last_timing_cost;  /* ggmorse-inspired confidence score: sum of
                                * squared deviations from canonical Morse
                                * timing on the most recent decode's run list.
@@ -838,6 +840,22 @@ static double compute_timing_cost(const int8_t *marks, int T, double wpm,
  * decode_runs_beam: M7b score-guided beam search
  * (beam_state_t typedef hoisted to top of file, see itila_state_t)
  * ---------------------------------------------------------------------- */
+/* WPM from each mark plus the element gap after it (2 units after a dit, 4 after a
+ * dah).  The level decision lengthens marks and shortens gaps by the same amount,
+ * so the pitch keeps the sender's speed where mark lengths alone read slow.
+ * Returns 0 when fewer than PITCH_MIN_N pitches. */
+static double pitch_wpm(const run_t *runs, int n_runs, double dit_dah, double elem_letter) {
+    double p[2048];
+    int np = 0;
+    for (int i = 1; i + 2 < n_runs && np < 2048; i++) {
+        if (!runs[i].is_mark || runs[i + 1].dur >= elem_letter) continue;
+        p[np++] = (runs[i].dur + runs[i + 1].dur) / (runs[i].dur < dit_dah ? 2.0 : 4.0);
+    }
+    if (np < PITCH_MIN_N) return 0.0;
+    qsort(p, np, sizeof(double), cmp_double);
+    return 1.2 * BAYES_RATE / p[np / 2];
+}
+
 /* Dit length in samples fitted from this window's own mark runs.  Used only for
  * the space thresholds; the dit/dah boundary and the beam likelihoods keep the
  * unit derived from the WPM estimate.  Returns unit_in when the marks do not
@@ -1134,6 +1152,7 @@ static int decode_runs_beam(
             gap_w = fmax(gap_l * 7.0 / 3.0, g[(ng - 1) * 9 / 10]);
         }
     }
+    st->pitch_wpm = pitch_wpm(runs, n_runs, boundary, sqrt(unit_sp * gap_l));
 
     if (getenv("ITILA2_DUMP_RUNS")) {
         fprintf(stderr, "ITILA2 runs %.1f kHz wpm=%.1f unit=%.2f usp=%.2f%s dah=%.2f lw=%.1f%s n=%d:",
@@ -1562,11 +1581,13 @@ const char* itila_feed(itila_t h, const double* envelope, int n,
         fprintf(stderr, "\n");
     }
 
+    double pitch = 0.0;
     double prev_usp = -1.0;
     for (int ci = 0; ci < n_cands; ci++) {
         double usp;
         int n_texts = decode_runs_beam(st, st->marks, n_dec, wpm_cands[ci], freq_khz,
                                        out_texts, MAX_TEXTS, &usp);
+        if (ci == 0) pitch = st->pitch_wpm;
         int dup_cand = (ci > 0 && fabs(usp - prev_usp) < 1e-9);
         prev_usp = usp;
         if (dup_cand) continue;
@@ -1582,7 +1603,7 @@ const char* itila_feed(itila_t h, const double* envelope, int n,
 
     if (!primary_text[0] && n_calls == 0) return st->result_buf;
 
-    st->last_wpm = wpm_cands[0];
+    st->last_wpm = pitch > 0.0 ? pitch : wpm_cands[0];
 
     if (primary_text[0]) {
         strncpy(st->result_buf, primary_text, RESULT_BUF-1);
@@ -1836,6 +1857,16 @@ double itila2_test_fit_unit(const int *is_mark, const int *dur, int n,
     double unit = fit_unit(runs, n, unit_in, fitted, dah_out);
     free(runs);
     return unit;
+}
+
+double itila2_test_pitch_wpm(const int *is_mark, const int *dur, int n,
+                             double dit_dah, double elem_letter) {
+    run_t *runs = malloc(n * sizeof(run_t));
+    if (!runs) return 0.0;
+    for (int i = 0; i < n; i++) { runs[i].is_mark = is_mark[i]; runs[i].dur = dur[i]; }
+    double wpm = pitch_wpm(runs, n, dit_dah, elem_letter);
+    free(runs);
+    return wpm;
 }
 
 double itila2_test_fit_letter_word(const int *is_mark, const int *dur, int n,
