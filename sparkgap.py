@@ -6023,7 +6023,8 @@ class SpotTracker:
             w = self.spot_rule.window_id(intent.bin_id, intent.window_id, now)
             return [{'call': call, 'freq_khz': f, 'snr': intent.snr_db,
                      'wpm': intent.wpm, 'method': 'repeat'}
-                    for call, f in self.spot_rule.feed(w, intent.freq_khz, intent.window_text, now)
+                    for call, f in self.spot_rule.feed(w, intent.freq_khz, intent.window_text, now,
+                                                       intent.snr_db)
                     if call not in self.blacklist]
         # gate_short_scp_exact: require a second sighting at the same freq
         # for ≤3-char SCP calls coming via the ITILA [exact] path.  The

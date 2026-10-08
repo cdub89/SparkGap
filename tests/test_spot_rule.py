@@ -70,9 +70,26 @@ def test_one_spot_per_hold_unless_moved() -> None:
     r.feed(r.window_id(1, 0, 0.0), 14030.0, "CQ K0TQ", 0.0)
     assert r.feed(r.window_id(1, 1, 60.0), 14030.0, "CQ K0TQ", 60.0) == [("K0TQ", 14030.0)]
     assert r.feed(r.window_id(1, 2, 120.0), 14030.0, "CQ K0TQ", 120.0) == []
-    assert r.feed(r.window_id(2, 0, 180.0), 14035.0, "CQ K0TQ", 180.0) == [("K0TQ", 14035.0)]
-    t = 180.0 + SPOT_HOLD_S
-    assert r.feed(r.window_id(2, 1, t), 14035.0, "CQ K0TQ", t) == [("K0TQ", 14035.0)]
+    assert r.feed(r.window_id(2, 0, 180.0), 14035.0, "CQ K0TQ", 180.0) == []
+    assert r.feed(r.window_id(2, 1, 240.0), 14035.0, "CQ K0TQ", 240.0) == [("K0TQ", 14035.0)]
+    t = 240.0 + SPOT_HOLD_S
+    assert r.feed(r.window_id(2, 2, t), 14035.0, "CQ K0TQ", t) == [("K0TQ", 14035.0)]
+
+
+def test_spot_on_the_strongest_nearby_bin() -> None:
+    """N3AD, 40m CWT 2026-10-08: a bin 350 Hz below him decoded his CQs too, weaker."""
+    r = _rule()
+    r.feed(r.window_id(1, 0, 0.0), 7037.9, "CQ TEST N3AD", 0.0, snr=15.0)
+    assert r.feed(r.window_id(2, 0, 30.0), 7038.25, "CQ TEST N3AD", 30.0, snr=40.0) == [
+        ("N3AD", 7038.25)]
+
+
+def test_windows_elsewhere_do_not_complete_a_spot() -> None:
+    """NP4E ran on 7032.0; one garbled window 6 kHz up must not spot him there."""
+    r = _rule()
+    r.feed(r.window_id(1, 0, 0.0), 7032.0, "CQ CWT NP4E", 0.0)
+    assert r.feed(r.window_id(2, 0, 30.0), 7037.9, "CQ TEST N3AD9U NP4E", 30.0) == []
+    assert r.feed(r.window_id(1, 1, 60.0), 7032.0, "CQ CWT NP4E", 60.0) == [("NP4E", 7032.0)]
 
 
 def test_near_miss_copy_counts_toward_real_call() -> None:

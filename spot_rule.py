@@ -13,6 +13,9 @@ A call is spotted when, within the reputation horizon:
      spotted while their call is being heard; merge targets must be recent (MERGE_RECENT_S);
   4. a call followed by a name and a number or state is a caller being sent the
      exchange, not a runner, and does not count.
+Windows count where they were decoded: only windows within SPOT_NEAR_KHZ of the one that
+completes the count, and the spot goes out on the strongest of them (a strong signal also
+decodes in a neighbouring bin, and a garbled window elsewhere must not finish a count).
 One spot per call per SPOT_HOLD_S unless it moves more than SPOT_MOVE_KHZ.
 
 Matches the reference, WX7V/5 (CW Skimmer at validation Normal, no Master.dta, through
@@ -40,6 +43,7 @@ _GLUED = frozenset({"KN", "AR", "BK", "SK", "TU", "DE", "BT", "AS", "KA", "VA"})
 _FOLLOW = ("GM", "GA", "GE", "GN", "UR", "FB", "ES", "RR", "OM", "HW", "PSE", "QSL", "TNX",
            "5NN", "599", "579", "589", "559")  # DE NV4H GM decoded as NV4HGM
 _NOISE = frozenset("EISHT5")  # an extension of only these is dit/dah noise, not lost letters
+SPOT_NEAR_KHZ = 0.5           # keyed windows counted together for one spot
 SPOT_HOLD_S = 600.0           # one spot per call per 10 minutes...
 SPOT_MOVE_KHZ = 2.0           # ...unless it moves more than this
 REPUTATION_S = 3600.0         # windows older than this are forgotten
@@ -151,6 +155,7 @@ def _lev1(a: str, b: str) -> bool:
 class _Sightings:
     wins: dict[int, float] = field(default_factory=dict)      # window -> freq, any context
     keyed: dict[int, float] = field(default_factory=dict)     # window -> freq, after a keyword
+    snr: dict[int, float] = field(default_factory=dict)       # keyed window -> bin SNR
     bins: Counter[int] = field(default_factory=Counter)       # round(freq x 10) -> windows
     last: float = 0.0                                          # time of the latest window
 
@@ -184,7 +189,8 @@ class RepeatSpotRule:
             self._next_window += 1
         return self._window_ids[key][0]
 
-    def feed(self, window: int, freq_khz: float, text: str, now: float) -> list[tuple[str, float]]:
+    def feed(self, window: int, freq_khz: float, text: str, now: float,
+             snr: float | None = None) -> list[tuple[str, float]]:
         """Record one decoded text of a window; return [(call, freq_khz)] to spot now."""
         self._expire(now)
         self._now = now
@@ -204,18 +210,22 @@ class RepeatSpotRule:
         spots = []
         for call in runner_calls(text):
             self._calls[call].keyed.setdefault(window, freq_khz)
+            if snr is not None:
+                self._calls[call].snr.setdefault(window, snr)
             target = self._dominant(call) or call
             if not self._near(target, freq_khz) or self._longer(target):
                 continue
+            here = self._keyed_near(target, freq_khz)
             if (self._may_be_copy(target)
-                    and self._keyed_windows(target) < self.tier(target) + COPY_WAIT_WINDOWS):
+                    and len(here) < self.tier(target) + COPY_WAIT_WINDOWS):
                 continue
-            if self._keyed_windows(target) >= self.tier(target):
+            if len(here) >= self.tier(target):
+                spot_f = max(here, key=lambda fs: fs[1])[0]
                 last = self._last_spot.get(target)
                 if (last is None or now - last[0] >= SPOT_HOLD_S
-                        or abs(freq_khz - last[1]) > SPOT_MOVE_KHZ):
-                    self._last_spot[target] = (now, freq_khz)
-                    spots.append((target, freq_khz))
+                        or abs(spot_f - last[1]) > SPOT_MOVE_KHZ):
+                    self._last_spot[target] = (now, spot_f)
+                    spots.append((target, spot_f))
         return spots
 
     @staticmethod
@@ -310,14 +320,19 @@ class RepeatSpotRule:
                 best = d
         return best
 
-    def _keyed_windows(self, target: str) -> int:
-        """Windows with target after a keyword: its own anywhere, plus its near-miss
-        copies' only where target itself was decoded (same frequency)."""
-        windows = set(self._calls[target].keyed)
-        for c in self._neighbours(target) | self._prefixes(target):
-            if self._dominant(c) == target:
-                windows |= {w for w, f in self._calls[c].keyed.items() if self._near(target, f)}
-        return len(windows)
+    def _keyed_near(self, target: str, freq_khz: float) -> list[tuple[float, float]]:
+        """(freq, snr) of the windows with target after a keyword within SPOT_NEAR_KHZ of
+        freq_khz: its own, plus its near-miss copies' where target itself was decoded."""
+        found: dict[int, tuple[float, float]] = {}
+        for c in {target} | self._neighbours(target) | self._prefixes(target):
+            if c != target and self._dominant(c) != target:
+                continue
+            s = self._calls[c]
+            for w, f in s.keyed.items():
+                if (w not in found and abs(f - freq_khz) <= SPOT_NEAR_KHZ
+                        and (c == target or self._near(target, f))):
+                    found[w] = (f, s.snr.get(w, float("-inf")))
+        return list(found.values())
 
     def _expire(self, now: float) -> None:
         cutoff = now - REPUTATION_S
@@ -328,6 +343,7 @@ class RepeatSpotRule:
                 continue
             b = _bin(s.wins.pop(window))
             s.keyed.pop(window, None)
+            s.snr.pop(window, None)
             s.bins[b] -= 1
             if s.bins[b] <= 0:
                 del s.bins[b]
