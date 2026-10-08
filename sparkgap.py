@@ -5103,6 +5103,7 @@ class SpotTracker:
         self.blacklist = blacklist
         self.respot_interval = respot_interval
         self.spot_rule = None      # spot_rule.RepeatSpotRule when config spot_rule is "repeat"
+        self.clock = time.time     # spot_rule's clock; file mode sets it to audio time
         self.fuzzy_min_cycles = fuzzy_min_cycles
         self.add_calls = add_calls or set()
         # Gate config — start with defaults, override anything in gate_config arg
@@ -6019,7 +6020,7 @@ class SpotTracker:
             # blacklisted calls never spot.
             if not self.spot_rule or intent.wpm > self.MAX_WPM:
                 return []
-            now = time.time()
+            now = self.clock()
             w = self.spot_rule.window_id(intent.bin_id, intent.window_id, now)
             return [{'call': call, 'freq_khz': f, 'snr': intent.snr_db,
                      'wpm': intent.wpm, 'method': 'repeat'}
@@ -7885,6 +7886,8 @@ def run_file_mode(args, config):
         _trk = tracker
         _trk.spot_rule = RepeatSpotRule(
             lambda c: {'active': 2, 'rare': 3}.get(_trk._matches_patt3ch(c), 4))
+        audio_now = [args.start_min * 60]
+        _trk.clock = lambda: audio_now[0]      # repeats counted in audio time, as live
 
     # Determine file format and sample rate
     with open(args.file, 'rb') as f:
@@ -8114,6 +8117,8 @@ def run_file_mode(args, config):
             i_block = i_data[pos:pos+block_size]
             q_block = q_data[pos:pos+block_size]
             manager.feed_all_iq(i_block, q_block)
+            if _spot_rule_on:
+                audio_now[0] = t_start + pos / file_rate
 
             # Collect output periodically
             results = manager.collect_all()
