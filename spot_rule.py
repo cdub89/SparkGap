@@ -1,52 +1,32 @@
 """Repeat-evidence spot rule (config spot_rule: "repeat"; cdub89/SparkGap#8 SP2).
 
-A call is spotted when, within the reputation horizon:
-  1. it is the first callsign within LOOKAHEAD tokens after CQ or TEST
-     (CQ CWT K0TQ, CQ POTA DE WX7V), or after DE when CQ or TEST came earlier with no
-     callsign between and the call is sent twice in the window (CQ SKCC DE K4DH K4DH);
-  2. that happens in at least tier(call) decode windows (2, 3 or 4 by patt3ch.lst);
-  3. near-miss copies count toward it: a call one character off a call that has
-     at least twice its windows on the same frequency is counted as that call, and so is
-     a truncated call (KM7E) when a call it begins (KM7EJE) reaches its own tier there
-     (one lost letter, AA0R for AA0RQ, only when the longer call is heard as often), and
-     a call with a K glued on (N7FULK) counts as the call (N7FUL); such copies are not
-     spotted while their call is being heard; merge targets must be recent (MERGE_RECENT_S);
-  4. a call followed by a name and a number or state is a caller being sent the
-     exchange, not a runner, and does not count.
-Windows count where they were decoded: only windows within SPOT_NEAR_KHZ of the one that
-completes the count, and the spot goes out on the strongest of them (a strong signal also
-decodes in a neighbouring bin, and a garbled window elsewhere must not finish a count).
-One spot per call per SPOT_HOLD_S unless it moves more than SPOT_MOVE_KHZ.
+CW Skimmer's rules: a call is spotted when it is the first callsign within LOOKAHEAD tokens
+after CQ or TEST (or after DE when CQ or TEST came earlier and the call is sent twice:
+CQ SKCC DE K4DH K4DH), copied exactly in tier(call) decode windows (2, 3 or 4 by patt3ch.lst)
+near one frequency within the last REPEAT_S. A call followed by a name and a number is a
+caller being sent the exchange and does not count.
 
-Matches the reference, WX7V/5 (CW Skimmer at validation Normal, no Master.dta, through
-the Aggregator's CQ filter): patt3ch tiers and repeats, no SCP check (8 of the 12 calls
-it sent to RBN 2026-10-06 18:21-19:02Z are not in MASTER.SCP). CWT alone is not a
-keyword until a contest run shows CW Skimmer tags "TU CWT <call>" as CQ.
+One vote on garbled decodes: a call does not spot while a call one edit from it has as many
+copies or more near the same frequency (a tie waits for the next window). A decoder that
+repeats its own busts (W6AYK for W6AYC) never lets the bust outrun the real call; nothing
+is renamed, so near-identical real calls (N4VI next to N4ZZ) are not merged.
 
-A window is one decode window of one bin; both LPF paths of a window count once.
+The spot goes out on the strongest window (bin SNR) among the copies, once per call per
+REPEAT_S unless it moves more than MOVE_KHZ. A window is one decode window of one bin;
+both LPF paths of a window count once.
 """
 
 import re
-from collections import Counter, defaultdict, deque
-from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from collections import Counter, deque
+from collections.abc import Callable
+from dataclasses import dataclass
 
 KEYWORDS = frozenset({"CQ", "TEST"})
 LOOKAHEAD = 3                 # tokens after a keyword searched for the sender's call
 DE_LOOKBACK = 6               # tokens before DE searched for CQ or TEST
-SAME_FREQ_KHZ = 0.3           # near-miss copies must share a frequency within this
-MERGE_RATIO = 2               # the real call needs this many times the copy's windows
-TRUNC_MIN = 3                 # shortest truncated call merged into a longer one (K4N)
-COPY_WAIT_WINDOWS = 2         # a possible one-character copy waits at most this many windows
-MERGE_RECENT_S = 300.0        # a merge target decoded longer ago than this is another station
-_GLUED = frozenset({"KN", "AR", "BK", "SK", "TU", "DE", "BT", "AS", "KA", "VA"})  # AB0CDKN
-_FOLLOW = ("GM", "GA", "GE", "GN", "UR", "FB", "ES", "RR", "OM", "HW", "PSE", "QSL", "TNX",
-           "5NN", "599", "579", "589", "559")  # DE NV4H GM decoded as NV4HGM
-_NOISE = frozenset("EISHT5")  # an extension of only these is dit/dah noise, not lost letters
-SPOT_NEAR_KHZ = 0.5           # keyed windows counted together for one spot
-SPOT_HOLD_S = 600.0           # one spot per call per 10 minutes...
-SPOT_MOVE_KHZ = 2.0           # ...unless it moves more than this
-REPUTATION_S = 3600.0         # windows older than this are forgotten
+NEAR_KHZ = 0.5                # copies within this of each other are one frequency
+REPEAT_S = 600.0              # copies count for 10 minutes; one spot per call per 10 minutes
+MOVE_KHZ = 1.0                # ...unless it moves more than this (CW Skimmer re-spots 1 kHz moves)
 
 CALL_RE = re.compile(r"^(?:[A-Z]{1,2}|[0-9][A-Z])[0-9]{1,4}[A-Z]{1,6}$")
 _SPLIT_RE = re.compile(r"[^A-Z0-9?]+")
@@ -151,20 +131,13 @@ def _lev1(a: str, b: str) -> bool:
     return any(long_[:i] + long_[i + 1:] == short for i in range(len(long_)))
 
 
-@dataclass
-class _Sightings:
-    wins: dict[int, float] = field(default_factory=dict)      # window -> freq, any context
-    keyed: dict[int, float] = field(default_factory=dict)     # window -> freq, after a keyword
-    snr: dict[int, float] = field(default_factory=dict)       # keyed window -> bin SNR
-    bins: Counter[int] = field(default_factory=Counter)       # round(freq x 10) -> windows
-    last: float = 0.0                                          # time of the latest window
-
-
-def _bin(freq_khz: float) -> int:
-    return round(freq_khz * 10)
-
-
-_NEAR_BINS = range(-round(SAME_FREQ_KHZ * 10), round(SAME_FREQ_KHZ * 10) + 1)
+@dataclass(frozen=True)
+class _Copy:
+    time: float
+    window: int
+    call: str
+    freq_khz: float
+    snr: float
 
 
 class RepeatSpotRule:
@@ -172,14 +145,12 @@ class RepeatSpotRule:
 
     def __init__(self, tier: Callable[[str], int]) -> None:
         self.tier = tier
-        self._calls: dict[str, _Sightings] = {}
-        self._index: dict[str, set[str]] = defaultdict(set)   # edit-1 and prefix keys -> calls
-        self._log: deque[tuple[float, str, int]] = deque()    # (time, call, window), oldest first
+        self._copies: deque[_Copy] = deque()                    # oldest first
+        self._seen: set[tuple[int, str]] = set()                # (window, call) in _copies
         self._window_ids: dict[tuple[int, int], tuple[int, float]] = {}   # -> (id, first seen)
         self._next_window = 0
-        self._last_spot: dict[str, tuple[float, float]] = {}  # call -> (time, freq)
-        self._last_prune = 0.0
-        self._now = 0.0
+        self._last_spot: dict[str, tuple[float, float]] = {}    # call -> (time, freq)
+        self._pruned = 0.0
 
     def window_id(self, bin_id: int, window_key: int, now: float) -> int:
         """Stable id for one bin's decode window (both LPF paths map to the same id)."""
@@ -193,168 +164,31 @@ class RepeatSpotRule:
              snr: float | None = None) -> list[tuple[str, float]]:
         """Record one decoded text of a window; return [(call, freq_khz)] to spot now."""
         self._expire(now)
-        self._now = now
-        toks = tokens(text)
-        for t in toks:
-            if CALL_RE.match(t):
-                s = self._calls.get(t)
-                if s is None:
-                    s = self._calls[t] = _Sightings()
-                    for k in self._edit_keys(t):
-                        self._index[k].add(t)
-                s.last = now
-                if window not in s.wins:
-                    s.wins[window] = freq_khz
-                    s.bins[_bin(freq_khz)] += 1
-                    self._log.append((now, t, window))
         spots = []
         for call in runner_calls(text):
-            self._calls[call].keyed.setdefault(window, freq_khz)
-            if snr is not None:
-                self._calls[call].snr.setdefault(window, snr)
-            target = self._dominant(call) or call
-            if not self._near(target, freq_khz) or self._longer(target):
+            if (window, call) not in self._seen:
+                self._seen.add((window, call))
+                self._copies.append(_Copy(now, window, call, freq_khz,
+                                          snr if snr is not None else float("-inf")))
+            near = [c for c in self._copies if abs(c.freq_khz - freq_khz) <= NEAR_KHZ]
+            counts = Counter(c.call for c in near)
+            if any(_lev1(other, call) and n >= counts[call] for other, n in counts.items()):
+                continue          # a call one edit away has as many copies here: undecided
+            if counts[call] < self.tier(call):
                 continue
-            here = self._keyed_near(target, freq_khz)
-            if (self._may_be_copy(target)
-                    and len(here) < self.tier(target) + COPY_WAIT_WINDOWS):
-                continue
-            if len(here) >= self.tier(target):
-                spot_f = max(here, key=lambda fs: fs[1])[0]
-                last = self._last_spot.get(target)
-                if (last is None or now - last[0] >= SPOT_HOLD_S
-                        or abs(spot_f - last[1]) > SPOT_MOVE_KHZ):
-                    self._last_spot[target] = (now, spot_f)
-                    spots.append((target, spot_f))
+            spot_f = max((c for c in near if c.call == call), key=lambda c: c.snr).freq_khz
+            last = self._last_spot.get(call)
+            if last is None or now - last[0] >= REPEAT_S or abs(spot_f - last[1]) >= MOVE_KHZ:
+                self._last_spot[call] = (now, spot_f)
+                spots.append((call, spot_f))
         return spots
 
-    @staticmethod
-    def _edit_keys(call: str) -> Iterable[str]:
-        yield call
-        for i in range(len(call)):
-            yield call[:i] + "*" + call[i + 1:]
-            yield call[:i] + call[i + 1:]
-        for k in range(TRUNC_MIN, len(call)):
-            yield "^" + call[:k]
-
-    def _neighbours(self, call: str) -> set[str]:
-        near: set[str] = set()
-        for k in self._edit_keys(call):
-            near |= self._index.get(k, set())
-        return {c for c in near if c != call and _lev1(c, call)}
-
-    def _longer(self, call: str) -> set[str]:
-        """Recent calls on call's frequency that begin with call plus lost characters (not a
-        glued prosign or noise): what a truncated call may be a copy of.  One lost character
-        (AA0R for AA0RQ) counts only when the longer call is heard at least as often."""
-        out = set()
-        for d in self._index.get("^" + call, set()):
-            ext = d[len(call):]
-            if ext.startswith(_FOLLOW) and not self._calls[d].keyed:
-                continue          # NV4HGM: never after CQ, a greeting glued on
-            if len(ext) == 1:
-                ok = ext not in _NOISE and ext != "K" and self._n(d) >= self._n(call)
-            else:
-                ok = ext not in _GLUED and not set(ext) <= _NOISE
-            if ok and self._recent(d) and self._shares_freq(call, d):
-                out.add(d)
-        return out
-
-    def _may_be_copy(self, call: str) -> bool:
-        """A call that may be a one-character copy (N7FULK of N7FUL, AA0R of AA0RQ) waits
-        while that call is heard on its frequency; the merge decides once both have windows."""
-        base = call[:-1]
-        if (call.endswith("K") and len(base) >= TRUNC_MIN and base in self._calls
-                and self._recent(base) and self._shares_freq(call, base)):
-            return True
-        return any(len(d) == len(call) + 1 and d[-1] not in _NOISE and d[-1] not in "KG"
-                   and self._recent(d) and self._shares_freq(call, d)
-                   for d in self._index.get("^" + call, set()))
-
-    def _glued_base(self, call: str) -> str | None:
-        """N7FUL for N7FULK: the call with a K glued on, when the call itself is heard
-        recently on this frequency at least as often."""
-        base = call[:-1]
-        if (call.endswith("K") and len(base) >= TRUNC_MIN
-                and call in self._calls and base in self._calls
-                and self._n(base) >= self._n(call) and self._recent(base)
-                and self._shares_freq(call, base)):
-            return base
-        return None
-
-    def _prefixes(self, call: str) -> set[str]:
-        """Decoded calls that call begins with: its possible truncated copies."""
-        return {call[:k] for k in range(TRUNC_MIN, len(call)) if call[:k] in self._calls}
-
-    def _recent(self, call: str) -> bool:
-        return self._calls[call].last >= self._now - MERGE_RECENT_S
-
-    def _n(self, call: str) -> int:
-        s = self._calls.get(call)
-        return len(s.wins) if s else 0
-
-    def _near(self, call: str, freq_khz: float) -> bool:
-        """call was itself decoded within SAME_FREQ_KHZ of freq_khz."""
-        s = self._calls.get(call)
-        return bool(s) and any(s.bins.get(_bin(freq_khz) + k) for k in _NEAR_BINS)
-
-    def _shares_freq(self, a: str, b: str) -> bool:
-        return any(self._near(b, f / 10) for f in self._calls[a].bins)
-
-    def _dominant(self, call: str) -> str | None:
-        """The call this call is a near-miss or truncated copy of (rule 3), or None. A runner
-        is decoded in nearly every window, so it is never outnumbered 2:1 by a caller one
-        character away."""
-        glued = self._glued_base(call)
-        best = None
-        longer = self._longer(call)
-        for d in self._neighbours(call) | longer:
-            if d == glued:
-                ok = True
-            elif d in longer:
-                ok = self._n(d) >= self.tier(d) and self._n(d) > self._n(call)
-            else:
-                ok = self._n(d) >= MERGE_RATIO * self._n(call)
-            if (ok and self._recent(d) and self._shares_freq(call, d)
-                    and (best is None or (self._n(d), best) > (self._n(best), d))):
-                best = d
-        return best
-
-    def _keyed_near(self, target: str, freq_khz: float) -> list[tuple[float, float]]:
-        """(freq, snr) of the windows with target after a keyword within SPOT_NEAR_KHZ of
-        freq_khz: its own, plus its near-miss copies' where target itself was decoded."""
-        found: dict[int, tuple[float, float]] = {}
-        for c in {target} | self._neighbours(target) | self._prefixes(target):
-            if c != target and self._dominant(c) != target:
-                continue
-            s = self._calls[c]
-            for w, f in s.keyed.items():
-                if (w not in found and abs(f - freq_khz) <= SPOT_NEAR_KHZ
-                        and (c == target or self._near(target, f))):
-                    found[w] = (f, s.snr.get(w, float("-inf")))
-        return list(found.values())
-
     def _expire(self, now: float) -> None:
-        cutoff = now - REPUTATION_S
-        while self._log and self._log[0][0] < cutoff:
-            _, call, window = self._log.popleft()
-            s = self._calls.get(call)
-            if s is None or window not in s.wins:
-                continue
-            b = _bin(s.wins.pop(window))
-            s.keyed.pop(window, None)
-            s.snr.pop(window, None)
-            s.bins[b] -= 1
-            if s.bins[b] <= 0:
-                del s.bins[b]
-            if not s.wins:
-                del self._calls[call]
-                for k in self._edit_keys(call):
-                    self._index[k].discard(call)
-                    if not self._index[k]:
-                        del self._index[k]
-        if now - self._last_prune > 60.0:
-            self._last_prune = now
-            held = now - SPOT_HOLD_S
-            self._last_spot = {c: v for c, v in self._last_spot.items() if v[0] >= held}
+        cutoff = now - REPEAT_S
+        while self._copies and self._copies[0].time < cutoff:
+            c = self._copies.popleft()
+            self._seen.discard((c.window, c.call))
+        if now - self._pruned >= 60.0:
+            self._pruned = now
+            self._last_spot = {k: v for k, v in self._last_spot.items() if v[0] >= cutoff}
             self._window_ids = {k: v for k, v in self._window_ids.items() if v[1] >= cutoff}

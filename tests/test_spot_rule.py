@@ -1,6 +1,6 @@
 """Repeat-evidence spot rule (spot_rule.py). Text cases are decodes from the 2026-09-23 replays."""
 
-from spot_rule import REPUTATION_S, SPOT_HOLD_S, RepeatSpotRule, runner_calls
+from spot_rule import REPEAT_S, RepeatSpotRule, runner_calls
 
 SCP = {"K0TQ", "WX7V", "W1AW", "VE7KW", "K3JT", "K1ABC", "K1AJ", "AA3B", "NA2U"}
 
@@ -72,7 +72,7 @@ def test_one_spot_per_hold_unless_moved() -> None:
     assert r.feed(r.window_id(1, 2, 120.0), 14030.0, "CQ K0TQ", 120.0) == []
     assert r.feed(r.window_id(2, 0, 180.0), 14035.0, "CQ K0TQ", 180.0) == []
     assert r.feed(r.window_id(2, 1, 240.0), 14035.0, "CQ K0TQ", 240.0) == [("K0TQ", 14035.0)]
-    t = 240.0 + SPOT_HOLD_S
+    t = 240.0 + REPEAT_S
     assert r.feed(r.window_id(2, 2, t), 14035.0, "CQ K0TQ", t) == [("K0TQ", 14035.0)]
 
 
@@ -92,18 +92,10 @@ def test_windows_elsewhere_do_not_complete_a_spot() -> None:
     assert r.feed(r.window_id(1, 1, 60.0), 7032.0, "CQ CWT NP4E", 60.0) == [("NP4E", 7032.0)]
 
 
-def test_near_miss_copy_counts_toward_real_call() -> None:
-    r = _rule()
-    for k in range(4):
-        r.feed(r.window_id(1, k, k * 60.0), 14041.1, "K1AJ 599 K1AJ", k * 60.0)
-    r.feed(r.window_id(1, 4, 240.0), 14041.1, "CQ K1AA", 240.0)
-    assert r.feed(r.window_id(1, 5, 300.0), 14041.1, "CQ K1AJ", 300.0) == [("K1AJ", 14041.1)]
-
-
 def test_old_windows_are_forgotten() -> None:
     r = _rule()
     r.feed(r.window_id(1, 0, 0.0), 14030.0, "CQ K0TQ", 0.0)
-    t = REPUTATION_S + 120.0
+    t = REPEAT_S + 120.0
     assert r.feed(r.window_id(1, 1, t), 14030.0, "CQ K0TQ", t) == []
 
 
@@ -138,28 +130,6 @@ def test_tracker_spots_window_records() -> None:
     assert [(s["call"], s["freq_khz"], s["method"]) for s in spots] == [("K0TQ", 14030.0, "repeat")]
 
 
-def test_copy_outnumbered_two_to_one_counts_as_the_real_call() -> None:
-    r = RepeatSpotRule(_tier2)
-    for k in range(4):
-        r.feed(r.window_id(1, k, k * 60.0), 14041.1, "CQ K1AJ", k * 60.0)
-    assert r.feed(r.window_id(1, 4, 240.0), 14041.1, "CQ K1AA", 240.0) == []
-
-
-def test_call_not_outnumbered_spots_itself() -> None:
-    r = RepeatSpotRule(_tier2)
-    r.feed(r.window_id(1, 0, 0.0), 14041.1, "K1AJ 599", 0.0)
-    r.feed(r.window_id(1, 1, 60.0), 14041.1, "CQ K1AA", 60.0)
-    assert r.feed(r.window_id(1, 2, 120.0), 14041.1, "CQ K1AA", 120.0) == [("K1AA", 14041.1)]
-
-
-def test_copy_on_another_frequency_does_not_count() -> None:
-    r = _rule()
-    for k in range(4):
-        r.feed(r.window_id(1, k, k * 60.0), 14041.1, "K1AJ 599 K1AJ", k * 60.0)
-    r.feed(r.window_id(2, 0, 240.0), 14041.1, "CQ K1AA", 240.0)
-    assert r.feed(r.window_id(3, 0, 300.0), 14035.0, "CQ K1AA", 300.0) == []
-
-
 def test_tracker_drops_blacklisted_and_overspeed() -> None:
     import sparkgap
 
@@ -177,62 +147,6 @@ def test_tracker_drops_blacklisted_and_overspeed() -> None:
     assert tracker.process_intent(window(4, "CQ W1AW", wpm=55)) == []
 
 
-def test_truncated_call_counts_toward_the_full_call() -> None:
-    r = _rule()
-    for k in range(3):
-        r.feed(r.window_id(1, k, k * 60.0), 14040.5, "KM7EJE KM7EJE", k * 60.0)
-    assert r.feed(r.window_id(1, 3, 180.0), 14040.5, "CQ POTA DE KM7E", 180.0) == []
-    spots = r.feed(r.window_id(1, 4, 240.0), 14040.5, "CQ POTA DE KM7E", 240.0)
-    assert spots == [("KM7EJE", 14040.5)]
-
-
-def test_truncated_call_waits_while_a_longer_call_is_heard() -> None:
-    r = RepeatSpotRule(lambda c: 4 if c == "WB0RTA" else 2)
-    r.feed(r.window_id(1, 0, 0.0), 14013.4, "WB1RTA WB0RTA", 0.0)
-    for k in range(1, 4):
-        assert r.feed(r.window_id(1, k, k * 60.0), 14013.4, "CQ CQ DE WB0R", k * 60.0) == []
-
-
-def test_glued_prosign_is_not_a_longer_call() -> None:
-    r = _rule()
-    for k in range(4):
-        r.feed(r.window_id(1, k, k * 60.0), 14069.2, "AB0CDKN", k * 60.0)
-    r.feed(r.window_id(1, 4, 240.0), 14069.2, "CQ AB0CD", 240.0)
-    assert r.feed(r.window_id(1, 5, 300.0), 14069.2, "CQ AB0CD", 300.0) == [("AB0CD", 14069.2)]
-
-
-def test_stale_neighbour_does_not_take_a_new_runner() -> None:
-    r = _rule()
-    for k in range(4):
-        r.feed(r.window_id(1, k, k * 60.0), 14030.0, "CQ K1AB", k * 60.0)
-    assert r.feed(r.window_id(2, 0, 700.0), 14030.0, "CQ K1AA", 700.0) == []
-    assert r.feed(r.window_id(2, 1, 760.0), 14030.0, "CQ K1AA", 760.0) == [("K1AA", 14030.0)]
-
-
-def test_short_call_heard_more_than_the_longer_one_is_not_merged() -> None:
-    r = _rule()
-    for k in range(2):
-        r.feed(r.window_id(1, k, k * 60.0), 14030.0, "K4NAX 5NN", k * 60.0)
-    for k in range(2, 6):
-        r.feed(r.window_id(1, k, k * 60.0), 14030.0, "K4N K4N", k * 60.0)
-    assert r._dominant("K4N") is None
-
-
-def test_noise_and_prosign_extensions_are_not_longer_calls() -> None:
-    r = _rule()
-    for k, text in enumerate(("AB0CDBT", "AB0CDAS", "AB0CDEE", "AB0CDEE")):
-        r.feed(r.window_id(1, k, k * 60.0), 14069.2, text, k * 60.0)
-    assert r._longer("AB0CD") == set()
-
-
-def test_equal_longer_candidates_resolve_by_call() -> None:
-    r = _rule()
-    for k in range(3):
-        r.feed(r.window_id(1, k, k * 60.0), 14030.0, "K4NAX K4NZZ", k * 60.0)
-    r.feed(r.window_id(1, 3, 180.0), 14030.0, "CQ K4N", 180.0)
-    assert r._dominant("K4N") == "K4NAX"
-
-
 def test_call_after_de_counts_when_cq_came_first_and_it_is_sent_twice() -> None:
     assert runner_calls("CQ SKCC CG EKCC DE K4DH K4DH") == ["K4DH"]
     assert runner_calls("NOT E 3KZE CQ I EE DE VE3N") == []
@@ -243,67 +157,67 @@ def test_call_after_de_counts_when_cq_came_first_and_it_is_sent_twice() -> None:
     assert runner_calls("CQ K1ABC? FOO BAR BAZ DEW1XYZ W1XYZ") == []
 
 
-def test_glued_k_counts_toward_the_call() -> None:
+def _feed_cq(r: RepeatSpotRule, calls: list[str], freq: float = 7032.4, t0: float = 0.0) -> list:
+    """One window per call in order, each 'CQ CWT <call>'; returns all spots."""
+    out = []
+    for k, call in enumerate(calls):
+        t = t0 + 60.0 * k
+        out += r.feed(r.window_id(1, int(t), t), freq, f"CQ CWT {call}", t)
+    return out
+
+
+def test_repeated_bust_does_not_outrun_the_real_call() -> None:
+    """W6AYC, 40m CWT 2026-10-08: the decoder copied W6AYK twice, W6AYC three times."""
+    spots = _feed_cq(_rule(), ["W6AYC", "W6AYK", "W6AYC", "W6AYK", "W6AYC"])
+    assert ("W6AYK", 7032.4) not in spots
+    assert ("W6AYC", 7032.4) in spots
+
+
+def test_bust_waits_while_the_real_call_leads() -> None:
     r = _rule()
-    for k in range(3):
-        r.feed(r.window_id(1, k, k * 60.0), 7014.0, "CQ N7FUL", k * 60.0)
-    r.feed(r.window_id(1, 3, 180.0), 7014.0, "CQ N7FULK", 180.0)
-    assert r._dominant("N7FULK") == "N7FUL"
+    assert _feed_cq(r, ["K2TW", "K2TW", "K2W"])[0][0] == "K2TW"
+    assert _feed_cq(r, ["K2W"], t0=180.0) == []
 
 
-def test_one_lost_character_merges_into_the_call_heard_more() -> None:
+def test_glued_garbage_does_not_block_the_call() -> None:
+    """K8BZ, 20m CWT 2026-09-23: one 'CQ CWT K8BZTRQ' among many clean copies."""
+    assert _feed_cq(_rule(), ["K8BZ", "K8BZTRQ", "K8BZ"]) == [("K8BZ", 7032.4)]
+
+
+def test_near_identical_real_calls_both_spot() -> None:
+    """N4VI and N4ZZ, 40m CWT 2026-10-08: two runners 0.1 kHz apart, two edits apart."""
     r = _rule()
-    for k in range(3):
-        r.feed(r.window_id(1, k, k * 60.0), 7034.0, "CQ AA0RQ", k * 60.0)
-    r.feed(r.window_id(1, 3, 180.0), 7034.0, "CQ AA0R", 180.0)
-    assert r._dominant("AA0R") == "AA0RQ"
+    spots = _feed_cq(r, ["N4ZZ", "N4ZZ", "N4ZZ"], freq=7037.0)
+    spots += _feed_cq(r, ["N4VI", "N4VI"], freq=7037.1, t0=200.0)
+    assert {c for c, _ in spots} == {"N4ZZ", "N4VI"}
 
 
-def test_one_noise_character_is_not_a_longer_call() -> None:
+def test_a_one_khz_move_spots_again() -> None:
     r = _rule()
-    for k in range(3):
-        r.feed(r.window_id(1, k, k * 60.0), 7034.0, "K5OHE", k * 60.0)
-    assert r._longer("K5OH") == set()
+    assert _feed_cq(r, ["K0TQ", "K0TQ"], freq=7030.0) == [("K0TQ", 7030.0)]
+    assert _feed_cq(r, ["K0TQ", "K0TQ"], freq=7031.0, t0=120.0) == [("K0TQ", 7031.0)]
 
 
-def test_possible_copy_waits_while_its_call_is_heard() -> None:
+def test_a_tie_with_a_one_edit_call_waits_for_the_next_copy() -> None:
+    """Accepted cost of not guessing: a real call level with a one-edit call waits."""
     r = _rule()
-    r.feed(r.window_id(1, 0, 0.0), 7014.0, "N7FUL 5NN", 0.0)
-    for k in range(1, 4):
-        assert r.feed(r.window_id(1, k, k * 60.0), 7014.0, "CQ N7FULK", k * 60.0) == []
+    _feed_cq(r, ["K1ABC", "K1ABC"])
+    assert _feed_cq(r, ["K1ABD", "K1ABD"], t0=120.0) == []
+    assert _feed_cq(r, ["K1ABD"], t0=240.0) == [("K1ABD", 7032.4)]
 
 
-def test_glued_k_does_not_override_a_call_heard_twice_as_often() -> None:
-    r = _rule()
-    for k in range(4):
-        r.feed(r.window_id(1, k, k * 60.0), 7014.0, "CQ N7FUK", k * 60.0)
-    for k in range(4, 6):
-        r.feed(r.window_id(1, k, k * 60.0), 7014.0, "N7FUL N7FULK", k * 60.0)
-    assert r._dominant("N7FULK") == "N7FUK"
+def test_file_mode_counts_repeats_in_audio_time() -> None:
+    import sparkgap
 
+    tracker = sparkgap.SpotTracker(set(SCP), set())
+    tracker.__dict__["spot_rule"] = RepeatSpotRule(_tier2)
+    audio = [0.0]
+    tracker.clock = lambda: audio[0]
 
-def test_stray_longer_decode_only_delays_a_real_short_call() -> None:
-    r = _rule()
-    r.feed(r.window_id(1, 0, 0.0), 7034.0, "CQ AA0R", 0.0)
-    r.feed(r.window_id(1, 1, 60.0), 7034.0, "CQ AA0RQ", 60.0)
-    spots = []
-    for k in range(2, 6):
-        spots += r.feed(r.window_id(1, k, k * 60.0), 7034.0, "CQ AA0R", k * 60.0)
-    assert spots == [("AA0R", 7034.0)]
+    def window(key: int) -> sparkgap.SpotIntent:
+        return sparkgap.SpotIntent(call="", freq_khz=14030.0, snr_db=12.0, wpm=28, is_runner=True,
+                                   window_id=key, bin_id=7, window_text="CQ CWT K0TQ")
 
-
-def test_greeting_glued_after_the_call_is_not_a_longer_call() -> None:
-    r = _rule()
-    spots = []
-    for k, text in enumerate(("CQ POTA DE NV4H", "DE NV4HGM JOE 5NN", "NV4HG TVINK",
-                              "CQ POTA DE NV4H", "DENV4HGMJOE 5NN")):
-        spots += r.feed(r.window_id(1, k, k * 60.0), 7062.4, text, k * 60.0)
-    assert spots == [("NV4H", 7062.4)]
-
-
-def test_real_longer_call_after_cq_still_takes_its_truncation() -> None:
-    r = _rule()
-    for k in range(3):
-        r.feed(r.window_id(1, k, k * 60.0), 7030.0, "CQ K1AGA", k * 60.0)
-    r.feed(r.window_id(1, 3, 180.0), 7030.0, "CQ K1A", 180.0)
-    assert r._dominant("K1A") == "K1AGA"
+    assert tracker.process_intent(window(1)) == []
+    audio[0] = REPEAT_S + 60.0          # the second copy comes 11 audio minutes later
+    assert tracker.process_intent(window(2)) == []
