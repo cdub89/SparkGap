@@ -33,6 +33,18 @@ def test_caller_sent_the_exchange_does_not_count() -> None:
     assert runner_calls("TEST VE7KW TEST K3JT K3JT KEITS 2182") == ["VE7KW"]
 
 
+def test_contest_report_and_number_is_an_exchange() -> None:
+    # Morse Runner CQ WW cells (hotairfred, cdub89/SparkGap#8): the caller follows the CQ
+    assert runner_calls("CQ W6YH TEST EI4KF 5NN 4 5NN 4 TU") == ["W6YH"]
+    assert runner_calls("CQ W6YH TEST 2E0FOR 5NN 4 A TU") == ["W6YH"]
+    assert runner_calls("TEST K1ABC 599 TT5") == []
+
+
+def test_keyword_closing_a_cq_opens_no_lookahead() -> None:
+    assert runner_calls("CQ W6YH TEST K1ABC") == ["W6YH"]
+    assert runner_calls("CQ TEST K1ABC") == ["K1ABC"]
+
+
 def test_no_keyword_no_runner() -> None:
     assert runner_calls("DE K7GUD NICE MEET U RICK") == []
 

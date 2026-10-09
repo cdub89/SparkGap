@@ -32,6 +32,7 @@ CALL_RE = re.compile(r"^(?:[A-Z0-9]{1,3}/)?"                      # HK3/
                      r"(?:[A-Z]{1,2}|[0-9][A-Z])[0-9]{1,4}[A-Z]{1,6}"
                      r"(?:/[A-Z0-9]{1,3})?$")                          # /0, /P
 _SPLIT_RE = re.compile(r"[^A-Z0-9?/]+")   # keep / for HK3/NP4Z, N5AW/0
+_RST_RE = re.compile(r"^[5E][9N][9N]$")    # 599, 5NN, ENN: contest report before the number
 _MERGED_PREFIXES = ("CQ", "TEST", "CWT", "SST", "MST", "DE")
 _TRIGGER_WORDS = ("CQ", "TEST", "CWT", "SST", "MST")
 _STOP_WORDS = frozenset({"TU", "DE", "CQ", "TEST", "CWT", "SST", "MST", "QRZ", "AGN",
@@ -86,14 +87,17 @@ def sender(toks: list[str], i: int) -> int | None:
 
 
 def is_exchange(toks: list[str], j: int) -> bool:
-    """toks[j] is followed by NAME then a number or 2-letter state: a caller being sent
-    the exchange. Repeats of the call and 1-character or '?' tokens before NAME are skipped."""
+    """toks[j] is followed by NAME then a number or 2-letter state, or by a report (5NN) then
+    a number: a caller being sent the exchange. Repeats of the call and 1-character or '?'
+    tokens before NAME are skipped."""
     k = j + 1
     while k < len(toks) and (toks[k] == toks[j] or len(toks[k]) <= 1 or "?" in toks[k]):
         k += 1
     if k + 1 >= len(toks):
         return False
     name, num = toks[k], toks[k + 1]
+    if _RST_RE.match(name):                      # CQ WW, WPX: report then zone or serial
+        return any(ch.isdigit() for ch in num)
     return (name.isalpha() and 2 <= len(name) <= 6 and name not in _STOP_WORDS
             and not _is_trigger_like(name)
             and (any(ch.isdigit() for ch in num) or (num.isalpha() and len(num) == 2)))
@@ -115,6 +119,8 @@ def runner_calls(text: str) -> list[str]:
     out = []
     for i, t in enumerate(toks):
         de = t == "DE" and _cq_before(toks, i)
+        if t in KEYWORDS and i >= 2 and toks[i - 2] in KEYWORDS and CALL_RE.match(toks[i - 1]):
+            continue              # CQ W6YH TEST: closes the runner's CQ, opens no lookahead
         if t in KEYWORDS or de:
             j = sender(toks, i)
             if j is not None and de and toks.count(toks[j]) < 2:
