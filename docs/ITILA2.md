@@ -3,7 +3,7 @@
 
 itila2 is a second CW decoder chain for SparkGap, kept beside the original itila chain so the two can be compared on the same audio. It shares itila's architecture (wideband IQ, a scanner that spawns one channel per signal, an HMM decoder per channel) and changes the parts that measurement showed to be limiting. This note describes how itila2 works, what differs from itila, and the evidence behind each difference.
 
-Status: on `live/all` at `f9e0e94` (2026-10-07). Tracked in `cdub89/SparkGap#8`.
+Status: the decoder, scanner and spot rule (`spot_rule: repeat`, off by default) are in this repository. Development is tracked in `cdub89/SparkGap#8`.
 
 ## Selecting it
 
@@ -67,7 +67,7 @@ Shared with itila: the 200 Hz envelope, a two-state HMM (mark, space) whose para
 
 The reference is WX7V/5: CW Skimmer at validation Normal with no Master.dta, feeding the Aggregator, which forwards only CQ-tagged spots. The rule mirrors what that node sends.
 
-1. The call is the first callsign within 3 words after CQ or TEST, or after DE when CQ or TEST came earlier in the window with no call between and the call is sent twice (`CQ SKCC DE K4DH K4DH`).
+1. The call is the sender of a CQ group. A group opens at CQ or TEST, or at DE when CQ or TEST came earlier in the window with no call between and the call is sent twice (`CQ SKCC DE K4DH K4DH`). The sender is the call inside the group or within 3 words after its keywords; keywords right after the sender close the group, and the next transmission (usually a caller) starts after them: `CQ TEST W6YH`, `CQ W6YH TEST`, `TEST W6YH`, `CQ TEST W6YH TEST`. `TU W6YH` and a bare `W6YH TEST` open no group: on two CWTs they promoted callers.
 2. The exact call must be copied in 2, 3 or 4 decode windows, by its pattern (patt3ch.lst), as CW Skimmer validates, within 0.5 kHz and the last 10 minutes. No SCP check: 8 of the 12 calls WX7V/5 sent in a 41-minute sample were not in MASTER.SCP. Portable calls stay whole (HK3/NP4Z, N5AW/0).
 3. One vote on garbled decodes: a call does not spot while a call one edit from it has as many copies or more near the same frequency; a tie waits for the next window. Nothing is renamed and no copies are pooled, so near-identical real calls on one frequency (N4VI next to N4ZZ, K3WW next to K2TW) both spot.
 4. A call followed by a name and a number (a caller being sent the exchange) does not count.
