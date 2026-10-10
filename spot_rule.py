@@ -114,19 +114,30 @@ def _cq_before(toks: list[str], i: int) -> bool:
 
 
 def runner_calls(text: str) -> list[str]:
-    """Calls this text puts right after CQ or TEST (rules 1 and 4)."""
+    """Senders of CQ groups (rules 1 and 4). A group opens at CQ or TEST, or at DE after a CQ.
+    Its sender is the call inside it or right after the keywords (within LOOKAHEAD). Keywords
+    right after the sender close the group; the next transmission (usually a caller) starts
+    after them: CQ TEST W6YH, CQ W6YH TEST, TEST W6YH, CQ TEST W6YH TEST. TU W6YH and a bare
+    W6YH TEST open no group: on the 40m CWT 10-08 and 20m CWT 09-23 they promoted callers
+    (+28 and +18 calls CW Skimmer did not send, for 3 more runners)."""
     toks = tokens(text)
-    out = []
-    for i, t in enumerate(toks):
+    out: list[str] = []
+    i, n = 0, len(toks)
+    while i < n:
+        t = toks[i]
         de = t == "DE" and _cq_before(toks, i)
-        if t in KEYWORDS and i >= 2 and toks[i - 2] in KEYWORDS and CALL_RE.match(toks[i - 1]):
-            continue              # CQ W6YH TEST: closes the runner's CQ, opens no lookahead
-        if t in KEYWORDS or de:
-            j = sender(toks, i)
-            if j is not None and de and toks.count(toks[j]) < 2:
-                continue
-            if j is not None and not is_exchange(toks, j) and toks[j] not in out:
-                out.append(toks[j])
+        if not (t in KEYWORDS or de):
+            i += 1
+            continue
+        j = sender(toks, i)
+        if j is None or (de and toks.count(toks[j]) < 2):
+            i += 1
+            continue
+        if not is_exchange(toks, j) and toks[j] not in out:
+            out.append(toks[j])
+        i = j + 1
+        while i < n and toks[i] in KEYWORDS:      # closing keywords end the group
+            i += 1
     return out
 
 

@@ -40,6 +40,25 @@ def test_contest_report_and_number_is_an_exchange() -> None:
     assert runner_calls("TEST K1ABC 599 TT5") == []
 
 
+def test_every_cq_form_names_the_runner() -> None:
+    # Fred (cdub89/SparkGap#8): runners mix these forms within one run
+    for form in ("TEST W6YH", "CQ TEST W6YH", "CQ W6YH TEST", "CQ TEST W6YH TEST"):
+        assert runner_calls(form) == ["W6YH"], form
+
+
+def test_tu_and_a_bare_trailing_test_open_no_group() -> None:
+    # measured on two CWTs: TU <call> is mostly said to callers
+    assert runner_calls("TU W6YH") == []
+    assert runner_calls("W6YH TEST") == []
+
+
+def test_a_call_after_the_closing_keyword_is_the_next_transmission() -> None:
+    assert runner_calls("CQ W6YH TEST EI4KF 5NN 4") == ["W6YH"]
+    # the second TEST closes the first group, so K3WW opens nothing
+    assert runner_calls("TEST K3AW TEST K3WW TEST") == ["K3AW"]
+    assert runner_calls("TEST VE7KW TEST K3JT K3JT KEITS 2182") == ["VE7KW"]
+
+
 def test_keyword_closing_a_cq_opens_no_lookahead() -> None:
     assert runner_calls("CQ W6YH TEST K1ABC") == ["W6YH"]
     assert runner_calls("CQ TEST K1ABC") == ["K1ABC"]
