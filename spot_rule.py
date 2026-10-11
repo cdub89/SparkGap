@@ -14,6 +14,11 @@ is renamed, so near-identical real calls (N4VI next to N4ZZ) are not merged.
 The spot goes out on the strongest window (bin SNR) among the copies, once per call per
 REPEAT_S unless it moves more than MOVE_KHZ. A window is one decode window of one bin;
 both LPF paths of a window count once.
+
+CQ groups (config spot_rule_cq_groups: true, off by default): every CQ group naming the call
+counts as a copy, also several in one window (CQ WES DE N5QLZ N5QLZ K CQ WES DE N5QLZ is two),
+so a call sent in two or more CQs of one window does not wait for the next window. The two
+LPF paths of a window are not added: the larger count of the two is used.
 """
 
 import re
@@ -113,7 +118,7 @@ def _cq_before(toks: list[str], i: int) -> bool:
     return False
 
 
-def runner_calls(text: str) -> list[str]:
+def runner_calls(text: str, every: bool = False) -> list[str]:
     """Senders of CQ groups (rules 1 and 4). A group opens at CQ or TEST, or at DE after a CQ.
     Its sender is the call inside it or right after the keywords (within LOOKAHEAD). Keywords
     right after the sender close the group; the next transmission (usually a caller) starts
@@ -121,7 +126,8 @@ def runner_calls(text: str) -> list[str]:
     twice (CQ TEST W6YH W6YH TEST). TU W6YH and a bare W6YH TEST do not name W6YH: on the 40m
     CWT 10-08 and 20m CWT 09-23 they promoted callers (+28 and +18 calls CW Skimmer did not
     send, for 3 more runners). The TEST of a bare W6YH TEST still opens a group on the call
-    after it; only the exchange test keeps that caller out."""
+    after it; only the exchange test keeps that caller out. every: one entry per group
+    instead of one per call."""
     toks = tokens(text)
     out: list[str] = []
     i, n = 0, len(toks)
@@ -135,7 +141,7 @@ def runner_calls(text: str) -> list[str]:
         if j is None or (de and toks.count(toks[j]) < 2):
             i += 1
             continue
-        if not is_exchange(toks, j) and toks[j] not in out:
+        if not is_exchange(toks, j) and (every or toks[j] not in out):
             out.append(toks[j])
         i = j + 1
         while i < n and toks[i] == toks[j]:       # call sent twice before the closing keyword
@@ -162,15 +168,17 @@ class _Copy:
     call: str
     freq_khz: float
     snr: float
+    nth: int = 0              # which CQ group of its window (always 0 without cq_groups)
 
 
 class RepeatSpotRule:
     """Feed every decode window; returns the spots the window completes."""
 
-    def __init__(self, tier: Callable[[str], int]) -> None:
+    def __init__(self, tier: Callable[[str], int], cq_groups: bool = False) -> None:
         self.tier = tier
+        self.cq_groups = cq_groups
         self._copies: deque[_Copy] = deque()                    # oldest first
-        self._seen: set[tuple[int, str]] = set()                # (window, call) in _copies
+        self._seen: set[tuple[int, str, int]] = set()           # (window, call, nth) in _copies
         self._window_ids: dict[tuple[int, int], tuple[int, float]] = {}   # -> (id, first seen)
         self._next_window = 0
         self._last_spot: dict[str, tuple[float, float]] = {}    # call -> (time, freq)
@@ -189,11 +197,12 @@ class RepeatSpotRule:
         """Record one decoded text of a window; return [(call, freq_khz)] to spot now."""
         self._expire(now)
         spots = []
-        for call in runner_calls(text):
-            if (window, call) not in self._seen:
-                self._seen.add((window, call))
-                self._copies.append(_Copy(now, window, call, freq_khz,
-                                          snr if snr is not None else float("-inf")))
+        for call, n in Counter(runner_calls(text, every=self.cq_groups)).items():
+            for nth in range(n):
+                if (window, call, nth) not in self._seen:
+                    self._seen.add((window, call, nth))
+                    self._copies.append(_Copy(now, window, call, freq_khz,
+                                              snr if snr is not None else float("-inf"), nth))
             near = [c for c in self._copies if abs(c.freq_khz - freq_khz) <= NEAR_KHZ]
             counts = Counter(c.call for c in near)
             if any(_lev1(other, call) and n >= counts[call] for other, n in counts.items()):
@@ -211,7 +220,7 @@ class RepeatSpotRule:
         cutoff = now - REPEAT_S
         while self._copies and self._copies[0].time < cutoff:
             c = self._copies.popleft()
-            self._seen.discard((c.window, c.call))
+            self._seen.discard((c.window, c.call, c.nth))
         if now - self._pruned >= 60.0:
             self._pruned = now
             self._last_spot = {k: v for k, v in self._last_spot.items() if v[0] >= cutoff}

@@ -13,6 +13,7 @@ Status: the decoder, scanner and spot rule (`spot_rule: repeat`, the default wit
 | | `itila2` | `itila2_core.c` + `itila2_scanner.c` (`libitila2.so`, `libitila2_scanner.so`) |
 | `spot_rule` | `off` (default with `itila`) | the original spot path (`_itila_extract_cq_call`, `SpotTracker.process`) |
 | | `repeat` (default with `itila2`) | `spot_rule.py`: whole decode windows go to `RepeatSpotRule` |
+| `spot_rule_cq_groups` | `false` (default) | with `spot_rule: repeat`, every CQ group in a window counts as a copy (rule 2) |
 | `itila_decode_threads` | 1 (default) | number of bins decoded in parallel, and scanner DSP worker threads |
 
 Decoder and scanner are selected together: an itila2 decoder on itila's scanner (or the reverse) is never run. The spot rule follows the decoder unless `spot_rule` is set (`repeat` with itila2, `off` with itila); setting it scores either chain under the other rule.
