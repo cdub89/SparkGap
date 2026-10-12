@@ -6688,7 +6688,10 @@ class SparkGap:
             _trk = self.tracker
             _trk.spot_rule = RepeatSpotRule(
                 lambda c: {'active': 2, 'rare': 3}.get(_trk._matches_patt3ch(c), 4),
-                cq_groups=bool(self.cfg.get('spot_rule_cq_groups', False)))
+                cq_groups=bool(self.cfg.get('spot_rule_cq_groups', False)),
+                lockon=bool(self.cfg.get('spot_rule_lockon', False)))
+            if _trk.spot_rule.lockon:
+                log.info("Spot rule: lock-on")
         # If the gate is configured (peers listed), start the peer-tee
         # threads regardless of whether the gate is currently on. The
         # support map is cheap to maintain and we want it warm if the
@@ -7892,7 +7895,10 @@ def run_file_mode(args, config):
         _trk = tracker
         _trk.spot_rule = RepeatSpotRule(
             lambda c: {'active': 2, 'rare': 3}.get(_trk._matches_patt3ch(c), 4),
-            cq_groups=bool(config.get('spot_rule_cq_groups', False)))
+            cq_groups=bool(config.get('spot_rule_cq_groups', False)),
+            lockon=bool(config.get('spot_rule_lockon', False)))
+        if _trk.spot_rule.lockon:
+            log.info("Spot rule: lock-on")
         audio_now = [args.start_min * 60]
         _trk.clock = lambda: audio_now[0]      # repeats counted in audio time, as live
 
