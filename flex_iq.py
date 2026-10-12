@@ -40,7 +40,7 @@ VALID_RATES = (24000, 48000, 96000, 192000)
 # DAX-IQ floats are int16 full scale; FlexLib VitaIFDataPacket divides by 2**15.
 DAXIQ_FULL_SCALE = 32768.0
 
-STATION_NAME = 'SparkGap'   # shown in SmartSDR's station list (Multi-Flex)
+STATION_NAME = 'SparkGap'   # shown in SmartSDR's station list (Multi-Flex), with the DAX-IQ channel
 
 
 def owned_objects(lines, handle):
@@ -72,6 +72,28 @@ def slice_pans(lines, handle):
     return out
 
 
+def gui_stations(lines):
+    """GUI clients in the radio's client status lines: [(handle, client_id, program, station)]."""
+    out = []
+    for line in lines:
+        m = re.search(r'\|client (0x[0-9A-F]+) connected (.*)', line, re.I)
+        if not m:
+            continue
+        kv = dict(p.split('=', 1) for p in m.group(2).split() if '=' in p)
+        if kv.get('client_id'):
+            out.append((m.group(1), kv['client_id'], kv.get('program', ''),
+                        kv.get('station', '').replace('\x7f', ' ')))
+    return out
+
+
+def pan_slices(lines, pan_id):
+    """Slice numbers the radio reports on panadapter pan_id, whoever owns them."""
+    on = re.compile(r'\bpan=0x0*%x\b' % pan_id, re.I)
+    return {int(m.group(1)) for line in lines
+            if 'in_use=0' not in line and on.search(line)
+            for m in [re.search(r'\|slice (\d+) ', line)] if m}
+
+
 class FlexIQReceiver:
     """DAX-IQ receiver for a FlexRadio 6000/8000 series.
 
@@ -96,6 +118,8 @@ class FlexIQReceiver:
         self.freq_mhz = freq_hz / 1e6
         self.sample_rate = sample_rate
         self.channel = daxiq_channel
+        # one name per copy: the radio refuses a station name already in use (R|500000AA)
+        self.station = f"{STATION_NAME}-{daxiq_channel}"
         self.udp_port = udp_port
         self.control_port = control_port
         self.frequencies = [freq_hz]  # match HPSDRReceiver interface
@@ -193,19 +217,31 @@ class FlexIQReceiver:
         log.info("[Flex] Connected to %s, API %s, client handle 0x%s", self.ip, version, handle)
 
         # Same order FlexLib uses: program, then gui, then station name.  The
-        # name is sent right behind "client gui" without waiting for its reply,
-        # so other clients (SmartSDR, SmartStreamer4) see a nameless station
-        # for only as long as the radio takes to read the next line.
+        # name waits for the reply to "client gui": sent before the radio has
+        # registered the GUI client it is refused (R|500000AA), which happened
+        # to a second copy on a radio that already had one.
         # "client gui" is required for pan and DAX-IQ creation (AetherSDR).
-        # (A station name sent before "client gui" is refused: R|500000AA.)
+        # The radio takes two GUI clients (SmartSDR is usually one).  A copy it
+        # refuses attaches to the SparkGap station already there (FlexLib's
+        # "client bind"), so its pan and slice belong to that station.
         resp = self._cmd(f"client program {STATION_NAME}")
         if any(l.startswith(f"R{self._seq}|10000002|") for l in resp):
             # Not a FlexRadio program name; the radio still records it.
             log.info("[Flex] OK program name %s (radio notes it as an unknown program)", STATION_NAME)
         else:
             self._report("program name " + STATION_NAME, resp)
-        self._send(f"client gui {str(uuid.uuid4()).upper()}")
-        self._report("station name " + STATION_NAME, self._cmd(f"client station {STATION_NAME}"))
+        self._bound = False
+        if self._report("GUI client", self._cmd(f"client gui {str(uuid.uuid4()).upper()}", timeout=5.0)):
+            self._report("station name " + self.station, self._cmd(f"client station {self.station}"))
+        else:
+            listed = self._cmd("sub client all", settle=0.5)
+            ours = [g for g in gui_stations(listed) if g[2] == STATION_NAME]
+            if not ours:
+                log.warning("[Flex] Client status from the radio: %s", [l for l in listed if 'client' in l])
+                raise RuntimeError("[Flex] No free GUI client on the radio and no SparkGap station to attach to")
+            _, client_id, _, self.station = ours[0]
+            self._bound = self._report(f"attached to station {self.station}",
+                                       self._cmd(f"client bind client_id={client_id}"))
         self._report(f"UDP port {self.udp_port} for DAX-IQ", self._cmd(f"client udpport {self.udp_port}"))
 
         # The radio gives a new GUI client a default pan with a band-default
@@ -240,7 +276,10 @@ class FlexIQReceiver:
             if self._pan_id is None:
                 raise RuntimeError("[Flex] No free panadapter on the radio; close one in SmartSDR or on the front panel")
             log.info("[Flex] Pan created: 0x%08x", self._pan_id)
-            slices, _ = owned_objects(self._cmd("sub slice all", settle=0.5), handle)
+            status = self._cmd("sub slice all", settle=0.5)
+            slices, _ = owned_objects(status, handle)
+            if self._bound:                # the station owns the slice the radio put on our pan
+                slices = pan_slices(status, self._pan_id)
         self._report(f"pan 0x{self._pan_id:08x} center {self.freq_mhz:.6f} MHz, bandwidth {bw_mhz:.3f} MHz",
                      self._cmd(f"display pan set 0x{self._pan_id:08x} "
                                f"center={self.freq_mhz:.6f} bandwidth={bw_mhz:.6f}"))
@@ -301,7 +340,7 @@ class FlexIQReceiver:
                  self.sample_rate, self.udp_port)
         log.info("[Flex] Ready: station %s (client 0x%s), pan 0x%08x at %.6f MHz x %.3f MHz, "
                  "slice %s CW, DAX-IQ channel %d stream 0x%08x at %d Hz to UDP %d",
-                 STATION_NAME, handle, self._pan_id, self.freq_mhz, bw_mhz, self._slice_id,
+                 self.station, handle, self._pan_id, self.freq_mhz, bw_mhz, self._slice_id,
                  self.channel, self._stream_id, self.sample_rate, self.udp_port)
 
     def stop(self):

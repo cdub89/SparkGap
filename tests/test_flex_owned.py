@@ -1,6 +1,6 @@
 """flex_iq.owned_objects: which radio slices and pans belong to SparkGap's own client handle."""
 
-from flex_iq import owned_objects
+from flex_iq import gui_stations, owned_objects, pan_slices
 
 STATUS = [
     # SparkGap's default objects (the radio's Slice A on the 40m phone default)
@@ -55,3 +55,30 @@ def test_slice_pans_maps_own_slices_to_their_pan() -> None:
         "S1|slice 0 in_use=1 pan=0x40000000 client_handle=0x1A2B3C4D RF_frequency=7.053",
     ]
     assert slice_pans(lines, "3CBB9746") == {1: "0x40000001"}
+
+
+CLIENTS = [
+    "S3BEDC9D2|client 0x73E33F06 connected client_id=8A1B6F0E-0000-4000-8000-000000000001 "
+    "program=SmartSDR-Win station=BEELINK local_ptt=1",
+    "S3BEDC9D2|client 0x1EFAD774 connected client_id=5C2D7A11-0000-4000-8000-000000000002 "
+    "program=SparkGap station=SparkGap-2 local_ptt=0",
+    "S3BEDC9D2|client 0x3BEDC9D2 connected program=SparkGap station=",     # non-GUI: no client_id
+    "R7|0|",
+]
+
+
+def test_gui_stations_lists_clients_with_an_id() -> None:
+    assert gui_stations(CLIENTS) == [
+        ("0x73E33F06", "8A1B6F0E-0000-4000-8000-000000000001", "SmartSDR-Win", "BEELINK"),
+        ("0x1EFAD774", "5C2D7A11-0000-4000-8000-000000000002", "SparkGap", "SparkGap-2"),
+    ]
+
+
+def test_pan_slices_finds_slices_on_one_pan_whoever_owns_them() -> None:
+    lines = [
+        "S1|slice 0 in_use=1 pan=0x40000000 client_handle=0x73E33F06",
+        "S1|slice 2 in_use=1 pan=0x40000002 client_handle=0x1EFAD774",
+        "S1|slice 3 in_use=0 pan=0x40000002 client_handle=0x1EFAD774",
+    ]
+    assert pan_slices(lines, 0x40000002) == {2}
+    assert pan_slices(lines, 0x40000003) == set()
