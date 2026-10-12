@@ -94,8 +94,15 @@ def _one_sub_same_kind(a: str, b: str) -> bool:
     return len(diff) == 1 and diff[0][0].isalpha() == diff[0][1].isalpha()
 
 
-def _is_trigger_like(t: str) -> bool:
-    return t in _TRIGGER_WORDS or any(_one_sub_same_kind(t, w) for w in ("CWT", "TEST"))
+def _qualifiers(toks: list[str]) -> set[str]:
+    """CQ qualifiers of a window: 2-5 letters right after CQ or TEST (CQ PA, CQ FD, CQ DX)."""
+    return {b for a, b in zip(toks, toks[1:]) if a in KEYWORDS and b.isalpha()
+            and 2 <= len(b) <= 5 and b not in _STOP_WORDS}
+
+
+def _is_trigger_like(t: str, toks: list[str]) -> bool:
+    return (t in _TRIGGER_WORDS or t in _qualifiers(toks)
+            or any(_one_sub_same_kind(t, w) for w in ("CWT", "TEST")))
 
 
 def sender(toks: list[str], i: int) -> int | None:
@@ -109,7 +116,8 @@ def sender(toks: list[str], i: int) -> int | None:
 def is_exchange(toks: list[str], j: int) -> bool:
     """toks[j] is followed by NAME then a number or 2-letter state, or by a report (5NN) then
     a number: a caller being sent the exchange. Repeats of the call and 1-character or '?'
-    tokens before NAME are skipped."""
+    tokens before NAME are skipped. A CQ qualifier of the window is no NAME and a stop word
+    is no number or state: CQ PA WB3EML PA CQ names WB3EML."""
     k = j + 1
     while k < len(toks) and (toks[k] == toks[j] or len(toks[k]) <= 1 or "?" in toks[k]):
         k += 1
@@ -119,7 +127,7 @@ def is_exchange(toks: list[str], j: int) -> bool:
     if _RST_RE.match(name):                      # CQ WW, WPX: report then zone or serial
         return any(ch.isdigit() for ch in num)
     return (name.isalpha() and 2 <= len(name) <= 6 and name not in _STOP_WORDS
-            and not _is_trigger_like(name)
+            and not _is_trigger_like(name, toks) and num not in _STOP_WORDS
             and (any(ch.isdigit() for ch in num) or (num.isalpha() and len(num) == 2)))
 
 
