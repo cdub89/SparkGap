@@ -15,17 +15,17 @@ The spot goes out on the strongest window (bin SNR) among the copies, once per c
 REPEAT_S unless it moves more than MOVE_KHZ. A window is one decode window of one bin;
 both LPF paths of a window count once.
 
-CQ groups (config spot_rule_cq_groups: true, off by default): every CQ group naming the call
+CQ groups (cq_groups; always on in SparkGap): every CQ group naming the call
 counts as a copy, also several in one window (CQ WES DE N5QLZ N5QLZ K CQ WES DE N5QLZ is two),
 so a call sent in two or more CQs of one window does not wait for the next window. The two
 LPF paths of a window are not added: the larger count of the two is used.
 
-CQ qualifiers (config spot_rule_cq_qualifiers: true, off by default): a word of 2 to 5 letters
+CQ qualifiers (cq_qualifiers; always on in SparkGap): a word of 2 to 5 letters
 right after CQ or TEST (CQ PA, CQ FD, CQ WES) is the window's CQ qualifier and is no exchange
 name wherever it appears in that window, and a stop word is no number or state. Without it
 CQ PA WB3EML PA CQ reads PA CQ as name and state, and WB3EML as a caller.
 
-Lock-on (config spot_rule_lockon: true, off by default): a call named by a CQ group owns the
+Lock-on (lockon; always on in SparkGap): a call named by a CQ group owns the
 frequency it was copied on. While it owns it, two things change near that frequency:
   - the owner's own later sign-offs (TU W6YH, DE W6YH, W6YH TEST) count as copies of W6YH,
     so a runner who CQs once and then signs with TU W6YH still repeats; a bare W6YH does not;
@@ -335,6 +335,12 @@ class RepeatSpotRule:
                         if abs(o[1] - freq_khz) > NEAR_KHZ and now - o[2] <= LOCK_IDLE_S]
         self._owners.append([call, freq_khz, now])
 
+    def _truer_call(self, call: str, owner: str) -> bool:
+        """call is what a garbled owner should have read: one edit from it and in a more trusted
+        tier (W3IO, an active call, against BW3IO, unknown). Not a mere part of it: W2L inside
+        W2LCQ/NLI is a fragment of the real call."""
+        return _lev1(call, owner) and self.tier(call) < self.tier(owner)
+
     def _lockon_calls(self, freq_khz: float, text: str, now: float) -> list[str]:
         """Calls one decoded text counts as copies of, with lock-on (see the module docstring)."""
         calls: list[str] = []
@@ -345,7 +351,7 @@ class RepeatSpotRule:
             if after is not None and after != call and owner == after:
                 continue                          # the owner signing (W6YH TEST): call is a caller
             if owner is not None and call != owner:
-                if owner in toks:
+                if owner in toks and not self._truer_call(call, owner):
                     continue                      # the owner is still here: CQ A6QP K6NR is a garble
                 held = sum(1 for c in self._copies if c.call == call
                            and abs(c.freq_khz - freq_khz) <= NEAR_KHZ)
