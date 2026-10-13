@@ -93,6 +93,12 @@ def clients_gone(lines):
     return [l for l in lines if re.search(r'\|client 0x[0-9A-F]+ disconnected', l, re.I)]
 
 
+def ptt_ours(lines):
+    """Status lines in which the radio gives a SparkGap station the key and PTT jacks."""
+    return [l for l in lines if f'program={STATION_NAME} ' in l
+            and re.search(r'\|client 0x[0-9A-F]+ .*\blocal_ptt=1\b', l, re.I)]
+
+
 def pan_slices(lines, pan_id):
     """Slice numbers the radio reports on panadapter pan_id, whoever owns them."""
     on = re.compile(r'\bpan=0x0*%x\b' % pan_id, re.I)
@@ -315,6 +321,8 @@ class FlexIQReceiver:
         if self._slice_id is not None:     # unmuted, the operator hears it in the radio's headphones
             self._report(f"slice {self._slice_id} muted",
                          self._cmd(f"slice set {self._slice_id} audio_mute=1"))
+            self._report(f"slice {self._slice_id} not a transmit slice",   # the key must never land on it
+                         self._cmd(f"slice set {self._slice_id} tx=0"))
         all_slices, _ = owned_objects(self._cmd("sub slice all", settle=0.3), handle)
         extra = all_slices - {self._slice_id} if self._slice_id is not None else set()
         for n in sorted(extra):
@@ -377,8 +385,12 @@ class FlexIQReceiver:
         if not chunk:
             return False
         *lines, self._buf = (self._buf + chunk).split(b'\n')
-        for line in clients_gone(l.decode('utf-8', errors='replace') for l in lines):
+        lines = [l.decode('utf-8', errors='replace') for l in lines]
+        for line in clients_gone(lines):
             log.info("[Flex] Radio reports: %s", line.strip()[:200])
+        if ptt_ours(lines):
+            log.warning("[Flex] The radio's key and PTT jacks now follow the SparkGap station, "
+                        "not the operator's: set local PTT in SmartSDR")
         return True
 
     def _restart(self, why):

@@ -91,6 +91,16 @@ def test_clients_gone_picks_the_disconnect_lines() -> None:
     assert clients_gone(CLIENTS + [gone]) == [gone]
 
 
+def test_ptt_ours_only_when_a_sparkgap_station_holds_local_ptt() -> None:
+    from flex_iq import ptt_ours
+
+    ours = "S1|client 0x1372089D connected local_ptt=1 program=SparkGap station=SparkGap-2"
+    lines = ["S1|client 0x26DB5920 connected local_ptt=1 program=SmartSDR-Win station=BEELINK",
+             "S1|client 0x1372089D connected local_ptt=0 program=SparkGap station=SparkGap-2"]
+    assert ptt_ours(lines) == []
+    assert ptt_ours(lines + [ours]) == [ours]
+
+
 def test_read_status_empties_the_connection_and_sees_it_close() -> None:
     import socket
 
