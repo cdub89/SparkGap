@@ -1661,7 +1661,8 @@ def _make_spot_rule(config, tracker):
     return RepeatSpotRule(
         lambda c: {'active': 2, 'rare': 3}.get(tracker._matches_patt3ch(c), 4),
         cq_groups=True, cq_qualifiers=True, lockon=True,
-        split_runs=bool(config.get('spot_rule_split_runs', False)))
+        split_runs=bool(config.get('spot_rule_split_runs', False)),
+        window_s=float(config.get('itila_window_sec', 60.0)))
 
 def _get_itila_lib():
     global _itila_lib
