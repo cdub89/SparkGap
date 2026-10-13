@@ -124,6 +124,14 @@ def test_keyword_closing_a_cq_opens_no_lookahead() -> None:
     assert runner_calls("CQ TEST K1ABC") == ["K1ABC"]
 
 
+def test_the_station_being_called_is_not_the_runner() -> None:
+    # 20m 2026-10-13: N8EM calling S52Y; S52Y was spotted
+    assert runner_calls("CQ S52Y DE N8EM K") == []
+    assert runner_calls("CQ S52Y S52Y DE N8EM N8EM K") == []      # N8EM is calling, not running
+    assert runner_calls("CQ DE N8EM N8EM K") == ["N8EM"]
+    assert runner_calls("CQ K4DH DE K4DH K") == ["K4DH"]
+
+
 def test_no_keyword_no_runner() -> None:
     assert runner_calls("DE K7GUD NICE MEET U RICK") == []
 
@@ -310,7 +318,7 @@ def test_tracker_drops_blacklisted_and_spots_fast_runners() -> None:
 def test_call_after_de_counts_when_cq_came_first_and_it_is_sent_twice() -> None:
     assert runner_calls("CQ SKCC CG EKCC DE K4DH K4DH") == ["K4DH"]
     assert runner_calls("NOT E 3KZE CQ I EE DE VE3N") == []
-    assert runner_calls("CQ K4DH DE W1AW W1AW") == ["K4DH"]
+    assert runner_calls("CQ K4DH DE W1AW W1AW") == []             # K4DH is being called
     assert runner_calls("TU DE W1AW W1AW") == []
     assert runner_calls("CQ SKCC CG EKCC DEW1AW W1AW") == ["W1AW"]
     assert runner_calls("CQ K1ABC? FOO BAR BAZ DE W1XYZ W1XYZ") == []

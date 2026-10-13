@@ -4,7 +4,8 @@ CW Skimmer's rules: a call is spotted when it is the first callsign within LOOKA
 after CQ or TEST (or after DE when CQ or TEST came earlier and the call is sent twice:
 CQ SKCC DE K4DH K4DH), copied exactly in tier(call) decode windows (2, 3 or 4 by patt3ch.lst)
 near one frequency within the last REPEAT_S. A call followed by a name and a number is a
-caller being sent the exchange and does not count.
+caller being sent the exchange and does not count. A call followed by DE and another call
+(CQ S52Y DE N8EM) is the station being called and does not count either.
 
 One vote on garbled decodes: a call does not spot while a call one edit from it has as many
 copies or more near the same frequency (a tie waits for the next window). A decoder that
@@ -240,11 +241,17 @@ def runner_groups(text: str, every: bool = False,
         if j is None or (de and toks.count(toks[j]) < 2):
             i += 1
             continue
+        k = j + 1
+        while k < n and toks[k] == toks[j]:       # call sent twice before the closing keyword
+            k += 1
+        if t in KEYWORDS and k < n and toks[k] == "DE":
+            j2 = sender(toks, k)
+            if j2 is not None and toks[j2] != toks[j]:
+                i = k                             # CQ S52Y DE N8EM: S52Y is being called
+                continue
         if not is_exchange(toks, j, qualifiers) and (every or all(toks[j] != c for c, _ in out)):
             out.append((toks[j], _call_before(toks, i) if t == "TEST" else None))
-        i = j + 1
-        while i < n and toks[i] == toks[j]:       # call sent twice before the closing keyword
-            i += 1
+        i = k
         while i < n and toks[i] in KEYWORDS:      # closing keywords end the group
             i += 1
     return out
