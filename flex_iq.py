@@ -312,6 +312,9 @@ class FlexIQReceiver:
                 log.warning("[Flex] Slice create reply not understood: %s", resp[-3:])
             else:
                 log.info("[Flex] Slice created: %d", self._slice_id)
+        if self._slice_id is not None:     # unmuted, the operator hears it in the radio's headphones
+            self._report(f"slice {self._slice_id} muted",
+                         self._cmd(f"slice set {self._slice_id} audio_mute=1"))
         all_slices, _ = owned_objects(self._cmd("sub slice all", settle=0.3), handle)
         extra = all_slices - {self._slice_id} if self._slice_id is not None else set()
         for n in sorted(extra):
