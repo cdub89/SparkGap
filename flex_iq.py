@@ -41,6 +41,8 @@ VALID_RATES = (24000, 48000, 96000, 192000)
 DAXIQ_FULL_SCALE = 32768.0
 
 STATION_NAME = 'SparkGap'   # shown in SmartSDR's station list (Multi-Flex), with the DAX-IQ channel
+STALL_S = 10                # no DAX-IQ packet for this long: set the radio up again
+RETRY_S = 30                # between attempts when that fails
 
 
 def owned_objects(lines, handle):
@@ -84,6 +86,11 @@ def gui_stations(lines):
             out.append((m.group(1), kv['client_id'], kv.get('program', ''),
                         kv.get('station', '').replace('\x7f', ' ')))
     return out
+
+
+def clients_gone(lines):
+    """Status lines in which the radio reports a client disconnected."""
+    return [l for l in lines if re.search(r'\|client 0x[0-9A-F]+ disconnected', l, re.I)]
 
 
 def pan_slices(lines, pan_id):
@@ -343,8 +350,52 @@ class FlexIQReceiver:
                  self.station, handle, self._pan_id, self.freq_mhz, bw_mhz, self._slice_id,
                  self.channel, self._stream_id, self.sample_rate, self.udp_port)
 
+    def _close(self):
+        for name in ('_tcp', '_udp'):
+            sock = getattr(self, name)
+            if sock:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+                setattr(self, name, None)
+
+    def _read_status(self):
+        """Read what the radio has sent on the control connection.  Unread, its
+        status messages (many while the operator transmits) fill the socket
+        buffer and the radio drops the station: 2026-10-13, 14 h into a run.
+        Returns False when the radio has closed the connection."""
+        try:
+            chunk = self._tcp.recv(65536, socket.MSG_DONTWAIT)
+        except (BlockingIOError, InterruptedError, TimeoutError):
+            return True
+        except OSError:
+            return False
+        if not chunk:
+            return False
+        *lines, self._buf = (self._buf + chunk).split(b'\n')
+        for line in clients_gone(l.decode('utf-8', errors='replace') for l in lines):
+            log.info("[Flex] Radio reports: %s", line.strip()[:200])
+        return True
+
+    def _restart(self, why):
+        """Drop the connection and set the radio up again, until it works or stop() is called."""
+        log.error("[Flex] %s: connecting again", why)
+        while self._running:
+            self._close()
+            self._buf = b''
+            try:
+                self.start()
+                return
+            except Exception as e:
+                log.error("[Flex] Could not set the radio up again (%s); next try in %d s", e, RETRY_S)
+            end = time.time() + RETRY_S
+            while self._running and time.time() < end:
+                time.sleep(0.2)
+
     def stop(self):
         self._running = False
+        time.sleep(0.25)               # receive() leaves its loop; it reads the same connection
         try:
             if self._stream_id:
                 self._report(f"DAX-IQ stream 0x{self._stream_id:08x} removed",
@@ -357,18 +408,7 @@ class FlexIQReceiver:
                              self._cmd(f"display pan remove 0x{self._pan_id:08x}", timeout=1))
         except Exception:
             log.exception("[Flex] Cleanup on stop failed")
-        if self._tcp:
-            try:
-                self._tcp.close()
-            except Exception:
-                pass
-            self._tcp = None
-        if self._udp:
-            try:
-                self._udp.close()
-            except Exception:
-                pass
-            self._udp = None
+        self._close()
         log.info("[Flex] Stopped")
 
     # -- receive loop --------------------------------------------------------
@@ -389,6 +429,7 @@ class FlexIQReceiver:
         pkt_count = 0
         lost = 0
         last_report = start
+        last_pkt = start
         other_streams = 0
         warned = False
 
@@ -407,8 +448,18 @@ class FlexIQReceiver:
                             "UDP port %d reaches this machine (WSL mirrored networking, firewall) "
                             "and that DAX-IQ channel %d is bound to the pan",
                             other_streams, self.udp_port, self.channel)
-            ready = select.select([self._udp], [], [], 0.1)
-            if not ready[0]:
+            ready = select.select([self._udp, self._tcp], [], [], 0.1)[0]
+            why = None
+            if self._tcp in ready and not self._read_status():
+                why = "The radio closed the control connection"
+            elif pkt_count and time.time() - last_pkt > STALL_S:
+                why = "No DAX-IQ packets for %d s" % STALL_S
+            if why:
+                self._restart(why)
+                last_counter = None
+                last_pkt = time.time() + RETRY_S    # time for the new stream to start
+                continue
+            if self._udp not in ready:
                 continue
 
             try:
@@ -459,7 +510,7 @@ class FlexIQReceiver:
                 log.info("[Flex] OK first DAX-IQ packet after %.1f s (%d samples, stream 0x%08x)",
                          time.time() - start, n_samples, stream_id)
             pkt_count += 1
-            now = time.time()
+            now = last_pkt = time.time()
             if now - last_report >= 30:
                 elapsed = now - start
                 log.info("[Flex] %d packets in %.0fs (%.0f pkt/s, %d samp/pkt, %d lost)",

@@ -82,3 +82,28 @@ def test_pan_slices_finds_slices_on_one_pan_whoever_owns_them() -> None:
     ]
     assert pan_slices(lines, 0x40000002) == {2}
     assert pan_slices(lines, 0x40000003) == set()
+
+
+def test_clients_gone_picks_the_disconnect_lines() -> None:
+    from flex_iq import clients_gone
+
+    gone = "S1|client 0x39795134 disconnected forced=1"
+    assert clients_gone(CLIENTS + [gone]) == [gone]
+
+
+def test_read_status_empties_the_connection_and_sees_it_close() -> None:
+    import socket
+
+    from flex_iq import FlexIQReceiver
+
+    rx = FlexIQReceiver("127.0.0.1", freq_hz=7_030_000, sample_rate=96_000)
+    rx._tcp, radio = socket.socketpair()
+    rx._tcp.settimeout(2.0)
+    radio.sendall(b"S1|interlock state=TRANSMITTING\n" * 2_000 + b"S1|slice 0 tx")
+    while rx._buf != b"S1|slice 0 tx":       # every whole line read and dropped, the part line kept
+        assert rx._read_status()
+    assert rx._read_status()                 # nothing waiting: still connected
+    radio.close()
+    assert not rx._read_status()
+    rx._close()
+    assert rx._tcp is None
