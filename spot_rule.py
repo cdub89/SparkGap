@@ -13,7 +13,9 @@ is renamed, so near-identical real calls (N4VI next to N4ZZ) are not merged.
 
 The spot goes out on the strongest window (bin SNR) among the copies, once per call and band per
 REPEAT_S unless it moves more than MOVE_KHZ. A window is one decode window of one bin;
-both LPF paths of a window count once.
+both LPF paths of a window count once. One transmission counts once: when two bins sit on
+one signal (100 Hz apart), a copy of the call from the second bin less than one window length
+after the first is the same audio and is no copy; the stronger of the two gives the frequency.
 
 CQ groups (cq_groups; always on in SparkGap): every CQ group naming the call
 counts as a copy, also several in one window (CQ WES DE N5QLZ N5QLZ K CQ WES DE N5QLZ is two),
@@ -273,8 +275,9 @@ class RepeatSpotRule:
 
     def __init__(self, tier: Callable[[str], int], cq_groups: bool = False,
                  lockon: bool = False, split_runs: bool = False,
-                 cq_qualifiers: bool = False) -> None:
+                 cq_qualifiers: bool = False, window_s: float = 60.0) -> None:
         self.tier = tier
+        self.window_s = window_s                                # decode window length
         self.cq_groups = cq_groups
         self.lockon = lockon
         self.split_runs = split_runs
@@ -283,6 +286,7 @@ class RepeatSpotRule:
         self._copies: deque[_Copy] = deque()                    # oldest first
         self._seen: set[tuple[int, str, int]] = set()           # (window, call, nth) in _copies
         self._window_ids: dict[tuple[int, int], tuple[int, float]] = {}   # -> (id, first seen)
+        self._bins: dict[int, int] = {}                         # window id -> bin
         self._next_window = 0
         self._last_spot: dict[tuple[str, int], tuple[float, float]] = {}   # (call, MHz) -> (time, freq)
         self._pruned = 0.0
@@ -292,6 +296,7 @@ class RepeatSpotRule:
         key = (bin_id, window_key)
         if key not in self._window_ids:
             self._window_ids[key] = (self._next_window, now)
+            self._bins[self._next_window] = bin_id
             self._next_window += 1
         return self._window_ids[key][0]
 
@@ -307,6 +312,8 @@ class RepeatSpotRule:
         for call, n in Counter(calls).items():
             for nth in range(n):
                 if (window, call, nth) not in self._seen:
+                    if self._same_audio(window, call, freq_khz, now, snr):
+                        continue
                     self._seen.add((window, call, nth))
                     self._copies.append(_Copy(now, window, call, freq_khz,
                                               snr if snr is not None else float("-inf"), nth))
@@ -323,6 +330,21 @@ class RepeatSpotRule:
                 self._last_spot[key] = (now, spot_f)
                 spots.append((call, spot_f))
         return spots
+
+    def _same_audio(self, window: int, call: str, freq_khz: float, now: float,
+                    snr: float | None) -> bool:
+        """Another bin gave this call near freq_khz less than one window length ago. That copy
+        takes this bin's frequency when this bin is the stronger."""
+        mine = self._bins.get(window)
+        if mine is None:
+            return False
+        for i, c in enumerate(self._copies):
+            if (c.call == call and abs(c.freq_khz - freq_khz) <= NEAR_KHZ
+                    and now - c.time < self.window_s and self._bins.get(c.window, mine) != mine):
+                if snr is not None and snr > c.snr:
+                    self._copies[i] = _Copy(c.time, c.window, call, freq_khz, snr, c.nth)
+                return True
+        return False
 
     def owner(self, freq_khz: float, now: float) -> str | None:
         """Lock-on: the call owning the frequency nearest freq_khz (within NEAR_KHZ), else None."""
@@ -378,3 +400,5 @@ class RepeatSpotRule:
             self._pruned = now
             self._last_spot = {k: v for k, v in self._last_spot.items() if v[0] >= cutoff}
             self._window_ids = {k: v for k, v in self._window_ids.items() if v[1] >= cutoff}
+            live = {v[0] for v in self._window_ids.values()}
+            self._bins = {w: b for w, b in self._bins.items() if w in live}

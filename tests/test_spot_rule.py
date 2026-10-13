@@ -141,6 +141,18 @@ def test_both_lpf_paths_of_one_window_count_once() -> None:
     assert r.feed(r.window_id(1, 0, 0.0), 14030.0, "CQ CWT K0TQ", 0.0) == []
 
 
+def test_a_second_bin_on_the_same_audio_is_no_copy() -> None:
+    # AK4W for AK4JK, 2026-10-13: bins on 14007.1 and 14007.0 gave the same text 36 s apart
+    text = "CQ CQ CQDEAK4W IIAK4JK AN AK4JK"
+    r = RepeatSpotRule(_tier2, split_runs=True)
+    assert r.feed(r.window_id(1, 0, 0.0), 14007.1, text, 0.0) == []
+    assert r.feed(r.window_id(2, 0, 36.0), 14007.0, text, 36.0) == []
+    assert r.feed(r.window_id(1, 1, 60.0), 14007.1, text, 60.0) == [("AK4W", 14007.1)]   # sent again
+    r = RepeatSpotRule(_tier2, split_runs=True, window_s=30.0)
+    assert r.feed(r.window_id(1, 0, 0.0), 14007.1, text, 0.0) == []
+    assert r.feed(r.window_id(2, 0, 36.0), 14007.0, text, 36.0) == [("AK4W", 14007.1)]
+
+
 def test_every_cq_group_is_listed_on_request() -> None:
     text = "CQ CQ WES WES DE N5QLZ N5QLZ K CQ CQ WES WES DE N5QLZ"
     assert runner_calls(text) == ["N5QLZ"]
@@ -178,11 +190,11 @@ def test_cq_groups_copies_expire() -> None:
     assert r.feed(r.window_id(1, 0, 0.0), 7050.2, text, 0.0) == []
     late = REPEAT_S + 61.0
     assert r.feed(r.window_id(1, 9, late), 7050.2, "CQ WES DE N5QLZ N5QLZ", late) == []
-    w = r.window_id(2, 0, 0.0)
+    w = r.window_id(1, 10, 0.0)
     assert r.feed(w, 7050.2, text, late) == [("N5QLZ", 7050.2)]      # 1 + 2 copies
     later = late + REPEAT_S + 61.0
     assert r.feed(w, 7050.2, text, later) == []                       # the same window id counts afresh
-    assert r.feed(r.window_id(3, 0, later), 7050.2, "CQ WES DE N5QLZ N5QLZ", later) == [("N5QLZ", 7050.2)]
+    assert r.feed(r.window_id(1, 20, later), 7050.2, "CQ WES DE N5QLZ N5QLZ", later) == [("N5QLZ", 7050.2)]
 
 
 def test_call_not_in_scp_spots_on_repeats() -> None:
@@ -215,7 +227,8 @@ def test_spot_on_the_strongest_nearby_bin() -> None:
     """N3AD, 40m CWT 2026-10-08: a bin 350 Hz below him decoded his CQs too, weaker."""
     r = _rule()
     r.feed(r.window_id(1, 0, 0.0), 7037.9, "CQ TEST N3AD", 0.0, snr=15.0)
-    assert r.feed(r.window_id(2, 0, 30.0), 7038.25, "CQ TEST N3AD", 30.0, snr=40.0) == [
+    assert r.feed(r.window_id(2, 0, 30.0), 7038.25, "CQ TEST N3AD", 30.0, snr=40.0) == []   # same audio
+    assert r.feed(r.window_id(1, 1, 60.0), 7037.9, "CQ TEST N3AD", 60.0, snr=15.0) == [
         ("N3AD", 7038.25)]
 
 
