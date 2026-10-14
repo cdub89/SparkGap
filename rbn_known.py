@@ -1,16 +1,18 @@
 """Known calls from the RBN daily archives, for spot_validation_calls: "rbn".
 
-A call is known when, on any of the last DAYS days, MIN_SKIMMERS or more other skimmers spotted it
+A call is known when, on any of the last `days` days, MIN_SKIMMERS or more other skimmers spotted it
 in CW. The archives (https://data.reversebeacon.net/rbn_history/YYYYMMDD.zip) are public files and
 need no login. Our own spotter's spots never count, so a call we bust cannot vouch for itself.
 Each day is reduced to call counts once and cached; a day not yet published is tried at the next
-start. Run alone to refresh the cache: python rbn_known.py --callsign WX7V
+start. Downloads are spaced FETCH_PAUSE_S apart, so a first start with a long window takes a while
+(365 days: about an hour); run it alone first: python rbn_known.py --callsign WX7V --days 365
 """
 
 import argparse
 import csv
 import io
 import logging
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -20,10 +22,11 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 ARCHIVE_URL = "https://data.reversebeacon.net/rbn_history/{day}.zip"
-DAYS = 7                      # days of archives a call can be known from
+DAYS = 7                      # default days of archives a call can be known from (rbn_known_days)
 MIN_SKIMMERS = 10             # distinct other skimmers on one day
-KEEP_DAYS = 30                # cached days older than this are deleted
+KEEP_DAYS = 30                # cached days older than this (and than the window) are deleted
 FETCH_TIMEOUT_S = 30.0
+FETCH_PAUSE_S = 10.0          # between downloads: polite to RBN
 USER_AGENT = "SparkGap rbn_known"
 
 log = logging.getLogger("sparkgap")
@@ -85,22 +88,27 @@ def _write(path: Path, text: str) -> None:
     tmp.replace(path)                     # a crash mid-write never leaves a short day
 
 
-def refresh(cache_dir: Path, own_call: str, today: date | None = None,
-            fetch: Callable[[date], bytes] = _fetch) -> set[str]:
+def refresh(cache_dir: Path, own_call: str, days: int = DAYS, today: date | None = None,
+            fetch: Callable[[date], bytes] = _fetch,
+            sleep: Callable[[float], None] = time.sleep) -> set[str]:
     """Fetch any missing day of the last DAYS (yesterday back); write and return the known calls."""
     today = today or datetime.now(UTC).date()
     cache_dir.mkdir(parents=True, exist_ok=True)
     tag = base_call(own_call) if own_call else "ALL"
-    days: list[Counter[str]] = []
+    counted: list[Counter[str]] = []
     have: list[date] = []
     offline = False
-    for back in range(1, DAYS + 1):
+    fetched = 0
+    for back in range(1, days + 1):
         day = today - timedelta(days=back)
         path = cache_dir / f"{day:%Y%m%d}_{tag}.calls"
         counts = _load(path) if path.exists() else None
         if counts is None:
             if offline:
                 continue
+            if fetched:
+                sleep(FETCH_PAUSE_S)
+            fetched += 1
             try:
                 counts = day_counts(read_archive(fetch(day)), own_call)
             except (urllib.error.HTTPError, zipfile.BadZipFile, StopIteration) as e:
@@ -111,16 +119,17 @@ def refresh(cache_dir: Path, own_call: str, today: date | None = None,
                 offline = True                       # one network failure: no more tries this start
                 continue
             _write(path, "".join(f"{c}\t{n}\n" for c, n in sorted(counts.items())))
-        days.append(counts)
+        counted.append(counts)
         have.append(day)
     for old in cache_dir.glob("*.calls"):
         stamp = old.name[:8]
         try:
-            if datetime.strptime(stamp, "%Y%m%d").date() < today - timedelta(days=KEEP_DAYS):
+            keep = timedelta(days=max(KEEP_DAYS, days))
+            if datetime.strptime(stamp, "%Y%m%d").date() < today - keep:
                 old.unlink()
         except ValueError:
             continue
-    known = known_calls(days)
+    known = known_calls(counted)
     span = f"{min(have):%Y-%m-%d} to {max(have):%Y-%m-%d}" if have else "none"
     _write(cache_dir / "rbn_known.txt",
         f"# RBN known calls: {MIN_SKIMMERS}+ skimmers on one day, {span}, "
@@ -134,9 +143,10 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Refresh the RBN known-calls cache.")
     p.add_argument("--cache-dir", type=Path, default=Path("rbn_known"))
     p.add_argument("--callsign", default="", help="our spotter call, left out of the counts")
+    p.add_argument("--days", type=int, default=DAYS, help="days of archives (rbn_known_days)")
     a = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    print(len(refresh(a.cache_dir, a.callsign)))
+    print(len(refresh(a.cache_dir, a.callsign, a.days)))
 
 
 if __name__ == "__main__":

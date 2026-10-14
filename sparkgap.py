@@ -1669,7 +1669,8 @@ def _make_spot_rule(config, tracker):
     elif calls == 'rbn':
         import rbn_known
         from pathlib import Path
-        known = rbn_known.refresh(Path(config.get('rbn_known_dir', 'rbn_known')), config.get('callsign', ''))
+        known = rbn_known.refresh(Path(config.get('rbn_known_dir', 'rbn_known')), config.get('callsign', ''),
+                                  int(config.get('rbn_known_days', rbn_known.DAYS)))
         listed = lambda c: rbn_known.base_call(c) in known
     elif calls:
         raise ValueError("spot_validation_calls must be scp or rbn, got %r" % calls)
