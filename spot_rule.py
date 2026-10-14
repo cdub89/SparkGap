@@ -71,6 +71,28 @@ _PROSIGNS = frozenset({"K", "AR", "KN", "BK", "SK", "TU", "EE", "DX", "UP", "NA"
                        "GN", "ES", "HW", "CL", "OK", "RR", "UR", "OP", "VY", "FB", "HI"})
 STRAY_MAX = 2                 # letters after a call that may be the rest of it
 
+# Validation (spot_validation): a call spots when its confidence score reaches the level's
+# threshold, in place of the tier count. Weights are a logistic fit on the three legs of the
+# 10-12..10-14 dry run (cdub89/SparkGap#10), every spot checked against RBN; thresholds from
+# the curve with each leg scored by weights fitted on the other two.
+VALIDATION = {"permissive": 1.25, "normal": 3.0, "aggressive": 5.0}
+_WEIGHTS = {"bias": 0.74, "single": -1.49, "three": 0.43, "four_plus": 0.42, "windows": 1.68,
+            "tier3": -0.52, "tier4": -1.82, "heard_before": 1.87, "paths_agree": 0.65,
+            "paths_disagree": -0.63, "doubled": 2.48, "rival": -1.64}
+_WEIGHTS_LISTED = {           # with a call list (spot_validation_calls): MASTER.SCP, or RBN known calls
+    "scp": {"bias": 0.29, "single": -1.52, "three": 0.42, "four_plus": 0.28, "windows": 1.58,
+            "tier3": -0.27, "tier4": -1.46, "heard_before": 1.68, "paths_agree": 0.48,
+            "paths_disagree": -0.70, "doubled": 2.25, "rival": -1.62, "listed": 2.48},
+    "rbn": {"bias": -0.22, "single": -1.57, "three": 0.24, "four_plus": 0.50, "windows": 1.30,
+            "tier3": 0.0, "tier4": -1.90, "heard_before": 1.45, "paths_agree": 0.56,
+            "paths_disagree": -0.79, "doubled": 1.90, "rival": -0.88, "listed": 4.18},
+}
+HEARD_KEEP_S = 12 * 3600.0    # validation: a call unheard this long is forgotten
+_MORSE = dict(zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/",
+                  (".- -... -.-. -.. . ..-. --. .... .. .--- -.- .-.. -- -. --- .--. --.- .-. ... - "
+                   "..- ...- .-- -..- -.-- --.. ----- .---- ..--- ...-- ....- ..... -.... --... ---.. "
+                   "----. -..-.").split(), strict=True))
+
 
 def _split_run_together(rest: str, prev: str | None) -> list[str] | None:
     """The whole of rest as keywords, an event tag and a call, else None. A tag (2-5
@@ -287,6 +309,15 @@ def _lev1(a: str, b: str) -> bool:
     return any(long_[:i] + long_[i + 1:] == short for i in range(len(long_)))
 
 
+def _regap(a: str, b: str) -> bool:
+    """a and b are one keying read with the letter gaps in different places (C0TT, NN0TT), or
+    one's Morse elements start the other's (N7HR, N7HRK/M)."""
+    if a == b:
+        return False
+    ea, eb = ("".join(_MORSE.get(ch, "?") for ch in c) for c in (a, b))
+    return ea.startswith(eb) or eb.startswith(ea)
+
+
 @dataclass(frozen=True)
 class _Copy:
     time: float
@@ -302,8 +333,19 @@ class RepeatSpotRule:
 
     def __init__(self, tier: Callable[[str], int], cq_groups: bool = False,
                  lockon: bool = False, split_runs: bool = False,
-                 cq_qualifiers: bool = False, window_s: float = 60.0) -> None:
+                 cq_qualifiers: bool = False, window_s: float = 60.0,
+                 validation: str | None = None,
+                 listed: Callable[[str], bool] | None = None, listed_by: str = "scp") -> None:
+        if validation is not None and validation not in VALIDATION:
+            raise ValueError(f"validation must be one of {list(VALIDATION)}, got {validation!r}")
+        if listed_by not in _WEIGHTS_LISTED:
+            raise ValueError(f"listed_by must be one of {list(_WEIGHTS_LISTED)}, got {listed_by!r}")
         self.tier = tier
+        self.threshold = VALIDATION[validation] if validation else None
+        self.listed = listed                                    # validation: call list lookup, or None
+        self.weights = _WEIGHTS_LISTED[listed_by] if listed else _WEIGHTS
+        self._paths: dict[int, list[Counter]] = {}              # validation: window -> token counts per path
+        self._heard: dict[str, list[float]] = {}                # validation: call -> [first, last copy]
         self.window_s = window_s                                # decode window length
         self.cq_groups = cq_groups
         self.lockon = lockon
@@ -333,10 +375,13 @@ class RepeatSpotRule:
         self._expire(now)
         if self.split_runs:
             text = split_runs(text)
+        if self.threshold is not None:
+            self._paths.setdefault(window, []).append(Counter(tokens(text)))
         spots = []
         calls = (self._lockon_calls(freq_khz, text, now) if self.lockon
                  else runner_calls(text, every=self.cq_groups, qualifiers=self.cq_qualifiers))
         for call, n in Counter(calls).items():
+            new = 0
             for nth in range(n):
                 if (window, call, nth) not in self._seen:
                     if self._same_audio(window, call, freq_khz, now, snr):
@@ -344,11 +389,17 @@ class RepeatSpotRule:
                     self._seen.add((window, call, nth))
                     self._copies.append(_Copy(now, window, call, freq_khz,
                                               snr if snr is not None else float("-inf"), nth))
+                    new += 1
             near = [c for c in self._copies if abs(c.freq_khz - freq_khz) <= NEAR_KHZ]
             counts = Counter(c.call for c in near)
-            if any(_lev1(other, call) and n >= counts[call] for other, n in counts.items()):
+            if self.threshold is not None:
+                heard = self._heard.setdefault(call, [now, now])
+                heard[1] = now
+                if not new or self.score(call, near, counts, now - heard[0] >= REPEAT_S) < self.threshold:
+                    continue
+            elif any(_lev1(other, call) and n >= counts[call] for other, n in counts.items()):
                 continue          # a call one edit away has as many copies here: undecided
-            if counts[call] < self.tier(call):
+            elif counts[call] < self.tier(call):
                 continue
             spot_f = max((c for c in near if c.call == call), key=lambda c: c.snr).freq_khz
             key = (call, int(spot_f // 1000))     # per band: a station running two bands
@@ -357,6 +408,26 @@ class RepeatSpotRule:
                 self._last_spot[key] = (now, spot_f)
                 spots.append((call, spot_f))
         return spots
+
+    def score(self, call: str, near: list[_Copy], counts: Counter, heard_before: bool) -> float:
+        """Validation: confidence that call is what was sent, from its copies near one frequency."""
+        w = self.weights
+        n = counts[call]
+        windows = {c.window for c in near if c.call == call}
+        paths = [self._paths.get(win, []) for win in windows]
+        both = [all(p[call] for p in ps) for ps in paths if len(ps) > 1]
+        agree = sum(both) / len(both) if both else None
+        tier = self.tier(call)
+        s = (w["bias"] + w["single"] * (n == 1) + w["three"] * (n == 3) + w["four_plus"] * (n >= 4)
+             + w["windows"] * min(len(windows), 5) / 5
+             + w["tier3"] * (tier == 3) + w["tier4"] * (tier == 4) + w["heard_before"] * heard_before
+             + w["paths_agree"] * (agree == 1.0) + w["paths_disagree"] * (agree is not None and agree < 0.5)
+             + w["doubled"] * any(p[call] >= 2 for ps in paths for p in ps)
+             + w["rival"] * any(k >= 2 and other != call and (_lev1(other, call) or _regap(call, other))
+                                for other, k in counts.items()))
+        if self.listed:
+            s += w["listed"] * self.listed(call)
+        return s
 
     def _same_audio(self, window: int, call: str, freq_khz: float, now: float,
                     snr: float | None) -> bool:
@@ -430,3 +501,5 @@ class RepeatSpotRule:
             self._window_ids = {k: v for k, v in self._window_ids.items() if v[1] >= cutoff}
             live = {v[0] for v in self._window_ids.values()}
             self._bins = {w: b for w, b in self._bins.items() if w in live}
+            self._paths = {w: p for w, p in self._paths.items() if w in live}
+            self._heard = {c: h for c, h in self._heard.items() if now - h[1] <= HEARD_KEEP_S}
