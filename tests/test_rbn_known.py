@@ -12,6 +12,10 @@ from rbn_known import base_call, day_counts, known_calls, refresh
 HEADER = "callsign,de_pfx,de_cont,freq,band,dx,dx_pfx,dx_cont,mode,db,date,speed,tx_mode\n"
 
 
+def _nap(seconds: float) -> None:
+    del seconds
+
+
 def _row(spotter: str, dx: str, mode: str = "CW") -> str:
     return f"{spotter},K,NA,7030.0,40m,{dx},K,NA,CQ,20,2026-10-13 00:00:00,20,{mode}\n"
 
@@ -51,16 +55,19 @@ def test_refresh_caches_days_and_skips_unpublished(tmp_path: Path) -> None:
             raise urllib.error.HTTPError("u", 404, "Not Found", Message(), None)
         return _zip([_row(f"SK{i}", "K1ABC") for i in range(10)] + [_row("SK0", "W1AW")])
 
-    assert refresh(tmp_path, "WX7V", today=date(2026, 10, 14), fetch=fetch) == {"K1ABC"}
+    assert refresh(tmp_path, "WX7V", today=date(2026, 10, 14), fetch=fetch,
+                   sleep=_nap) == {"K1ABC"}
     assert len(fetched) == 7
-    assert refresh(tmp_path, "WX7V", today=date(2026, 10, 14), fetch=fetch) == {"K1ABC"}
+    assert refresh(tmp_path, "WX7V", today=date(2026, 10, 14), fetch=fetch,
+                   sleep=_nap) == {"K1ABC"}
     assert fetched[7:] == [date(2026, 10, 13)]           # only the missing day is tried again
     assert (tmp_path / "rbn_known.txt").read_text().splitlines()[1:] == ["K1ABC"]
 
 
 def test_refresh_refetches_a_damaged_day_and_stops_when_offline(tmp_path: Path) -> None:
     good = _zip([_row(f"SK{i}", "K1ABC") for i in range(10)])
-    refresh(tmp_path, "WX7V", today=date(2026, 10, 14), fetch=lambda day: good)
+    refresh(tmp_path, "WX7V", today=date(2026, 10, 14), fetch=lambda day: good,
+            sleep=_nap)
     (tmp_path / "20261010_WX7V.calls").write_text("K1ABC\t1")      # cut off mid-line
     fetched: list[date] = []
 
@@ -68,5 +75,15 @@ def test_refresh_refetches_a_damaged_day_and_stops_when_offline(tmp_path: Path) 
         fetched.append(day)
         raise OSError("network unreachable")
 
-    assert refresh(tmp_path, "WX7V", today=date(2026, 10, 15), fetch=offline) == {"K1ABC"}
+    assert refresh(tmp_path, "WX7V", today=date(2026, 10, 15), fetch=offline,
+                   sleep=_nap) == {"K1ABC"}
     assert fetched == [date(2026, 10, 14)]               # first failure: no more tries this start
+
+
+def test_refresh_window_is_configurable_paced_and_kept(tmp_path: Path) -> None:
+    pauses: list[float] = []
+    good = _zip([_row(f"SK{i}", "K1ABC") for i in range(10)])
+    refresh(tmp_path, "WX7V", days=40, today=date(2026, 10, 14), fetch=lambda day: good,
+            sleep=pauses.append)
+    assert len(list(tmp_path.glob("*.calls"))) == 40     # not pruned at KEEP_DAYS (30)
+    assert len(pauses) == 39                             # between downloads, not before the first
