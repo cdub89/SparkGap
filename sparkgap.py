@@ -1660,20 +1660,25 @@ def _make_spot_rule(config, tracker):
     from spot_rule import RepeatSpotRule
     # spot_validation (off by default): permissive / normal / aggressive confidence score in
     # place of the tier count; spot_validation_calls adds a call list to the score: "scp"
-    # (MASTER.SCP) or "rbn" (RBN known calls, rbn_known.py, refreshed from the archives here).
+    # (MASTER.SCP), "rbn" (RBN known calls, rbn_known.py, refreshed from the archives here) or
+    # "rbn+skcc" (those and SKCC member calls, skcc_roster.py).
     validation = config.get('spot_validation') or None
     calls = config.get('spot_validation_calls') if validation else None
     listed = None
     if calls == 'scp':
         listed = lambda c: c in tracker.valid_calls or max(c.split('/'), key=len) in tracker.valid_calls
-    elif calls == 'rbn':
+    elif calls in ('rbn', 'rbn+skcc'):
         import rbn_known
         from pathlib import Path
-        known = rbn_known.refresh(Path(config.get('rbn_known_dir', 'rbn_known')), config.get('callsign', ''),
+        cache = Path(config.get('rbn_known_dir', 'rbn_known'))
+        known = rbn_known.refresh(cache, config.get('callsign', ''),
                                   int(config.get('rbn_known_days', rbn_known.DAYS)))
+        if calls == 'rbn+skcc':
+            import skcc_roster
+            known = known | skcc_roster.refresh(cache)
         listed = lambda c: rbn_known.base_call(c) in known
     elif calls:
-        raise ValueError("spot_validation_calls must be scp or rbn, got %r" % calls)
+        raise ValueError("spot_validation_calls must be scp, rbn or rbn+skcc, got %r" % calls)
     return RepeatSpotRule(
         lambda c: {'active': 2, 'rare': 3}.get(tracker._matches_patt3ch(c), 4),
         cq_groups=True, cq_qualifiers=True, lockon=True,

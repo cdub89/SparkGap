@@ -79,13 +79,16 @@ VALIDATION = {"permissive": 1.25, "normal": 3.0, "aggressive": 5.0}
 _WEIGHTS = {"bias": 0.74, "single": -1.49, "three": 0.43, "four_plus": 0.42, "windows": 1.68,
             "tier3": -0.52, "tier4": -1.82, "heard_before": 1.87, "paths_agree": 0.65,
             "paths_disagree": -0.63, "doubled": 2.48, "rival": -1.64}
-_WEIGHTS_LISTED = {           # with a call list (spot_validation_calls): MASTER.SCP, or RBN known calls
+_WEIGHTS_LISTED = {           # per call list (spot_validation_calls): scp, rbn, rbn+skcc
     "scp": {"bias": 0.29, "single": -1.52, "three": 0.42, "four_plus": 0.28, "windows": 1.58,
             "tier3": -0.27, "tier4": -1.46, "heard_before": 1.68, "paths_agree": 0.48,
             "paths_disagree": -0.70, "doubled": 2.25, "rival": -1.62, "listed": 2.48},
     "rbn": {"bias": -0.22, "single": -1.57, "three": 0.24, "four_plus": 0.50, "windows": 1.30,
             "tier3": 0.0, "tier4": -1.90, "heard_before": 1.45, "paths_agree": 0.56,
             "paths_disagree": -0.79, "doubled": 1.90, "rival": -0.88, "listed": 4.18},
+    "rbn+skcc": {"bias": -0.60, "single": -1.58, "three": 0.38, "four_plus": 0.72, "windows": 1.35,
+                 "tier3": -0.05, "tier4": -1.55, "heard_before": 1.44, "paths_agree": 0.28,
+                 "paths_disagree": -0.72, "doubled": 1.77, "rival": -0.89, "listed": 3.92},
 }
 HEARD_KEEP_S = 12 * 3600.0    # validation: a call unheard this long is forgotten
 _MORSE = dict(zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/",
