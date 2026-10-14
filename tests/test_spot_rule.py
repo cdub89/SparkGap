@@ -442,6 +442,14 @@ def test_lockon_owner_signing_with_tu_counts() -> None:
     assert _feed(_rule(), ["CQ TEST N1DE", "TU N1DE K4FN 5NN 5 TU N1DE"]) == []
 
 
+def test_lockon_sign_off_with_stray_letters_does_not_count() -> None:
+    # KF2A for KF2AT, 20m 2026-10-13: the call split at a gap and the sign-off completed the count
+    r = RepeatSpotRule(_tier2, lockon=True)
+    assert r.feed(r.window_id(1, 0, 0.0), 14025.0, "CQ CQ DE KF2A T K", 0.0) == []
+    assert r.feed(r.window_id(1, 1, 60.0), 14025.0, "TU DE KF2A T K", 60.0) == []
+    assert r.feed(r.window_id(1, 2, 120.0), 14025.0, "TU DE KF2A K", 120.0) == [("KF2A", 14025.0)]
+
+
 def test_lockon_tu_caller_never_promotes_a_caller() -> None:
     # K4FN is only ever thanked; it never sends CQ, so it never owns the frequency
     rule = _lockon()
