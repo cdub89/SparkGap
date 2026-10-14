@@ -1,6 +1,8 @@
 """Repeat-evidence spot rule (spot_rule.py). Text cases are decodes from the 2026-09-23 replays."""
 
-from spot_rule import LOCK_IDLE_S, REPEAT_S, RepeatSpotRule, runner_calls, runner_groups, split_runs
+import pytest
+
+from spot_rule import LOCK_IDLE_S, REPEAT_S, RepeatSpotRule, _regap, runner_calls, runner_groups, split_runs
 
 SCP = {"K0TQ", "WX7V", "W1AW", "VE7KW", "K3JT", "K1ABC", "K1AJ", "AA3B", "NA2U"}
 
@@ -563,3 +565,51 @@ def test_two_band_runner_is_not_respotted_at_each_switch() -> None:
         t = 30.0 * k
         spots += rule.feed(rule.window_id(int(f), k, t), f, "CQ PA AA3B AA3B", t)
     assert sorted(spots) == [("AA3B", 3540.0), ("AA3B", 7040.0)]   # once per band
+
+
+def test_validation_level_must_be_known() -> None:
+    with pytest.raises(ValueError):
+        RepeatSpotRule(_tier2, validation="strict")
+    with pytest.raises(ValueError):
+        RepeatSpotRule(_tier2, validation="normal", listed_by="dta")
+
+
+def test_regap_is_one_keying_with_the_gaps_moved() -> None:
+    assert _regap("C0TT", "NN0TT")          # -.-. is C, or N N
+    assert _regap("N7HR", "N7HRK/M")        # the call split at a long letter gap
+    assert not _regap("K1ABC", "K1ABC")
+    assert not _regap("W1AW", "K3JT")
+
+
+def _validated(level: str, scp: bool) -> RepeatSpotRule:
+    return RepeatSpotRule(_tier2, cq_groups=True, lockon=True, cq_qualifiers=True, validation=level,
+                          listed=(lambda c: c in SCP) if scp else None)
+
+
+def test_validation_doubled_listed_call_spots_on_its_first_cq() -> None:
+    assert _feed(_validated("normal", True), ["CQ CQ DE K1ABC K1ABC K"]) == [("K1ABC", 7019.3)]
+
+
+def test_validation_without_scp_needs_more_evidence() -> None:
+    assert _feed(_validated("normal", False), ["CQ CQ DE K1ABC K1ABC K"]) == []
+    assert _feed(_validated("permissive", False), ["CQ CQ DE K1ABC K1ABC K"]) == [("K1ABC", 7019.3)]
+
+
+def test_validation_aggressive_waits_for_more_copies() -> None:
+    r = _validated("aggressive", True)
+    assert _feed(r, ["CQ CQ DE K1ABC K1ABC K"]) == []
+    assert _feed(r, ["CQ CQ DE K1ABC K1ABC K"] * 3, t0=60.0) == [("K1ABC", 7019.3)]
+
+
+def test_validation_rbn_list_weighs_more_than_scp() -> None:
+    r = RepeatSpotRule(_tier2, cq_groups=True, lockon=True, cq_qualifiers=True, validation="aggressive",
+                       listed=lambda c: c in SCP, listed_by="rbn")
+    assert _feed(r, ["CQ CQ DE K1ABC K1ABC K"]) == []
+    assert _feed(r, ["CQ CQ DE K1ABC K1ABC K"], t0=60.0) == [("K1ABC", 7019.3)]
+
+
+def test_validation_rival_reading_lowers_confidence() -> None:
+    plain, rival = _validated("normal", True), _validated("normal", True)
+    _feed(rival, ["CQ CQ DE K1ABD", "CQ CQ DE K1ABD"])
+    assert _feed(plain, ["CQ CQ DE K1ABC K1ABC K"], t0=120.0) == [("K1ABC", 7019.3)]
+    assert _feed(rival, ["CQ CQ DE K1ABC K1ABC K"], t0=120.0) == []

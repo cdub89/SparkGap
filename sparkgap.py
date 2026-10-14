@@ -1658,11 +1658,27 @@ def _make_spot_rule(config, tracker):
     CQ groups and CQ qualifiers always on (measured on every recording we have), split_runs
     by config (spot_rule_split_runs, off by default)."""
     from spot_rule import RepeatSpotRule
+    # spot_validation (off by default): permissive / normal / aggressive confidence score in
+    # place of the tier count; spot_validation_calls adds a call list to the score: "scp"
+    # (MASTER.SCP) or "rbn" (RBN known calls, rbn_known.py, refreshed from the archives here).
+    validation = config.get('spot_validation') or None
+    calls = config.get('spot_validation_calls') if validation else None
+    listed = None
+    if calls == 'scp':
+        listed = lambda c: c in tracker.valid_calls or max(c.split('/'), key=len) in tracker.valid_calls
+    elif calls == 'rbn':
+        import rbn_known
+        from pathlib import Path
+        known = rbn_known.refresh(Path(config.get('rbn_known_dir', 'rbn_known')), config.get('callsign', ''))
+        listed = lambda c: rbn_known.base_call(c) in known
+    elif calls:
+        raise ValueError("spot_validation_calls must be scp or rbn, got %r" % calls)
     return RepeatSpotRule(
         lambda c: {'active': 2, 'rare': 3}.get(tracker._matches_patt3ch(c), 4),
         cq_groups=True, cq_qualifiers=True, lockon=True,
         split_runs=bool(config.get('spot_rule_split_runs', False)),
-        window_s=float(config.get('itila_window_sec', 60.0)))
+        window_s=float(config.get('itila_window_sec', 60.0)),
+        validation=validation, listed=listed, listed_by=calls or 'scp')
 
 def _get_itila_lib():
     global _itila_lib
