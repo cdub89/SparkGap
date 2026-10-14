@@ -18,7 +18,7 @@ import urllib.request
 import zipfile
 from collections import Counter
 from collections.abc import Callable, Iterable
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 ARCHIVE_URL = "https://data.reversebeacon.net/rbn_history/{day}.zip"
@@ -92,7 +92,7 @@ def refresh(cache_dir: Path, own_call: str, days: int = DAYS, today: date | None
             fetch: Callable[[date], bytes] = _fetch,
             sleep: Callable[[float], None] = time.sleep) -> set[str]:
     """Fetch any missing day of the last DAYS (yesterday back); write and return the known calls."""
-    today = today or datetime.now(UTC).date()
+    today = today or datetime.now(timezone.utc).date()
     cache_dir.mkdir(parents=True, exist_ok=True)
     tag = base_call(own_call) if own_call else "ALL"
     counted: list[Counter[str]] = []
