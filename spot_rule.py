@@ -31,7 +31,9 @@ CQ PA WB3EML PA CQ reads PA CQ as name and state, and WB3EML as a caller.
 Lock-on (lockon; always on in SparkGap): a call named by a CQ group owns the
 frequency it was copied on. While it owns it, two things change near that frequency:
   - the owner's own later sign-offs (TU W6YH, DE W6YH, W6YH TEST) count as copies of W6YH,
-    so a runner who CQs once and then signs with TU W6YH still repeats; a bare W6YH does not;
+    so a runner who CQs once and then signs with TU W6YH still repeats; a bare W6YH does not,
+    and nor does a sign-off followed by stray letters that complete a longer call (KF2A T K,
+    DE WA1E CE): the owner may be a fragment of a call the decoder split at a gap;
   - a bare TEST right after the owner's call (TU W6YH TEST EI4KF) names nobody: it is the
     owner signing, and EI4KF is the next caller, even when its exchange is garbled or in cut
     numbers (5NN AT) the exchange test does not read.
@@ -65,6 +67,9 @@ _MERGED_PREFIXES = ("CQ", "TEST", "CWT", "SST", "MST", "DE")
 _TRIGGER_WORDS = ("CQ", "TEST", "CWT", "SST", "MST")
 _STOP_WORDS = frozenset({"TU", "DE", "CQ", "TEST", "CWT", "SST", "MST", "QRZ", "AGN",
                          "NR", "TNX", "GL", "BK"})
+_PROSIGNS = frozenset({"K", "AR", "KN", "BK", "SK", "TU", "EE", "DX", "UP", "NA", "GM", "GE", "GA",
+                       "GN", "ES", "HW", "CL", "OK", "RR", "UR", "OP", "VY", "FB", "HI"})
+STRAY_MAX = 2                 # letters after a call that may be the rest of it
 
 
 def _split_run_together(rest: str, prev: str | None) -> list[str] | None:
@@ -221,6 +226,21 @@ def _signing(toks: list[str], k: int, qualifiers: bool = False) -> bool:
         n += 1
     return ((p >= 0 and toks[p] in ("TU", "DE"))
             or (n < len(toks) and toks[n] in _TRIGGER_WORDS))
+
+
+def _stray_letters(toks: list[str], call: str, k: int) -> bool:
+    """toks[k:] opens with up to STRAY_MAX stray letters, over one or two tokens, that complete a
+    longer call: W9ME T, K0D CR, W9M E T. A keyword, stop word or prosign (K, AR, TU) ends the
+    call cleanly."""
+    joined, m = call, k
+    while m < len(toks) and len(joined) - len(call) < STRAY_MAX:
+        t = toks[m]
+        if (not t.isalpha() or len(joined) - len(call) + len(t) > STRAY_MAX
+                or t in _PROSIGNS or t in _STOP_WORDS or t in KEYWORDS):
+            break
+        joined += t
+        m += 1
+    return len(joined) > len(call) and CALL_RE.match(joined) is not None
 
 
 def runner_groups(text: str, every: bool = False,
@@ -393,6 +413,7 @@ class RepeatSpotRule:
         owner = self.owner(freq_khz, now)
         if owner is not None and owner not in calls:
             if any(tk == owner and _signing(toks, k, self.cq_qualifiers)
+                   and not _stray_letters(toks, owner, k + 1)
                    for k, tk in enumerate(toks)):
                 calls.append(owner)               # TU W6YH, W6YH TEST: the owner signing
                 self._own(owner, freq_khz, now)
