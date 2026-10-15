@@ -7,7 +7,7 @@ independent service next to the radio; the console connects to it over the
 network and can come and go without disturbing decoding. One console can watch
 several SparkGaps.
 
-![SparkGap Console on Windows during a 40m CWT](console.png)
+![SparkGap Console on Linux, 20m from a FLEX-6400M](console.png)
 
 Status: experimental. Settings are shown read-only; changing them will come with
 a launcher.
