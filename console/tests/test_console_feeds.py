@@ -2,11 +2,12 @@
 
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 pytest.importorskip("PySide6.QtWebSockets")
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gui"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from backend import (  # noqa: E402
     SPECTRUM_HEADER,
@@ -17,8 +18,8 @@ from backend import (  # noqa: E402
     save_feeds,
     url_parts,
 )
-from console import parse  # noqa: E402
 from PySide6.QtCore import QSettings  # noqa: E402
+from sparkgap_console import parse  # noqa: E402
 
 
 def test_url_round_trip() -> None:
@@ -100,7 +101,7 @@ def test_console_add_edit_remove(tmp_path: Path) -> None:
 
 def test_wrong_code_is_not_retried() -> None:
     # a retry with the same wrong code would only walk the console into the feed's lockout
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     from backend import Instance
     from PySide6.QtCore import QCoreApplication, QTimer
 
@@ -153,7 +154,7 @@ def test_spot_on_selection_refreshes_detail() -> None:
     from PySide6.QtCore import QCoreApplication
 
     app = QCoreApplication.instance() or QCoreApplication([])  # noqa: F841
-    inst = Instance("ws://127.0.0.1:9/feed")
+    inst: Any = Instance("ws://127.0.0.1:9/feed")  # Qt properties type as Property
     inst._on_text('{"type": "window", "khz": 7021.2, "text": "CQ W1AW W1AW", "utc": 1.0}')
     inst.select(7021.2, "W1AW")
     assert inst.detail["spotted"] is False
@@ -182,7 +183,7 @@ def test_demo_is_a_view(tmp_path: Path) -> None:
 
     app = QCoreApplication.instance() or QCoreApplication([])  # noqa: F841
     store = QSettings(str(tmp_path / "c.ini"), QSettings.Format.IniFormat)
-    c = Console([("ws://127.0.0.1:9/feed", "")], store)
+    c: Any = Console([("ws://127.0.0.1:9/feed", "")], store)
     server = c.current
     c.setDemo(True)
     assert c.demo and c.current.demo and c.current is not server

@@ -49,12 +49,12 @@ connected.
 
 ## Console: running from source
 
-Python 3.10 or later, from the `gui` folder:
+Python 3.10 or later, from the `console` folder:
 
 ```sh
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/python console.py
+.venv/bin/python sparkgap_console.py
 ```
 
 On Windows, `run_console.bat` does the same on first run.
@@ -63,7 +63,7 @@ Add servers in Settings, under CONNECTIONS: address, port and join code. The
 list is kept between runs. Servers given on the command line are added to it:
 
 ```sh
-.venv/bin/python console.py ws://100.64.0.1:7320/feed#XXX-XXX
+.venv/bin/python sparkgap_console.py ws://100.64.0.1:7320/feed#XXX-XXX
 ```
 
 The console draws with Qt's software renderer, which costs far less CPU over
@@ -71,7 +71,7 @@ remote desktop. `--gpu` uses the graphics card instead.
 
 ## Console: Windows build
 
-On Windows, from the `gui` folder, with the venv above:
+On Windows, from the `console` folder, with the venv above:
 
 ```bat
 .venv\Scripts\pip install pyinstaller
@@ -120,7 +120,7 @@ when the page itself was opened from a loopback address on the feed's port.
 
 ## Keeping the two clients in step
 
-The desktop console (`gui/`) and SparkGap Web (`web/`) are two builds of one
+The desktop console (`console/`) and SparkGap Web (`web/`) are two builds of one
 design. A change to either lands in the other in the same commit, or this list
 says why not.
 
@@ -130,7 +130,7 @@ Shared, and kept the same:
   a wrong join code is not retried; a lockout is retried after 10 minutes;
   reconnects back off over 1, 2, 5, 10 and 20 seconds; a change in the
   spectrum's bins, start, bin width or dB step clears the waterfall.
-- The constants at the top of `gui/backend.py` and `web/app.js`: same names,
+- The constants at the top of `console/backend.py` and `web/app.js`: same names,
   same values.
 - Layout, theme tokens (`t` in `Main.qml`, `:root` in `style.css`), the
   waterfall palette (dark in both themes), header glyphs and fonts.

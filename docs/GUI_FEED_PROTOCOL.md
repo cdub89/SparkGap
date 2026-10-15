@@ -74,7 +74,8 @@ they happen.
 Who this SparkGap is and the settings it runs with.
 
 ```json
-{"type": "hello", "v": 1, "host": "shack-pc", "call": "W1AW", "decoder": "itila2",
+{"type": "hello", "v": 1, "host": "shack-pc", "build": "06e710d",
+ "call": "W1AW", "decoder": "itila2",
  "config": {"callsign": "W1AW", "cw_decoder": "itila2",
             "sample_rate": 96000, "flex_daxiq_channel": 2,
             "telnet_port": 7300, "enable_ft8": false,
@@ -90,6 +91,8 @@ Who this SparkGap is and the settings it runs with.
 
 - `v`: feed version.
 - `host`: the host name of the machine SparkGap runs on.
+- `build`: the commit SparkGap runs from (`git describe`), `null` outside a git
+  checkout.
 - `config`: settings in effect, including defaults SparkGap applied.
   `flex_daxiq_channel` is `null` off a Flex; `rbn_known_days` is `null` unless
   the known calls come from RBN.

@@ -653,8 +653,7 @@ class Demo(QObject):
             "config": {
                 "callsign": "DEMO", "cw_decoder": "itila2", "sample_rate": 96_000,
                 "flex_daxiq_channel": None, "telnet_port": 7300, "enable_ft8": False,
-                "spot_rule": "repeat", "spot_validation": "normal",
-                "spot_validation_calls": "rbn+skcc",
+                "spot_rule": "repeat",
             },
             "bands": [DEMO_BAND],
         })

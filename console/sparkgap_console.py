@@ -1,6 +1,6 @@
 """SparkGap Console: Qt Quick client for one or more SparkGap feeds.
 
-usage: console.py [--gpu] [ws://host:port/feed[#token]] ...
+usage: sparkgap_console.py [--gpu] [ws://host:port/feed[#token]] ...
 
 Servers are kept in a list edited in Settings; any given here are added to it.
 
@@ -32,6 +32,8 @@ from PySide6.QtQuick import QQuickWindow, QSGRendererInterface
 
 # next to this file, or inside the bundle when built into SparkGapConsole.exe (PyInstaller)
 HERE = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+# fonts and icons are shared with the web console
+ASSETS = HERE if hasattr(sys, "_MEIPASS") else HERE.parent / "web"
 
 
 def build_id() -> str:
@@ -70,7 +72,7 @@ def main() -> int:
     app = QGuiApplication(sys.argv)
     app.setApplicationName("SparkGap Console")
     app.setOrganizationName("SparkGap")
-    for f in (HERE / "fonts").glob("*.ttf"):
+    for f in (ASSETS / "fonts").glob("*.ttf"):
         QFontDatabase.addApplicationFont(str(f))
     store = QSettings()
     feeds = merge_feeds(load_feeds(store), parse(args))
@@ -85,7 +87,7 @@ def main() -> int:
     if not engine.rootObjects():
         return 1
     icon = QIcon()
-    for f in sorted((HERE / "icons").glob("sparkgap-*.png")):
+    for f in sorted((ASSETS / "icons").glob("sparkgap-*.png")):
         icon.addFile(str(f))
     app.setWindowIcon(icon)
     rc = app.exec()

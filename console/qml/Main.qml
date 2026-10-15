@@ -754,10 +754,10 @@ ApplicationWindow {
                 component GridLabel: Text { Layout.preferredWidth: 92; color: t.muted; font.pixelSize: 11; font.letterSpacing: 1 }
                 GridLabel { text: "SPOT RULE" }
                 Seg { readOnly: true; labels: ["off", "on"]; current: settings.c.spot_rule === "repeat" ? 1 : settings.c.spot_rule ? 0 : -1 }
-                GridLabel { text: "VALIDATION" }
-                Seg { readOnly: true; labels: ["off", "permissive", "normal", "aggressive"]; current: labels.indexOf(settings.c.spot_validation || (settings.c.spot_rule ? "off" : "")) }
-                GridLabel { text: "CALL SOURCE" }
-                Seg { readOnly: true; labels: ["SCP", "RBN", "RBN + SKCC"]; current: ["scp", "rbn", "rbn+skcc"].indexOf(settings.c.spot_validation_calls) }
+                GridLabel { text: "VALIDATION"; visible: "spot_validation" in settings.c }
+                Seg { visible: "spot_validation" in settings.c; readOnly: true; labels: ["off", "permissive", "normal", "aggressive"]; current: labels.indexOf(settings.c.spot_validation || (settings.c.spot_rule ? "off" : "")) }
+                GridLabel { text: "CALL SOURCE"; visible: "spot_validation" in settings.c }
+                Seg { visible: "spot_validation" in settings.c; readOnly: true; labels: ["SCP", "RBN", "RBN + SKCC"]; current: ["scp", "rbn", "rbn+skcc"].indexOf(settings.c.spot_validation_calls) }
                 Item { width: 1; height: 1 }
                 Text { text: "From the selected server's config."; color: t.faint; font.pixelSize: 11 }
             }

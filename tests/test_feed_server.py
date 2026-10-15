@@ -400,6 +400,9 @@ def test_web_pages(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / "index.html").write_text("<!doctype html>")
     (tmp_path / "app.js").write_text("1")
     (tmp_path / ".hidden.js").write_text("1")
+    for d, leaf in (("fonts", "Sora.ttf"), ("fonts", "OFL.txt"), ("icons", "sparkgap.svg")):
+        (tmp_path / d).mkdir(exist_ok=True)
+        (tmp_path / d / leaf).write_text("1")
     monkeypatch.setattr(feed_server, "WEB_DIR", tmp_path)
     f = FeedServer({"bind": "127.0.0.1", "port": 0, "web": True}, HELLO)
     f.start()
@@ -474,3 +477,13 @@ def test_dns_rebinding_refused(feed: FeedServer) -> None:
     port = feed.port
     c = WS(port, extra=[f"Origin: http://evil.example:{port}", f"Host: evil.example:{port}"])
     assert c.status == 403
+
+
+def test_build_in_hello(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert "build" in FeedServer({"bind": "127.0.0.1", "port": 0}, HELLO).hello
+
+    def no_git(*_a: object, **_k: object) -> None:
+        raise OSError("no git")
+
+    monkeypatch.setattr(feed_server.subprocess, "run", no_git)
+    assert feed_server.build_id() is None

@@ -27,6 +27,7 @@ import secrets
 import socket
 import ssl
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -48,8 +49,6 @@ CODE_PROTOCOL = "sparkgap.code."  # a browser offers its join code as this subpr
 # browser clients learn of a refused code from these close codes (they cannot read the HTTP status)
 CLOSE_WRONG_CODE, CLOSE_LOCKED_OUT, CLOSE_FULL = 4401, 4429, 4503
 WEB_DIR = Path(__file__).resolve().parent / "web"
-FONT_DIR = Path(__file__).resolve().parent / "gui" / "fonts"
-ICON_DIR = Path(__file__).resolve().parent / "gui" / "icons"
 WEB_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
@@ -179,6 +178,18 @@ class Client:
     closed: bool = False
 
 
+def build_id() -> str | None:
+    """The commit SparkGap runs from (git describe); None outside a git checkout."""
+    try:
+        out = subprocess.run(
+            ["git", "describe", "--always", "--dirty"], cwd=Path(__file__).resolve().parent,
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return out.stdout.strip() or None
+
+
 class FeedServer:
     def __init__(self, cfg: dict[str, Any], hello: dict[str, Any]) -> None:
         self.bind = str(cfg.get("bind", "127.0.0.1"))
@@ -197,7 +208,8 @@ class FeedServer:
         if not is_loopback(self.bind) and not self.code:
             raise ValueError(f"gui_feed: bind {self.bind} is not loopback, a join_code is required")
         self.web = bool(cfg.get("web", False))
-        self.hello = {"type": "hello", "v": FEED_VERSION, "host": socket.gethostname(), **hello}
+        self.hello = {"type": "hello", "v": FEED_VERSION, "host": socket.gethostname(),
+                      "build": build_id(), **hello}
         self.clients: set[Client] = set()
         self.windows: collections.deque[dict[str, Any]] = collections.deque()
         self.spots: collections.deque[dict[str, Any]] = collections.deque(maxlen=SNAPSHOT_SPOTS)
@@ -494,10 +506,10 @@ class FeedServer:
 
     @staticmethod
     def _serve_file(writer: asyncio.StreamWriter, path: str) -> bool | None:
-        """The browser console: web/ and the console's fonts and icons, nothing else."""
+        """The browser console: web/ and its fonts and icons folders, nothing else."""
         name = path.lstrip("/") or "index.html"
         folder, _, leaf = name.rpartition("/")
-        base = {"": WEB_DIR, "fonts": FONT_DIR, "icons": ICON_DIR}.get(folder)
+        base = {"": WEB_DIR, "fonts": WEB_DIR / "fonts", "icons": WEB_DIR / "icons"}.get(folder)
         if base is None:
             return FeedServer._reject(writer, 404, "Not Found")
         f = base / leaf

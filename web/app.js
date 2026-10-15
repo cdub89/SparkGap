@@ -1,4 +1,4 @@
-// SparkGap Web: the browser console. Same feed, layout and logic as the Qt console (gui/).
+// SparkGap Web: the browser console. Same feed, layout and logic as the Qt console (console/).
 "use strict";
 
 const PROTOCOL = "sparkgap.v1";
@@ -494,7 +494,7 @@ class Demo {
       type: "hello", v: FEED_VERSION, call: "DEMO", decoder: "itila2",
       config: {
         callsign: "DEMO", cw_decoder: "itila2", sample_rate: 96_000, flex_daxiq_channel: null, telnet_port: 7300,
-        enable_ft8: false, spot_rule: "repeat", spot_validation: "normal", spot_validation_calls: "rbn+skcc",
+        enable_ft8: false, spot_rule: "repeat",
       },
       bands: [DEMO_BAND],
     });
@@ -988,6 +988,8 @@ function renderSettings() {
   seg($("sRule"), ["off", "on"], c.spot_rule === "repeat" ? 1 : c.spot_rule ? 0 : -1);
   seg($("sValid"), v, v.indexOf(c.spot_validation || (c.spot_rule ? "off" : "")));
   seg($("sCalls"), ["SCP", "RBN", "RBN + SKCC"], ["scp", "rbn", "rbn+skcc"].indexOf(c.spot_validation_calls));
+  $("build").textContent = (inst() && inst().hello.build) || "";  // the server's commit, which is this page's too
+  for (const id of ["lValid", "sValid", "lCalls", "sCalls"]) $(id).hidden = !("spot_validation" in c);  // a SparkGap without call validation
 }
 
 function renderConns() {
