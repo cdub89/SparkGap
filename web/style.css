@@ -97,11 +97,16 @@ main { flex: 1; display: flex; gap: 12px; min-height: 0; }
 .win .c { color: var(--faint); font-size: 10px; }
 .win b { color: var(--accent); }
 .zoom { padding: 10px; display: flex; justify-content: center; }
-/* labelled rows: what is on screen, the zoom, the colour scale; values share a left edge */
-.zgrid { display: grid; grid-template-columns: auto auto; gap: 6px 10px; align-items: center; justify-items: start; }
+/* labelled rows: the zoom, what is on screen, the colour scale (as long as the slider); values share a left edge,
+   and the third column holds the span, Full and the scale's unit */
+.zgrid { display: grid; grid-template-columns: auto auto auto; gap: 6px 10px; align-items: center; justify-items: start; }
 .zgrid .zl { justify-self: end; color: var(--muted); font-size: 11px; }
-.zsnr { justify-self: stretch; display: flex; flex-direction: column; gap: 4px; }
-.zrow { display: flex; align-items: center; gap: 8px; }
+.zsnr { width: 170px; display: flex; flex-direction: column; gap: 4px; }
+#range { justify-self: center; }  /* centred over the slider and the scale */
+#full, #spanText, .zunit { justify-self: center; }  /* the third column, centred */
+.zsnr, .zunit { margin-top: 4px; }  /* a little room above the scale */
+.zgrid .snr { align-self: start; }  /* level with the bar, not centred across bar and numbers */
+.zunit { align-self: end; font-size: 11px; color: var(--fg); }  /* as the span value */
 #span { width: 170px; accent-color: var(--accent); height: 14px; padding: 0; border: 0; background: transparent; }
 .legend { height: 6px; border-radius: 3px; background: linear-gradient(90deg, var(--wf-1), var(--wf-2) 20%, var(--wf-3) 40%, var(--wf-4) 60%, var(--wf-5) 80%, var(--wf-6)); }
 .legendText { display: flex; justify-content: space-between; font-size: 10px; color: var(--faint); }

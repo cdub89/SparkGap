@@ -57,19 +57,18 @@
       </section>
       <section class="panel zoom">
         <div class="zgrid">
+          <span class="zl">Zoom</span>
+          <input id="span" type="range" min="2" max="48" step="any">
+          <button id="full" class="btn small">Full</button>
           <span class="zl">Span</span>
           <div id="range" class="mono small muted"></div>
-          <span class="zl">Zoom</span>
-          <div class="zrow">
-            <input id="span" type="range" min="2" max="48" step="any">
-            <span id="spanText" class="mono small"></span>
-            <button id="full" class="btn small">Full</button>
-          </div>
-          <span class="zl">SNR</span>
+          <span id="spanText" class="mono small"></span>
+          <span class="zl snr">SNR</span>
           <div class="zsnr">
             <div class="legend"></div>
-            <div class="legendText mono"><span>0</span><span>10</span><span>20</span><span>30 dB</span></div>
+            <div class="legendText mono"><span>0</span><span>10</span><span>20</span><span>30</span></div>
           </div>
+          <span class="zunit mono">dB</span>
         </div>
       </section>
     </aside>

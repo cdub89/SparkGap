@@ -509,21 +509,13 @@ ApplicationWindow {
                         id: zoomBox
                         Layout.fillWidth: true; Layout.preferredHeight: leg.implicitHeight + 20
                         radius: 10; color: t.surface; border.color: t.line
-                        // labelled rows: what is on screen, the zoom, the colour scale; values share a left edge
+                        // labelled rows: the zoom, what is on screen, the colour scale; values share a left edge,
+                        // and the third column holds the span, Full and the scale's unit
                         GridLayout {
                             id: leg; anchors.centerIn: parent
-                            columns: 2; columnSpacing: 10; rowSpacing: 6
+                            columns: 3; columnSpacing: 10; rowSpacing: 6
                             component ZLabel: Text { Layout.alignment: Qt.AlignRight | Qt.AlignVCenter; color: t.muted; font.pixelSize: 11 }
-                            ZLabel { text: "Span" }
-                            Text {
-                                Layout.alignment: Qt.AlignLeft | Qt.AlignVCenter
-                                text: wf.lowKhz.toFixed(1) + " – " + wf.highKhz.toFixed(1) + " kHz"
-                                color: t.muted; font.family: t.mono; font.features: t.zero; font.pixelSize: 11
-                            }
                             ZLabel { text: "Zoom" }
-                            RowLayout {
-                                Layout.alignment: Qt.AlignLeft | Qt.AlignVCenter
-                                spacing: 8
                                 Slider {
                                     id: spanSlider
                                     Layout.preferredWidth: 170
@@ -545,18 +537,28 @@ ApplicationWindow {
                                         width: 14; height: 14; radius: 7; color: t.surface; border.color: t.accent; border.width: 2
                                     }
                                 }
-                                Text { text: fscroll.span.toFixed(0) + " kHz"; color: t.fg; font.family: t.mono; font.features: t.zero; font.pixelSize: 11 }
                                 Rectangle {
+                                    Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
                                     width: fullTxt.implicitWidth + 14; height: 20; radius: 6
                                     color: fullHov.hovered ? t.sunken : "transparent"; border.color: t.line
                                     Text { id: fullTxt; anchors.centerIn: parent; text: "Full"; color: t.fg; font.pixelSize: 11 }
                                     HoverHandler { id: fullHov; cursorShape: Qt.PointingHandCursor }
                                     TapHandler { onTapped: if (inst) wf.setView(inst.lowKhz, inst.highKhz) }
                                 }
+                            ZLabel { text: "Span" }
+                            Text {
+                                Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter  // centred over the slider and the scale
+                                text: wf.lowKhz.toFixed(1) + " – " + wf.highKhz.toFixed(1) + " kHz"
+                                color: t.muted; font.family: t.mono; font.features: t.zero; font.pixelSize: 11
                             }
-                            ZLabel { text: "SNR" }
+                            Text {
+                                Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+                                text: fscroll.span.toFixed(0) + " kHz"; color: t.fg; font.family: t.mono; font.features: t.zero; font.pixelSize: 11
+                            }
+                            ZLabel { text: "SNR"; Layout.alignment: Qt.AlignRight | Qt.AlignTop }  // level with the bar, not centred across bar and numbers
                             Column {
-                                Layout.fillWidth: true
+                                Layout.preferredWidth: spanSlider.width  // as long as the zoom slider
+                                Layout.topMargin: 4
                                 spacing: 4
                                 Rectangle {
                                     width: parent.width; height: 6; radius: 3
@@ -579,8 +581,13 @@ ApplicationWindow {
                                     Item { Layout.fillWidth: true }
                                     Tick { text: "20" }
                                     Item { Layout.fillWidth: true }
-                                    Tick { text: "30 dB" }
+                                    Tick { text: "30" }
                                 }
+                            }
+                            Text {  // the scale's unit, on the numbers' line
+                                Layout.alignment: Qt.AlignHCenter | Qt.AlignBottom
+                                Layout.topMargin: 4
+                                text: "dB"; color: t.fg; font.family: t.mono; font.features: t.zero; font.pixelSize: 11  // as the span value
                             }
                         }
                     }
