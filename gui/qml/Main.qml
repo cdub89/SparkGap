@@ -509,24 +509,25 @@ ApplicationWindow {
                         id: zoomBox
                         Layout.fillWidth: true; Layout.preferredHeight: leg.implicitHeight + 20
                         radius: 10; color: t.surface; border.color: t.line
-                        // labelled rows, centred: what is on screen, the zoom, the colour scale
+                        // labelled rows: what is on screen, the zoom, the colour scale; values share a left edge
                         GridLayout {
                             id: leg; anchors.centerIn: parent
                             columns: 2; columnSpacing: 10; rowSpacing: 6
                             component ZLabel: Text { Layout.alignment: Qt.AlignRight | Qt.AlignVCenter; color: t.muted; font.pixelSize: 11 }
                             ZLabel { text: "Span" }
                             Text {
-                                Layout.alignment: Qt.AlignHCenter
+                                Layout.alignment: Qt.AlignLeft | Qt.AlignVCenter
                                 text: wf.lowKhz.toFixed(1) + " – " + wf.highKhz.toFixed(1) + " kHz"
                                 color: t.muted; font.family: t.mono; font.features: t.zero; font.pixelSize: 11
                             }
                             ZLabel { text: "Zoom" }
                             RowLayout {
-                                Layout.alignment: Qt.AlignHCenter
+                                Layout.alignment: Qt.AlignLeft | Qt.AlignVCenter
                                 spacing: 8
                                 Slider {
                                     id: spanSlider
                                     Layout.preferredWidth: 170
+                                    leftPadding: 0  // starts on the column's left edge, with Span and SNR
                                     from: 2; to: Math.max(3, fscroll.full); stepSize: 0
                                     Binding on value { when: !spanSlider.pressed; value: fscroll.span }
                                     onMoved: {
@@ -555,27 +556,31 @@ ApplicationWindow {
                             }
                             ZLabel { text: "SNR" }
                             Column {
-                            Layout.alignment: Qt.AlignHCenter
-                            spacing: 4
-                            Rectangle {
-                                width: 150; height: 6; radius: 3
-                                gradient: Gradient {
-                                    orientation: Gradient.Horizontal
-                                    GradientStop { position: 0.0; color: t.wf[1] }
-                                    GradientStop { position: 0.2; color: t.wf[2] }
-                                    GradientStop { position: 0.4; color: t.wf[3] }
-                                    GradientStop { position: 0.6; color: t.wf[4] }
-                                    GradientStop { position: 0.8; color: t.wf[5] }
-                                    GradientStop { position: 1.0; color: t.wf[6] }
+                                Layout.fillWidth: true
+                                spacing: 4
+                                Rectangle {
+                                    width: parent.width; height: 6; radius: 3
+                                    gradient: Gradient {
+                                        orientation: Gradient.Horizontal
+                                        GradientStop { position: 0.0; color: t.wf[1] }
+                                        GradientStop { position: 0.2; color: t.wf[2] }
+                                        GradientStop { position: 0.4; color: t.wf[3] }
+                                        GradientStop { position: 0.6; color: t.wf[4] }
+                                        GradientStop { position: 0.8; color: t.wf[5] }
+                                        GradientStop { position: 1.0; color: t.wf[6] }
+                                    }
                                 }
-                            }
-                            Row {
-                                spacing: 0
-                                Repeater {
-                                    model: ["0", "10", "20", "30 dB"]
-                                    Text { required property var modelData; width: 150 / 3.2; text: modelData; color: t.faint; font.family: t.mono; font.features: t.zero; font.pixelSize: 10 }
+                                RowLayout {  // scale labels spread evenly, as the web version's space-between
+                                    width: parent.width; spacing: 0
+                                    component Tick: Text { color: t.faint; font.family: t.mono; font.features: t.zero; font.pixelSize: 10 }
+                                    Tick { text: "0" }
+                                    Item { Layout.fillWidth: true }
+                                    Tick { text: "10" }
+                                    Item { Layout.fillWidth: true }
+                                    Tick { text: "20" }
+                                    Item { Layout.fillWidth: true }
+                                    Tick { text: "30 dB" }
                                 }
-                            }
                             }
                         }
                     }

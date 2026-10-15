@@ -97,15 +97,14 @@ main { flex: 1; display: flex; gap: 12px; min-height: 0; }
 .win .c { color: var(--faint); font-size: 10px; }
 .win b { color: var(--accent); }
 .zoom { padding: 10px; display: flex; justify-content: center; }
-/* labelled rows, centred: what is on screen, the zoom, the colour scale */
-.zgrid { display: grid; grid-template-columns: auto auto; gap: 6px 10px; align-items: center; justify-items: center; }
+/* labelled rows: what is on screen, the zoom, the colour scale; values share a left edge */
+.zgrid { display: grid; grid-template-columns: auto auto; gap: 6px 10px; align-items: center; justify-items: start; }
 .zgrid .zl { justify-self: end; color: var(--muted); font-size: 11px; }
-.zsnr { display: flex; flex-direction: column; gap: 4px; }
+.zsnr { justify-self: stretch; display: flex; flex-direction: column; gap: 4px; }
 .zrow { display: flex; align-items: center; gap: 8px; }
 #span { width: 170px; accent-color: var(--accent); height: 14px; padding: 0; border: 0; background: transparent; }
-.legend { width: 150px; height: 6px; border-radius: 3px; background: linear-gradient(90deg, var(--wf-1), var(--wf-2) 20%, var(--wf-3) 40%, var(--wf-4) 60%, var(--wf-5) 80%, var(--wf-6)); }
-.legendText { width: 150px; display: flex; gap: 0; font-size: 10px; color: var(--faint); }
-.legendText span { width: 47px; }
+.legend { height: 6px; border-radius: 3px; background: linear-gradient(90deg, var(--wf-1), var(--wf-2) 20%, var(--wf-3) 40%, var(--wf-4) 60%, var(--wf-5) 80%, var(--wf-6)); }
+.legendText { display: flex; justify-content: space-between; font-size: 10px; color: var(--faint); }
 footer { display: flex; gap: 22px; font-size: 12px; white-space: nowrap; overflow: hidden; }
 footer .k { color: var(--muted); margin-right: 5px; }
 footer .v { font-family: "IBM Plex Mono", ui-monospace, monospace; font-feature-settings: "zero" 1; }
