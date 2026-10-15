@@ -9,8 +9,8 @@ several SparkGaps.
 
 ![SparkGap Console on Linux, 20m from a FLEX-6400M](console.png)
 
-Status: experimental. Settings are shown read-only; changing them will come with
-a launcher.
+Status: experimental. The consoles only watch: each SparkGap keeps its own
+config, startup and shutdown, and Settings shows its config read-only.
 
 ## Server: the feed
 

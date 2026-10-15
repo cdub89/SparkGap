@@ -1,4 +1,4 @@
-"""WebSocket feed for SparkGap clients (the Qt console): windows, spots, status and spectrum.
+"""WebSocket feed for SparkGap Web and the desktop console: windows, spots, status and spectrum.
 
 WebSocket on the standard library (RFC 6455). The server runs its own asyncio loop in a daemon
 thread, so live mode and file mode publish the same way: call the publish_* methods from any
