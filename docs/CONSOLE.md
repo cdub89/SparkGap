@@ -38,6 +38,8 @@ The feed is off unless the config has a `gui_feed` block:
   the link. Settings adds servers as `ws://`, so give a `wss://` server on the
   command line.
 
+What the feed sends is described in [GUI_FEED_PROTOCOL.md](GUI_FEED_PROTOCOL.md).
+
 The feed works in live and file mode and needs no extra Python packages on the
 server. Its spectrum costs under 1% of a core, and nothing while no client is
 connected.

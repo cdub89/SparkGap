@@ -271,7 +271,7 @@ class FeedServer:
                 "khz": round(khz, 2),
                 "call": call,
                 "snr": snr,
-                "wpm": wpm,
+                "wpm": wpm or None,  # SparkGap's spots carry 0 for an unknown speed
                 "utc": time.time(),
             },
             self.spots,

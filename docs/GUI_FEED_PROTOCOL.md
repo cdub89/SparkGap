@@ -1,0 +1,184 @@
+# GUI feed protocol
+
+What a running SparkGap sends to its clients when the config has a `gui_feed`
+block: decoded windows, spots, status and spectrum rows over one WebSocket.
+SparkGap Console is one client; anything that speaks WebSocket can be another.
+Setup and the config block are in [CONSOLE.md](CONSOLE.md).
+
+Protocol `sparkgap.v1`, feed version 1.
+
+## Connecting
+
+One endpoint per SparkGap: `ws://<host>:7320/feed`, or `wss://` when the config
+has `tls_cert` and `tls_key`. A standard WebSocket handshake (RFC 6455,
+version 13):
+
+- Path `/feed`; a query string is ignored.
+- `Sec-WebSocket-Protocol: sparkgap.v1` is optional. When offered, the server
+  echoes it.
+- `Authorization: Bearer <join code>` whenever the feed has a join code, which
+  it must have unless it is bound to a loopback address. Case, spaces and
+  dashes are ignored, so `xxx-xxx` and `XXXXXX` are the same code.
+
+The server refuses a connection with a plain HTTP reply and closes it:
+
+| Status | When |
+| --- | --- |
+| 400 | Not a WebSocket upgrade, or not version 13 |
+| 401 | Wrong or missing join code |
+| 404 | Path is not `/feed` |
+| 405 | Not a `GET` |
+| 429 | This address gave 5 wrong codes in the last 10 minutes |
+| 431 | Request headers over 8 KB |
+| 503 | 16 clients are already connected |
+
+A 401 should not be retried with the same code. A 429 clears as the oldest
+wrong try passes 10 minutes.
+
+## Messages from the server
+
+Text frames carry one JSON object each, with a `type`. Binary frames carry
+spectrum rows. Frequencies are kHz, times are Unix seconds (UTC) as floats, SNR
+is dB. A value that is unknown is `null`, never `0`.
+
+On connect the server sends `hello`, then `snapshot`, then live messages as
+they happen.
+
+### hello
+
+Who this SparkGap is and the settings it runs with.
+
+```json
+{"type": "hello", "v": 1, "call": "W1AW", "decoder": "itila2",
+ "config": {"callsign": "W1AW", "cw_decoder": "itila2",
+            "sample_rate": 96000, "flex_daxiq_channel": 2,
+            "telnet_port": 7300, "enable_ft8": false,
+            "spot_rule": "repeat", "spot_rule_cq_groups": true,
+            "spot_rule_lockon": true, "spot_rule_cq_qualifiers": true,
+            "spot_rule_split_runs": true, "spot_validation": "normal",
+            "spot_validation_calls": "rbn+skcc", "rbn_known_days": 7},
+ "config_defaults": ["rbn_known_days"],
+ "config_built_in": ["spot_rule_cq_groups", "spot_rule_lockon",
+                     "spot_rule_cq_qualifiers"],
+ "bands": [{"name": "40m", "center_khz": 7048.0, "span_khz": 96.0}]}
+```
+
+- `v`: feed version.
+- `config`: settings in effect, including defaults SparkGap applied.
+  `flex_daxiq_channel` is `null` off a Flex; `rbn_known_days` is `null` unless
+  the known calls come from RBN.
+- `config_defaults`: keys of `config` not set in the config file.
+- `config_built_in`: keys that follow from another setting (the repeat rule)
+  rather than being set on their own.
+- `bands`: one entry per receiver, in the order of the config's `bands`.
+
+### snapshot
+
+What happened before the client connected.
+
+```json
+{"type": "snapshot",
+ "signals": [{"khz": 7021.2, "wpm": 22.0, "snr": 18.0, "utc": 1792020908.1}],
+ "windows": [{"type": "window", "khz": 7021.2, "text": "CQ DE W1AW W1AW K",
+              "wpm": 22.0, "snr": 18.0, "cost": 0.4, "utc": 1792020908.1}],
+ "spots": [{"type": "spot", "khz": 7021.2, "call": "W1AW", "snr": 18.0, "wpm": 22,
+            "utc": 1792020909.4}],
+ "status": null}
+```
+
+- `signals`: one per frequency with a window in the last 2 minutes, from its
+  latest window.
+- `windows`: every decoded window of the last 10 minutes, oldest first.
+- `spots`: the last 200 spots, oldest first.
+- `status`: the latest status, or `null` before the first one.
+
+### window
+
+One decoded window of one signal: all the text, not only calls.
+
+```json
+{"type": "window", "khz": 7021.2, "text": "CQ DE W1AW W1AW K", "wpm": 22.0,
+ "snr": 18.0, "cost": 0.4, "utc": 1792020908.1}
+```
+
+- `khz`: to 0.01 kHz.
+- `cost`: the decoder's fit, lower is better; `null` when the decoder gives none.
+
+An active signal sends windows repeatedly, and they overlap: the text of one
+can repeat in the next.
+
+### spot
+
+A spot, as sent to telnet.
+
+```json
+{"type": "spot", "khz": 7021.2, "call": "W1AW", "snr": 18.0, "wpm": 22,
+ "utc": 1792020909.4}
+```
+
+### status
+
+Every 2 seconds.
+
+```json
+{"type": "status", "cpu": 38, "rss_mb": 331, "bins": 37, "spots": 412,
+ "uptime_s": 27243, "utc": 1792020910.0}
+```
+
+- `cpu`: percent of one core since the last status.
+- `rss_mb`: resident memory; `null` where the OS does not report it.
+- `bins`: decoder bins open across all bands.
+- `spots`: spots since start.
+
+### Spectrum rows (binary)
+
+About 60 rows a second per band, thinned to the rate each client asks for
+(20 by default). Little-endian:
+
+| Offset | Type | Field |
+| --- | --- | --- |
+| 0 | u32 | feed version |
+| 4 | f64 | `utc` of the row's last sample |
+| 12 | f64 | `first_bin_hz`: frequency of bin 0 |
+| 20 | f32 | `hz_per_bin` |
+| 24 | f32 | `db_per_unit` |
+| 28 | u16 | `n_bins` |
+| 30 | u8 × `n_bins` | level of each bin |
+
+Bin `i` is at `first_bin_hz + i * hz_per_bin` and its level is
+`value * db_per_unit` dB over the local noise floor (0.25 dB steps today, so
+0 to 63.75 dB). With several bands, `first_bin_hz` tells them apart. Rows from
+one block of IQ arrive together; space them by `utc`, not arrival time.
+
+Clients should check the version, that the frame is 30 + `n_bins` bytes long,
+and that the floats are finite.
+
+## Messages from the client
+
+Text frames of JSON, up to 64 KB. One message exists today:
+
+```json
+{"type": "subscribe", "spectrum_hz": 20}
+```
+
+`spectrum_hz` sets this client's spectrum rows per second, from 0.5 to 60.
+Anything that is not valid JSON, or has an unknown `type`, is ignored. A binary
+frame closes the connection.
+
+## Keeping the connection
+
+- The server pings every 20 seconds. A client that sends nothing for 60
+  seconds, not even the pong every WebSocket library sends, is disconnected.
+- A client that falls 5,000 text messages behind is disconnected. Spectrum
+  rows are not queued behind it: each client holds the 4 newest and the oldest
+  are dropped first. Windows and spots are never dropped.
+- Close codes from the server: 1001 when SparkGap stops, 1002 for a protocol
+  error (such as an unmasked or badly fragmented frame), 1003 for a binary
+  frame, 1009 for a message over 64 KB.
+
+## Versioning
+
+New fields and new message types are added without changing the version, so
+clients must ignore fields and types they do not know. Removing or renaming a
+field, or changing what one means, raises the feed version and the protocol
+name (`sparkgap.v2`).
