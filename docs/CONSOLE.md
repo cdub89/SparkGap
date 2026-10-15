@@ -100,8 +100,7 @@ opened from.
 Demo mode shows made-up signals, so the page can be tried without a server; it
 is on until a server has been added. Turning it on only switches the view: the
 servers stay connected and keep their waterfall, spots and text, and the server
-list is hidden until demo is off again. The desktop console has no demo mode
-yet.
+list is hidden until demo is off again.
 
 The page also opens from a file (`web/index.html`), for demo mode or for
 servers that do not serve it. A server without a join code accepts a page only
@@ -137,7 +136,7 @@ Shared, and kept the same:
 - Call ladder, bubbles, decoded windows, search, status bar, and the zoom
   panel (Zoom, Span and SNR rows).
 - Settings: demo, connections, the read-only spot rule, validation and call
-  source, at 480 px.
+  source (shown when the server reports them), the build, at 480 px.
 - Demo mode: the same made-up signals; turning it on only switches the view.
 - Scroll bars: thin, with small arrows, the same on the waterfall and the
   decoded text.
@@ -145,8 +144,7 @@ Shared, and kept the same:
 
 Different on purpose:
 
-- Desktop only: window size and position kept between runs; the build version
-  in Settings.
+- Desktop only: window size and position kept between runs.
 - Web only: the layout for narrow (phone) screens and touch pan and pinch; the
   page fills in its own server's address when one is added.
 - Refusals: the desktop console reads the HTTP status, the browser the close
