@@ -96,7 +96,11 @@ main { flex: 1; display: flex; gap: 12px; min-height: 0; }
 .win .alt { color: var(--muted); opacity: .75; }
 .win .c { color: var(--faint); font-size: 10px; }
 .win b { color: var(--accent); }
-.zoom { padding: 10px; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.zoom { padding: 10px; display: flex; justify-content: center; }
+/* labelled rows, centred: what is on screen, the zoom, the colour scale */
+.zgrid { display: grid; grid-template-columns: auto auto; gap: 6px 10px; align-items: center; justify-items: center; }
+.zgrid .zl { justify-self: end; color: var(--muted); font-size: 11px; }
+.zsnr { display: flex; flex-direction: column; gap: 4px; }
 .zrow { display: flex; align-items: center; gap: 8px; }
 #span { width: 170px; accent-color: var(--accent); height: 14px; padding: 0; border: 0; background: transparent; }
 .legend { width: 150px; height: 6px; border-radius: 3px; background: linear-gradient(90deg, var(--wf-1), var(--wf-2) 20%, var(--wf-3) 40%, var(--wf-4) 60%, var(--wf-5) 80%, var(--wf-6)); }

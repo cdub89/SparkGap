@@ -509,15 +509,21 @@ ApplicationWindow {
                         id: zoomBox
                         Layout.fillWidth: true; Layout.preferredHeight: leg.implicitHeight + 20
                         radius: 10; color: t.surface; border.color: t.line
-                        Column {
-                            id: leg; anchors.centerIn: parent; spacing: 4
+                        // labelled rows, centred: what is on screen, the zoom, the colour scale
+                        GridLayout {
+                            id: leg; anchors.centerIn: parent
+                            columns: 2; columnSpacing: 10; rowSpacing: 6
+                            component ZLabel: Text { Layout.alignment: Qt.AlignRight | Qt.AlignVCenter; color: t.muted; font.pixelSize: 11 }
+                            ZLabel { text: "Span" }
                             Text {
+                                Layout.alignment: Qt.AlignHCenter
                                 text: wf.lowKhz.toFixed(1) + " – " + wf.highKhz.toFixed(1) + " kHz"
                                 color: t.muted; font.family: t.mono; font.features: t.zero; font.pixelSize: 11
                             }
+                            ZLabel { text: "Zoom" }
                             RowLayout {
+                                Layout.alignment: Qt.AlignHCenter
                                 spacing: 8
-                                Text { text: "Span"; color: t.muted; font.pixelSize: 11 }
                                 Slider {
                                     id: spanSlider
                                     Layout.preferredWidth: 170
@@ -547,6 +553,10 @@ ApplicationWindow {
                                     TapHandler { onTapped: if (inst) wf.setView(inst.lowKhz, inst.highKhz) }
                                 }
                             }
+                            ZLabel { text: "SNR" }
+                            Column {
+                            Layout.alignment: Qt.AlignHCenter
+                            spacing: 4
                             Rectangle {
                                 width: 150; height: 6; radius: 3
                                 gradient: Gradient {
@@ -565,6 +575,7 @@ ApplicationWindow {
                                     model: ["0", "10", "20", "30 dB"]
                                     Text { required property var modelData; width: 150 / 3.2; text: modelData; color: t.faint; font.family: t.mono; font.features: t.zero; font.pixelSize: 10 }
                                 }
+                            }
                             }
                         }
                     }

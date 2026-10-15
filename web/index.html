@@ -56,15 +56,21 @@
         <div id="dWins" class="wins"></div>
       </section>
       <section class="panel zoom">
-        <div id="range" class="mono small muted"></div>
-        <div class="zrow">
-          <span class="small muted">Span</span>
-          <input id="span" type="range" min="2" max="48" step="any">
-          <span id="spanText" class="mono small"></span>
-          <button id="full" class="btn small">Full</button>
+        <div class="zgrid">
+          <span class="zl">Span</span>
+          <div id="range" class="mono small muted"></div>
+          <span class="zl">Zoom</span>
+          <div class="zrow">
+            <input id="span" type="range" min="2" max="48" step="any">
+            <span id="spanText" class="mono small"></span>
+            <button id="full" class="btn small">Full</button>
+          </div>
+          <span class="zl">SNR</span>
+          <div class="zsnr">
+            <div class="legend"></div>
+            <div class="legendText mono"><span>0</span><span>10</span><span>20</span><span>30 dB</span></div>
+          </div>
         </div>
-        <div class="legend"></div>
-        <div class="legendText mono"><span>0</span><span>10</span><span>20</span><span>30 dB</span></div>
       </section>
     </aside>
   </main>
