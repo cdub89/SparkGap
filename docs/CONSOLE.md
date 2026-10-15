@@ -110,8 +110,10 @@ when the page itself was opened from a loopback address on the feed's port.
 ## Using it
 
 - Drag or two-finger drag pans the waterfall; Ctrl+scroll or a pinch zooms; the
-  scroll bar beside it moves through the receiver's span. The Span slider and
-  Full button set the width.
+  scroll bar beside it moves through the receiver's span.
+- The panel under the decoded text: Zoom sets the width shown (Full shows the
+  whole receiver), Span is the range on screen, and SNR is the waterfall's
+  colour scale.
 - Click a trace or a call to see its decoded windows. Ctrl+F searches calls,
   decoded text and frequencies.
 - Window size, position and theme are kept between runs.
@@ -132,7 +134,8 @@ Shared, and kept the same:
   same values.
 - Layout, theme tokens (`t` in `Main.qml`, `:root` in `style.css`), the
   waterfall palette (dark in both themes), header glyphs and fonts.
-- Call ladder, bubbles, decoded windows, search, status bar and zoom.
+- Call ladder, bubbles, decoded windows, search, status bar, and the zoom
+  panel (Zoom, Span and SNR rows).
 - Settings: demo, connections, the read-only spot rule, validation and call
   source, at 480 px.
 - Demo mode: the same made-up signals; turning it on only switches the view.
