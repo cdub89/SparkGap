@@ -955,10 +955,23 @@ function renderDetail() {
   $("dNote").hidden = !(d && d.note);
   $("dNote").textContent = d ? d.note : "";
   // both decodes of each window: wide filter on top, narrow dimmed
-  $("dWins").innerHTML = (d ? d.windows : []).map(r => `<div class="win"><span class="t">${r.utc}</span><div class="x">`
+  setWins((d ? d.windows : []).map(r => `<div class="win"><span class="t">${r.utc}</span><div class="x">`
     + `<span>${r.html}</span>${r.altHtml ? `<span class="alt">${r.altHtml}</span>` : ""}`
     + `<span class="c">${r.altHtml ? `${rateName(r.rate)} ${costText(r.cost)}  ·  ${rateName(r.altRate)} ${costText(r.altCost)}` : "cost " + costText(r.cost)}</span>`
-    + "</div></div>").join("");
+    + "</div></div>").join(""));
+}
+
+// the decoded text keeps a selection: new windows wait until it is copied and cleared
+let winsShown = "", winsWaiting = null;
+function selectingWins() {
+  const sel = document.getSelection();
+  return !!sel && !sel.isCollapsed && $("dWins").contains(sel.anchorNode);
+}
+function setWins(html) {
+  if (html === winsShown) { winsWaiting = null; return; }
+  if (selectingWins()) { winsWaiting = html; return; }
+  winsShown = html; winsWaiting = null;
+  $("dWins").innerHTML = html;
 }
 
 function renderStatus() {
@@ -1097,6 +1110,7 @@ function bindInput() {
     const m = e.target.closest(".match");
     if (m) { e.preventDefault(); goTo(app.matches[Number(m.dataset.n)]); }
   };
+  document.addEventListener("selectionchange", () => { if (winsWaiting !== null && !selectingWins()) setWins(winsWaiting); });
   document.addEventListener("keydown", e => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") { e.preventDefault(); search.focus(); search.select(); }
     else if (e.key === "Escape" && !$("modal").hidden) closeSettings();
