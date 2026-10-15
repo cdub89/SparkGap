@@ -146,3 +146,48 @@ def test_malformed_spectrum_rows_ignored(data: bytes) -> None:
     good = SPECTRUM_HEADER.pack(1, 0.0, 7.0e6, 50.0, 0.25, 4) + bytes(4)
     inst._on_binary(good)
     assert inst.n_bins == 4 and len(inst.pending) == 1
+
+
+def test_spot_on_selection_refreshes_detail() -> None:
+    from backend import Instance
+    from PySide6.QtCore import QCoreApplication
+
+    app = QCoreApplication.instance() or QCoreApplication([])  # noqa: F841
+    inst = Instance("ws://127.0.0.1:9/feed")
+    inst._on_text('{"type": "window", "khz": 7021.2, "text": "CQ W1AW W1AW", "utc": 1.0}')
+    inst.select(7021.2, "W1AW")
+    assert inst.detail["spotted"] is False
+    seen = []
+    inst.detailChanged.connect(lambda: seen.append(inst.detail["spotted"]))
+    inst._on_text('{"type": "spot", "khz": 7021.2, "call": "W1AW", "utc": 2.0}')
+    assert seen == [True]
+
+
+def test_hello_forgets_recent_text() -> None:
+    from backend import Instance
+    from PySide6.QtCore import QCoreApplication
+
+    app = QCoreApplication.instance() or QCoreApplication([])  # noqa: F841
+    inst = Instance("ws://127.0.0.1:9/feed")
+    for t in (1.0, 5.0):
+        inst._on_text(f'{{"type": "window", "khz": 7021.2, "text": "CQ W1AW W1AW", "utc": {t}}}')
+    assert inst.guess_call(7021.2) == "W1AW"
+    inst._on_text('{"type": "hello", "v": 1}')  # a reconnect: the server's state may be new
+    assert inst.guess_call(7021.2) == ""
+
+
+def test_demo_is_a_view(tmp_path: Path) -> None:
+    from backend import Console
+    from PySide6.QtCore import QCoreApplication
+
+    app = QCoreApplication.instance() or QCoreApplication([])  # noqa: F841
+    store = QSettings(str(tmp_path / "c.ini"), QSettings.Format.IniFormat)
+    c = Console([("ws://127.0.0.1:9/feed", "")], store)
+    server = c.current
+    c.setDemo(True)
+    assert c.demo and c.current.demo and c.current is not server
+    assert server in c.instances and not server.closed  # still connected behind the demo
+    c._save()
+    assert load_feeds(store) == [("ws://127.0.0.1:9/feed", "")]  # demo is never saved
+    c.setDemo(False)
+    assert not c.demo and c.current is server and len(c.instances) == 1

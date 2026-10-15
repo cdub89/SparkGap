@@ -47,27 +47,27 @@ ApplicationWindow {
     // ---- theme tokens ----
     QtObject {
         id: t
-        readonly property color bg:      win.dark ? "#0b0f13" : "#eef1f3"
-        readonly property color surface: win.dark ? "#11171d" : "#ffffff"
-        readonly property color sunken:  win.dark ? "#0d1318" : "#e4e9ec"
-        readonly property color line:    win.dark ? "#1f2a33" : "#d3dadf"
+        readonly property color bg:      win.dark ? "#0b0f13" : "#d9dee2"
+        readonly property color surface: win.dark ? "#11171d" : "#e9ecef"
+        readonly property color sunken:  win.dark ? "#0d1318" : "#dde2e6"
+        readonly property color line:    win.dark ? "#1f2a33" : "#c4ccd2"
         readonly property color fg:      win.dark ? "#dbe4ea" : "#16202a"
-        readonly property color muted:   win.dark ? "#8796a2" : "#5b6874"
-        readonly property color faint:   win.dark ? "#5c6a75" : "#8a96a0"
+        readonly property color muted:   win.dark ? "#8796a2" : "#56636e"
+        readonly property color faint:   win.dark ? "#5c6a75" : "#76838e"
         readonly property color accent:  win.dark ? "#f3a640" : "#b55f00"
         readonly property color good:    win.dark ? "#4fc28a" : "#1f7a4d"
         readonly property color bad:     win.dark ? "#ff6b5a" : "#c0392b"
-        readonly property var wf: win.dark
-            ? ["#070b0f", "#10263a", "#1f5fa8", "#19b3c4", "#4cc76a", "#f2c94c", "#ff6b3d"]
-            : ["#f7f9fa", "#d5dee4", "#3b6fd0", "#139aa8", "#2f9e55", "#d9a21b", "#d9482b"]
+        // the waterfall keeps the dark palette in both themes
+        readonly property var wf: ["#070b0f", "#10263a", "#1f5fa8", "#19b3c4", "#4cc76a", "#f2c94c", "#ff6b3d"]
+        readonly property color wfMark: "#f3a640"  // bubbles and the selection line on the waterfall
         readonly property string sans: "IBM Plex Sans"
         readonly property string mono: "IBM Plex Mono"
         readonly property string display: "Sora"
         readonly property var zero: ({ "zero": 1 })  // slashed zero, so 0 never reads as O in a call
-        onWfChanged: win.applyColors()
+        onAccentChanged: win.applyColors()
     }
     function applyColors() {
-        wf.setColors(t.wf, t.accent)
+        wf.setColors(t.wf, t.wfMark)
         if (inst) inst.setAccent(t.accent)
     }
     onInstChanged: { applyColors(); selectedKhz = -1; wf.setSelected(-1) }
@@ -102,6 +102,32 @@ ApplicationWindow {
                     }
                 }
             }
+        }
+    }
+
+    // thin scroll bar with small arrows, as the browser draws it (scrollbar-width: thin in web/style.css)
+    component ThinBar: ScrollBar {
+        id: tb
+        width: 11; padding: 2; minimumSize: 0.04
+        orientation: Qt.Vertical; policy: ScrollBar.AlwaysOn
+        background: Rectangle { color: t.sunken }
+        contentItem: Rectangle { implicitWidth: 7; radius: 3.5; color: tb.pressed ? t.fg : tb.hovered ? t.muted : t.faint }
+    }
+    component BarArrow: Rectangle {
+        id: ba
+        property int dir: 1  // +1 up, -1 down
+        signal stepped()
+        width: 11; height: 12; color: t.sunken
+        Text {
+            anchors.centerIn: parent; text: ba.dir > 0 ? "▲" : "▼"; font.pixelSize: 7
+            color: tap.pressed ? t.fg : hov.hovered ? t.muted : t.faint
+        }
+        HoverHandler { id: hov }
+        TapHandler { id: tap; onPressedChanged: if (pressed) ba.stepped() }
+        Timer {  // repeats while held
+            interval: 350; repeat: true; running: tap.pressed
+            onTriggered: { interval = 80; ba.stepped() }
+            onRunningChanged: if (!running) interval = 350
         }
     }
 
@@ -152,7 +178,7 @@ ApplicationWindow {
             // station line: set once per station, informative only
             Text {
                 readonly property var c: inst && inst.info.config ? inst.info.config : ({})
-                visible: !!c.callsign
+                visible: !!c.callsign && !inst.demo  // demo: the status says DEMO MODE
                 text: [c.callsign,
                        c.flex_daxiq_channel ? "DAX IQ " + c.flex_daxiq_channel : "",
                        c.sample_rate ? (c.sample_rate / 1000) + " kHz" : "",
@@ -167,8 +193,8 @@ ApplicationWindow {
                     color: !inst ? t.faint : inst.state === "live" ? t.good : inst.state === "connecting" ? t.accent : t.bad
                 }
                 Text {
-                    color: t.muted; font.pixelSize: 13
-                    text: !inst ? "No feed" : (inst.state === "live" ? "Live" : inst.state === "connecting" ? "Connecting"
+                    color: t.muted; font.family: t.mono; font.features: t.zero; font.pixelSize: 12
+                    text: !inst ? "No feed" : inst.demo ? "DEMO MODE" : (inst.state === "live" ? "Live" : inst.state === "connecting" ? "Connecting"
                                             : inst.state === "refused" ? "Refused" : "Reconnecting")
                           + "  " + inst.url.replace("ws://", "").replace("wss://", "").replace("/feed", "")
                           + (inst && inst.state !== "live" && inst.error ? "  ·  " + inst.error : "")
@@ -177,7 +203,7 @@ ApplicationWindow {
             Rectangle {
                 id: gear
                 width: 32; height: 32; radius: 8; color: settings.visible ? t.sunken : t.surface; border.color: t.line
-                Text { anchors.centerIn: parent; text: "⚙"; color: t.fg; font.pixelSize: 16 }
+                Text { anchors.centerIn: parent; text: "⚙"; color: t.fg; font.pixelSize: 23 }
                 MouseArea {
                     anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                     onClicked: settings.visible ? settings.close() : settings.open()
@@ -185,7 +211,13 @@ ApplicationWindow {
             }
             Rectangle {
                 width: 32; height: 32; radius: 8; color: t.surface; border.color: t.line
-                Text { anchors.centerIn: parent; text: "◐"; color: t.fg; font.pixelSize: 15 }
+                Rectangle {  // half-filled circle: none of the bundled fonts has ◐
+                    anchors.centerIn: parent; width: 17; height: 17; radius: 8.5; color: "transparent"; border.color: t.fg; border.width: 2
+                    Item {
+                        x: 8.5; width: 8.5; height: 17; clip: true
+                        Rectangle { x: -8.5; width: 17; height: 17; radius: 8.5; color: t.fg }
+                    }
+                }
                 MouseArea {
                     anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                     onClicked: win.themeOverride = win.dark ? "light" : "dark"
@@ -276,51 +308,29 @@ ApplicationWindow {
                     }
 
                     // whole receiver span: the handle is the part on screen
-                    ScrollBar {
+                    ThinBar {
                         id: fscroll
                         readonly property real full: inst ? inst.highKhz - inst.lowKhz : 0
                         readonly property real span: wf.highKhz - wf.lowKhz
                         anchors.right: parent.right; anchors.top: upArrow.bottom; anchors.bottom: downArrow.top
                         anchors.rightMargin: 1
-                        width: 14
-                        orientation: Qt.Vertical
-                        policy: ScrollBar.AlwaysOn
-                        minimumSize: 0.04
                         Binding on size { when: !fscroll.pressed; value: fscroll.full > 0 ? fscroll.span / fscroll.full : 1 }
                         Binding on position { when: !fscroll.pressed; value: fscroll.full > 0 ? (inst.highKhz - wf.highKhz) / fscroll.full : 0 }
                         onPositionChanged: if (pressed && full > 0) {
                             const hi = inst.highKhz - position * full
                             wf.setView(hi - span, hi)
                         }
-                        background: Rectangle { color: t.sunken; Rectangle { width: 1; height: parent.height; color: t.line } }
-                        contentItem: Rectangle {
-                            implicitWidth: 8; radius: 4
-                            color: fscroll.pressed ? t.accent : fscroll.hovered ? Qt.alpha(t.accent, 0.7) : t.faint
-                        }
                     }
-
-                    // nudge arrows at the scroll bar's ends: a tenth of the view per step, repeating while held
-                    component ScrollArrow: Rectangle {
-                        id: arrow
-                        property int dir: 1  // +1 up (higher kHz), -1 down
-                        width: 14; height: 16; color: t.sunken
-                        anchors.right: parent.right; anchors.rightMargin: 1
-                        Rectangle { width: 1; height: parent.height; color: t.line }
-                        Text {
-                            anchors.centerIn: parent; text: arrow.dir > 0 ? "▲" : "▼"; font.pixelSize: 8
-                            color: tap.pressed ? t.accent : hov.hovered ? t.fg : t.faint
-                        }
-                        function step() { const d = (wf.highKhz - wf.lowKhz) / 10 * dir; wf.setView(wf.lowKhz + d, wf.highKhz + d) }
-                        HoverHandler { id: hov; cursorShape: Qt.PointingHandCursor }
-                        TapHandler { id: tap; onPressedChanged: if (pressed) arrow.step() }
-                        Timer {
-                            interval: 350; repeat: true; running: tap.pressed
-                            onTriggered: { interval = 80; arrow.step() }
-                            onRunningChanged: if (!running) interval = 350
-                        }
+                    Rectangle { anchors.right: fscroll.left; anchors.top: parent.top; anchors.bottom: parent.bottom; anchors.margins: 1; width: 1; color: t.line }
+                    // a tenth of the view per step
+                    BarArrow {
+                        id: upArrow; dir: 1; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 1
+                        onStepped: { const d = (wf.highKhz - wf.lowKhz) / 10; wf.setView(wf.lowKhz + d, wf.highKhz + d) }
                     }
-                    ScrollArrow { id: upArrow; dir: 1; anchors.top: parent.top; anchors.topMargin: 1 }
-                    ScrollArrow { id: downArrow; dir: -1; anchors.bottom: parent.bottom; anchors.bottomMargin: 1 }
+                    BarArrow {
+                        id: downArrow; dir: -1; anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: 1
+                        onStepped: { const d = (wf.highKhz - wf.lowKhz) / 10; wf.setView(wf.lowKhz - d, wf.highKhz - d) }
+                    }
 
                     // bubbles at the waterfall's leading edge: every signal SparkGap is decoding,
                     // filled once spotted
@@ -334,8 +344,8 @@ ApplicationWindow {
                             x: wf.x + wf.width - width - 4
                             y: ladder.y + ladder.yOf(modelData.khz) - height / 2
                             width: 10; height: 10; radius: 5
-                            color: modelData.spot ? t.accent : t.surface
-                            border.color: t.accent; border.width: 1.5
+                            color: modelData.spot ? t.wfMark : t.wf[0]
+                            border.color: t.wfMark; border.width: 1.5
                         }
                     }
 
@@ -441,41 +451,57 @@ ApplicationWindow {
                             Layout.fillWidth: true; Layout.margins: 16; Layout.topMargin: 6
                             text: detailPane.d.note || ""; wrapMode: Text.WordWrap; color: t.muted; font.pixelSize: 12
                         }
-                        ListView {
-                            Layout.fillWidth: true; Layout.fillHeight: true; Layout.margins: 16; Layout.topMargin: 6
-                            clip: true; spacing: 8
-                            model: detailPane.d.windows || []
-                            // both decodes of each window: wide filter on top, narrow dimmed
-                            delegate: RowLayout {
-                                required property var modelData
-                                width: ListView.view.width; spacing: 10
-                                Column {
-                                    Layout.alignment: Qt.AlignTop
-                                    Text { text: modelData.utc; color: t.faint; font.family: t.mono; font.features: t.zero; font.pixelSize: 11 }
-                                }
-                                Column {
-                                    Layout.fillWidth: true; spacing: 3
-                                    Text {
-                                        width: parent.width; text: modelData.html; textFormat: Text.RichText
-                                        wrapMode: Text.WrapAnywhere; color: t.fg; font.family: t.mono; font.features: t.zero; font.pixelSize: 11
+                        Item {
+                            Layout.fillWidth: true; Layout.fillHeight: true
+                            Layout.leftMargin: 16; Layout.rightMargin: 2; Layout.topMargin: 6; Layout.bottomMargin: 16
+                            readonly property bool overflows: winList.contentHeight > winList.height
+                            ListView {
+                                id: winList
+                                anchors.fill: parent; anchors.rightMargin: 13
+                                clip: true; spacing: 8
+                                ScrollBar.vertical: winBar
+                                model: detailPane.d.windows || []
+                                // both decodes of each window: wide filter on top, narrow dimmed
+                                delegate: RowLayout {
+                                    required property var modelData
+                                    width: ListView.view.width; spacing: 10
+                                    Column {
+                                        Layout.alignment: Qt.AlignTop
+                                        Text { text: modelData.utc; color: t.faint; font.family: t.mono; font.features: t.zero; font.pixelSize: 11 }
                                     }
-                                    Text {
-                                        visible: !!modelData.alt_html
-                                        width: parent.width; text: modelData.alt_html; textFormat: Text.RichText
-                                        wrapMode: Text.WrapAnywhere; color: t.muted; opacity: 0.75
-                                        font.family: t.mono; font.features: t.zero; font.pixelSize: 11
-                                    }
-                                    Text {
-                                        // top reading first; "no fit" is the decoder's cost 999
-                                        function c(v) { return v === null || v === undefined ? "-" : v >= 999 ? "no fit" : v.toFixed(2) }
-                                        function n(r) { return r === 100 ? "narrow" : r === 200 ? "wide" : "cost" }
-                                        width: parent.width; wrapMode: Text.WordWrap
-                                        text: modelData.alt_html ? n(modelData.rate) + " " + c(modelData.cost) + "  ·  " + n(modelData.alt_rate) + " " + c(modelData.alt_cost)
-                                                                 : "cost " + c(modelData.cost)
-                                        color: t.faint; font.family: t.mono; font.features: t.zero; font.pixelSize: 10
+                                    Column {
+                                        Layout.fillWidth: true; spacing: 3
+                                        Text {
+                                            width: parent.width; text: modelData.html; textFormat: Text.RichText
+                                            wrapMode: Text.WrapAnywhere; color: t.fg; font.family: t.mono; font.features: t.zero; font.pixelSize: 11
+                                        }
+                                        Text {
+                                            visible: !!modelData.alt_html
+                                            width: parent.width; text: modelData.alt_html; textFormat: Text.RichText
+                                            wrapMode: Text.WrapAnywhere; color: t.muted; opacity: 0.75
+                                            font.family: t.mono; font.features: t.zero; font.pixelSize: 11
+                                        }
+                                        Text {
+                                            // top reading first; "no fit" is the decoder's cost 999
+                                            function c(v) { return v === null || v === undefined ? "-" : v >= 999 ? "no fit" : v.toFixed(2) }
+                                            function n(r) { return r === 100 ? "narrow" : r === 200 ? "wide" : "cost" }
+                                            width: parent.width; wrapMode: Text.WordWrap
+                                            text: modelData.alt_html ? n(modelData.rate) + " " + c(modelData.cost) + "  ·  " + n(modelData.alt_rate) + " " + c(modelData.alt_cost)
+                                                                     : "cost " + c(modelData.cost)
+                                            color: t.faint; font.family: t.mono; font.features: t.zero; font.pixelSize: 10
+                                        }
                                     }
                                 }
                             }
+                            function scrollBy(dy) {
+                                winList.contentY = Math.max(0, Math.min(winList.contentHeight - winList.height, winList.contentY + dy))
+                            }
+                            BarArrow { id: winUp; visible: parent.overflows; dir: 1; anchors.right: parent.right; anchors.top: parent.top; onStepped: parent.scrollBy(-40) }
+                            ThinBar {
+                                id: winBar; visible: parent.overflows
+                                anchors.right: parent.right; anchors.top: winUp.bottom; anchors.bottom: winDown.top
+                            }
+                            BarArrow { id: winDown; visible: parent.overflows; dir: -1; anchors.right: parent.right; anchors.bottom: parent.bottom; onStepped: parent.scrollBy(40) }
                         }
                     }
                 }
@@ -577,16 +603,29 @@ ApplicationWindow {
     Popup {
         id: settings
         anchors.centerIn: Overlay.overlay
-        width: 400; padding: 18
+        width: 480; padding: 18
         modal: true; dim: true
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         Overlay.modal: Rectangle { color: Qt.alpha("#000000", win.dark ? 0.55 : 0.35) }
         readonly property var c: inst && inst.info.config ? inst.info.config : ({})
-        readonly property var band: inst && inst.info.bands && inst.info.bands.length ? inst.info.bands[0] : null
         background: Rectangle { radius: 10; color: t.surface; border.color: t.line }
         contentItem: ColumnLayout {
             spacing: 14
             Text { text: "Settings"; color: t.fg; font.family: t.display; font.pixelSize: 15; font.weight: Font.DemiBold }
+            Rectangle {
+                visible: console_.demo
+                Layout.fillWidth: true; Layout.topMargin: -6; implicitHeight: hintTxt.implicitHeight + 16; radius: 8; color: t.sunken
+                Text {
+                    id: hintTxt; x: 10; width: parent.width - 20; anchors.verticalCenter: parent.verticalCenter; wrapMode: Text.WordWrap
+                    text: "Demo mode is on. Turn it off to add or connect to a SparkGap server."; color: t.muted; font.pixelSize: 12
+                }
+            }
+            RowLayout {
+                spacing: 10
+                Text { Layout.preferredWidth: 92; text: "DEMO"; color: t.muted; font.pixelSize: 11; font.letterSpacing: 1 }
+                Seg { labels: ["Off", "On"]; current: console_.demo ? 1 : 0; onPicked: (i) => console_.setDemo(i === 1) }
+                Text { text: "Made-up signals instead of your servers."; color: t.faint; font.pixelSize: 11 }
+            }
             component Setting: ColumnLayout {
                 property alias label: lbl.text
                 default property alias control: holder.data
@@ -611,11 +650,12 @@ ApplicationWindow {
                 background: Rectangle { radius: 8; color: t.sunken; border.color: parent.activeFocus ? t.accent : t.line }
             }
             Setting {
+                visible: !console_.demo
                 label: "CONNECTIONS"
                 // the SparkGap servers this console watches, kept between runs; a click on a row shows that one
                 ColumnLayout {
                     id: conns
-                    width: 364; spacing: 4
+                    width: 444; spacing: 4
                     property int editing: -2  // -2 no form, -1 adding, else the row being edited
                     property string err: ""
                     function edit(i) {
@@ -633,6 +673,7 @@ ApplicationWindow {
                             required property int index
                             required property var modelData
                             readonly property bool cur: index === console_.currentIndex
+                            visible: !modelData.demo  // demo is the toggle above, not a server
                             Layout.fillWidth: true; height: 34; radius: 8
                             color: cur ? t.sunken : rowHov.hovered ? Qt.alpha(t.sunken, 0.5) : "transparent"
                             border.color: cur ? t.line : "transparent"
@@ -660,7 +701,7 @@ ApplicationWindow {
                         }
                     }
                     Text {
-                        visible: console_.instances.length === 0 && conns.editing === -2
+                        visible: !console_.instances.some(i => !i.demo) && conns.editing === -2
                         text: "No servers yet."; color: t.muted; font.pixelSize: 12
                     }
                     ColumnLayout {
@@ -685,50 +726,29 @@ ApplicationWindow {
                     Btn { visible: conns.editing === -2; Layout.topMargin: 4; text: "+ Add server"; onClicked: conns.edit(-1) }
                 }
             }
-            Setting {
-                label: "BAND CENTRE"
-                Text {
-                    text: settings.band ? settings.band.center_khz.toFixed(1) + " kHz   (" + (settings.band.center_khz - settings.band.span_khz / 2).toFixed(0)
-                          + " to " + (settings.band.center_khz + settings.band.span_khz / 2).toFixed(0) + ")" : "-"
-                    color: t.fg; font.family: t.mono; font.features: t.zero; font.pixelSize: 13
+            GridLayout {
+                columns: 2; columnSpacing: 10; rowSpacing: 8
+                component GridLabel: Text { Layout.preferredWidth: 92; color: t.muted; font.pixelSize: 11; font.letterSpacing: 1 }
+                GridLabel { text: "SPOT RULE" }
+                Seg { readOnly: true; labels: ["off", "on"]; current: settings.c.spot_rule === "repeat" ? 1 : settings.c.spot_rule ? 0 : -1 }
+                GridLabel { text: "VALIDATION" }
+                Seg { readOnly: true; labels: ["off", "permissive", "normal", "aggressive"]; current: labels.indexOf(settings.c.spot_validation || (settings.c.spot_rule ? "off" : "")) }
+                GridLabel { text: "CALL SOURCE" }
+                Seg { readOnly: true; labels: ["SCP", "RBN", "RBN + SKCC"]; current: ["scp", "rbn", "rbn+skcc"].indexOf(settings.c.spot_validation_calls) }
+                Item { width: 1; height: 1 }
+                Text { text: "From the selected server's config."; color: t.faint; font.pixelSize: 11 }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Text { text: build_; color: t.faint; font.family: t.mono; font.features: t.zero; font.pixelSize: 11 }
+                Item { Layout.fillWidth: true }
+                Rectangle {
+                    width: closeTxt.implicitWidth + 28; height: 30; radius: 8
+                    color: closeHov.hovered ? t.sunken : "transparent"; border.color: t.line
+                    Text { id: closeTxt; anchors.centerIn: parent; text: "Close"; color: t.fg }
+                    HoverHandler { id: closeHov; cursorShape: Qt.PointingHandCursor }
+                    TapHandler { onTapped: settings.close() }
                 }
-            }
-            Setting {
-                label: "DECODER"
-                Seg { readOnly: true; labels: ["itila", "itila2"]; current: labels.indexOf(settings.c.cw_decoder) }
-            }
-            Setting {
-                label: "SPOT RULE"
-                // one rule exists: "on" is spot_rule "repeat"
-                Seg { readOnly: true; labels: ["off", "on"]; current: settings.c.spot_rule === "repeat" ? 1 : 0 }
-            }
-            Setting {
-                label: "VALIDATION"
-                Seg { readOnly: true; labels: ["off", "permissive", "normal", "aggressive"]; current: labels.indexOf(settings.c.spot_validation || "off") }
-            }
-            Setting {
-                label: "KNOWN CALLS"
-                Seg {
-                    readOnly: true; labels: ["SCP", "RBN", "RBN + SKCC"]
-                    current: ["scp", "rbn", "rbn+skcc"].indexOf(settings.c.spot_validation_calls)
-                }
-            }
-            Setting {
-                label: "CONSOLE BUILD"
-                Text { text: build_; color: t.fg; font.family: t.mono; font.features: t.zero; font.pixelSize: 13 }
-            }
-            Text {
-                Layout.fillWidth: true; wrapMode: Text.WordWrap
-                text: "Read from the running SparkGap. Changing them comes with the launcher, which restarts SparkGap with the new values."
-                color: t.faint; font.pixelSize: 11
-            }
-            Rectangle {
-                Layout.alignment: Qt.AlignRight
-                width: closeTxt.implicitWidth + 28; height: 30; radius: 8
-                color: closeHov.hovered ? t.sunken : "transparent"; border.color: t.line
-                Text { id: closeTxt; anchors.centerIn: parent; text: "Close"; color: t.fg }
-                HoverHandler { id: closeHov; cursorShape: Qt.PointingHandCursor }
-                TapHandler { onTapped: settings.close() }
             }
         }
     }

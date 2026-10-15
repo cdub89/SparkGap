@@ -7,6 +7,7 @@ import html
 import json
 import math
 import os
+import random
 import re
 import struct
 import time
@@ -59,6 +60,37 @@ GUESS_WINDOWS = 4  # recent windows searched for a repeated call
 PEAK_LOOK_S = 10.0  # a click snaps to the strongest trace seen this recently
 PEAK_MIN_DB = 8.0
 TRACE_DUTY = 0.15  # share of time a trace must be up to earn a bubble (noise rarely is)
+DEMO_URL = "demo"
+
+# demo: made-up signals, the same as web/app.js
+MORSE = {
+    "A": ".-", "B": "-...", "C": "-.-.", "D": "-..", "E": ".", "F": "..-.", "G": "--.", "H": "....",
+    "I": "..", "J": ".---", "K": "-.-", "L": ".-..", "M": "--", "N": "-.", "O": "---", "P": ".--.",
+    "Q": "--.-", "R": ".-.", "S": "...", "T": "-", "U": "..-", "V": "...-", "W": ".--", "X": "-..-",
+    "Y": "-.--", "Z": "--..", "0": "-----", "1": ".----", "2": "..---", "3": "...--", "4": "....-",
+    "5": ".....", "6": "-....", "7": "--...", "8": "---..", "9": "----.", "/": "-..-.",
+}
+# (kHz, wpm, SNR dB, sent text, spotted); no text: a carrier with nothing decoded
+DEMO_SIGNALS = [
+    (7016.8, 21, 9, "TU 5NN TX", False),
+    (7019.3, 25, 14, "CQ CQ DE N3AD N3AD K", True),
+    (7021.2, 22, 18, "CQ CQ DE AF4PX AF4PX K", True),
+    (7024.6, 26, 23, "CQ CQ DE AC5P AC5P K", False),
+    (7027.9, 30, 16, "CQ NA4J NA4J TEST", True),
+    (7031.3, 18, 27, "CQ CQ CQ DE K4WLO K4WLO K", True),
+    (7033.0, 32, 12, "TEST K3WW K3WW", True),
+    (7036.4, 20, 20, "CQ CQ DE WB5NHH WB5NHH PSE K", False),
+    (7039.8, 24, 15, "CQ DE W3RJ W3RJ K", True),
+    (7041.5, 27, 11, "CQ N4ZZ N4ZZ", False),
+    (7046.2, 16, 19, "GM OM UR RST 579 579 NAME BOB BOB QTH OH", False),
+    (7052.7, 0, 13, "", False),
+    (7055.6, 19, 21, "CQ SKCC DE KD8QWX KD8QWX K", True),
+    (7061.0, 23, 8, "R R TU 73 EE", False),
+]
+DEMO_BAND = {"name": "40m", "center_khz": 7048.0, "span_khz": 96.0}
+DEMO_BINS = 2048
+DEMO_SUBSTEPS = 4  # keying sampled within each row, so edges blend
+DEMO_DB_UNIT = 0.25
 
 
 class Instance(QObject):
@@ -75,6 +107,7 @@ class Instance(QObject):
         super().__init__(parent)
         self._url = url
         self._token = token
+        self.source: Demo | None = None
         self._state = "connecting"
         self._error = ""
         self.hello: dict[str, Any] = {}
@@ -122,6 +155,10 @@ class Instance(QObject):
     @Slot()
     def open(self) -> None:
         self.refused = ""
+        if self.is_demo:
+            self.source = Demo(self)
+            self._set_state("live")
+            return
         req = QNetworkRequest(QUrl(self._url))
         req.setRawHeader(b"Sec-WebSocket-Protocol", PROTOCOL.encode())
         if self._token:
@@ -137,6 +174,8 @@ class Instance(QObject):
     def close(self) -> None:
         self.closed = True
         self.retry_timer.stop()
+        if self.source:
+            self.source.stop()
         self.ws.close()
 
     def _on_connected(self) -> None:
@@ -187,7 +226,7 @@ class Instance(QObject):
         kind = m.get("type")
         if kind == "hello":
             self.hello = m
-            self.windows, self.spots, self.signals = [], {}, {}
+            self.windows, self.spots, self.signals, self.recent = [], {}, {}, {}
             self.changed.emit()
         elif kind == "snapshot":
             for w in m.get("windows", []):
@@ -207,6 +246,8 @@ class Instance(QObject):
             self.spots[m["call"]] = m
             if first:
                 self._relayout()
+            if self._matches_selection(m["khz"]):
+                self.detailChanged.emit()  # HEARD becomes SPOTTED
         elif kind == "status":
             self._status = m
             self.statusChanged.emit()
@@ -250,7 +291,7 @@ class Instance(QObject):
         if not all(math.isfinite(x) for x in (utc, first, hz, unit)) or hz <= 0 or unit <= 0:
             return
         row = np.frombuffer(data, dtype=np.uint8, count=n, offset=SPECTRUM_HEADER.size)
-        if n != self.n_bins or first != self.first_hz:
+        if (n, first, hz, unit) != (self.n_bins, self.first_hz, self.hz_per_bin, self.db_unit):
             self.first_hz, self.hz_per_bin, self.n_bins, self.db_unit = first, hz, n, unit
             self.ring = np.zeros((n, HISTORY_COLS), dtype=np.uint8)
             self.head = self.cols = self.total = 0
@@ -322,13 +363,23 @@ class Instance(QObject):
     def url(self) -> str:
         return self._url
 
+    @property
+    def is_demo(self) -> bool:
+        return self._url == DEMO_URL
+
+    demo = Property(bool, lambda self: self.is_demo, constant=True)
+
     @Property(str, notify=changed)
     def title(self) -> str:
+        if self.is_demo:
+            return "Demo"
         bands = self.hello.get("bands") or []
-        if not bands:
-            return self._url.split("//")[-1].split("/")[0]
-        name = str(bands[0]["name"])
-        return f"{bands[0]['center_khz']:g} kHz" if name.isdigit() else name
+        band = ""
+        if bands:
+            name = str(bands[0]["name"])
+            band = f"{bands[0]['center_khz']:g} kHz" if name.isdigit() else name
+        parts = [p for p in (self.hello.get("host"), band) if p]
+        return " · ".join(parts) or self._url.split("//")[-1].split("/")[0]
 
     @Property(dict, notify=changed)
     def info(self) -> dict[str, Any]:
@@ -544,6 +595,162 @@ class Instance(QObject):
             "windows": rows,
             "note": note,
         }
+
+
+def keying(text: str, wpm: float) -> list[tuple[int, float]]:
+    """(on, seconds) for one sending of text, then a pause."""
+    u, out = 1.2 / wpm, []
+    for wi, word in enumerate(text.split(" ")):
+        if wi:
+            out.append((0, 7 * u))
+        for ci, ch in enumerate(word):
+            if ci:
+                out.append((0, 3 * u))
+            for ei, el in enumerate(MORSE.get(ch, "")):
+                if ei:
+                    out.append((0, u))
+                out.append((1, u if el == "." else 3 * u))
+    out.append((0, 2 + random.random() * 3))
+    return out
+
+
+def misread(text: str, rough: float) -> str:
+    """A decoded reading of sent text: mostly right, sometimes a split or a stray letter."""
+    swap = {"E": "I", "T": "M", "A": "W", "S": "H", "N": "D"}
+    words = []
+    for w in text.split(" "):
+        r = random.random()
+        if r < rough * 0.3 and len(w) > 2:
+            w = w[:2] + " " + w[2:]
+        elif r < rough * 0.5:
+            w = re.sub(r"[A-Z]", lambda m: swap.get(m.group(0), m.group(0)), w, count=1)
+        words.append(w)
+    return " ".join(words) + (" E" if random.random() < rough else "")
+
+
+class Demo(QObject):
+    """Made-up signals sent to an Instance as feed messages, so demo runs the live code."""
+
+    def __init__(self, inst: Instance) -> None:
+        super().__init__(inst)
+        self.inst = inst
+        self.start = time.time()
+        self.spots = 0
+        self.rng = np.random.default_rng()
+        self.hz_per_bin = DEMO_BAND["span_khz"] * 1000 / DEMO_BINS
+        self.first_hz = DEMO_BAND["center_khz"] * 1000 - DEMO_BAND["span_khz"] * 500
+        self.sigs = []
+        for khz, wpm, snr, text, spot in DEMO_SIGNALS:
+            k = keying(text, wpm) if text else [(1, 1.0)]
+            total = sum(d for _, d in k)
+            self.sigs.append({
+                "khz": khz, "wpm": wpm, "snr": snr, "text": text, "spot": spot, "k": k,
+                "total": total, "phase": random.random() * total,
+                "next": time.time() + 2 + random.random() * 8, "seen": 0, "spotted": False,
+            })
+        self._send({
+            "type": "hello", "v": FEED_VERSION, "call": "DEMO", "decoder": "itila2",
+            "config": {
+                "callsign": "DEMO", "cw_decoder": "itila2", "sample_rate": 96_000,
+                "flex_daxiq_channel": None, "telnet_port": 7300, "enable_ft8": False,
+                "spot_rule": "repeat", "spot_validation": "normal",
+                "spot_validation_calls": "rbn+skcc",
+            },
+            "bands": [DEMO_BAND],
+        })
+        self._send({"type": "snapshot", "signals": [], "windows": [], "spots": [], "status": None})
+        self.last_row = time.time()
+        self.timers = []
+        jobs = ((1000 // SPECTRUM_HZ, self._rows), (500, self._decode), (2000, self._status))
+        for ms, fn in jobs:
+            t = QTimer(self, interval=ms)
+            t.timeout.connect(fn)
+            t.start()
+            self.timers.append(t)
+
+    def stop(self) -> None:
+        for t in self.timers:
+            t.stop()
+
+    def _send(self, m: dict[str, Any]) -> None:
+        self.inst._on_text(json.dumps(m))
+
+    @staticmethod
+    def _keyed(s: dict[str, Any], t: float) -> int:
+        x = (t + s["phase"]) % s["total"]
+        for on, d in s["k"]:
+            if x < d:
+                return on
+            x -= d
+        return 0
+
+    def _rows(self) -> None:
+        # every row due since the last call, so a late timer still fills the waterfall
+        now, step = time.time(), 1 / SPECTRUM_HZ
+        t = max(self.last_row + step, now - 2)
+        while t <= now:
+            self._row(t)
+            t += step
+        self.last_row = t - step
+
+    def _row(self, t: float) -> None:
+        p = self.rng.exponential(size=(3, DEMO_BINS)).mean(axis=0)
+        db = 10 * np.log10(p + 1e-3) + 1.5  # dB over the floor, as the feed sends it
+        for s in self.sigs:
+            sub = 1 / (SPECTRUM_HZ * DEMO_SUBSTEPS)
+            on = sum(self._keyed(s, t - k * sub) for k in range(DEMO_SUBSTEPS))
+            if not on:
+                continue
+            qsb = 1.5 * math.sin(t * 0.7 + s["phase"])  # slow QSB; partial rows give soft edges
+            lvl = s["snr"] + qsb + 10 * math.log10(on / DEMO_SUBSTEPS)
+            pos = (s["khz"] * 1000 - self.first_hz) / self.hz_per_bin
+            b = int(pos)
+            f = pos - b
+            spread = (
+                (b - 1, lvl - 14), (b, lvl - 6 * f), (b + 1, lvl - 6 * (1 - f)), (b + 2, lvl - 14)
+            )
+            for i, v in spread:
+                if 0 <= i < DEMO_BINS:
+                    db[i] = max(db[i], v)
+        row = np.clip(db / DEMO_DB_UNIT, 0, 255).astype(np.uint8)
+        head = SPECTRUM_HEADER.pack(
+            FEED_VERSION, t, self.first_hz, self.hz_per_bin, DEMO_DB_UNIT, DEMO_BINS
+        )
+        self.inst._on_binary(head + row.tobytes())
+
+    def _decode(self) -> None:
+        now = time.time()
+        for s in self.sigs:
+            if not s["text"] or now < s["next"]:
+                continue
+            s["next"] = now + 5 + random.random() * 4
+            s["seen"] += 1
+            wpm = s["wpm"] + (random.random() - 0.5) * 2
+            snr = s["snr"] + (random.random() - 0.5) * 3
+            rough = max(0.05, 0.6 - s["snr"] / 40)
+            narrow = "" if random.random() < 0.08 else misread(s["text"], rough * 1.5)
+            base = {
+                "type": "window", "khz": s["khz"], "wpm": round(wpm, 1), "snr": round(snr, 1),
+                "utc": now,
+            }
+            narrow_cost = 0.5 + random.random() * 0.8 if narrow else NO_FIT
+            self._send({**base, "text": narrow, "cost": narrow_cost})
+            wide = misread(s["text"], rough)
+            self._send({**base, "text": wide, "cost": 0.2 + random.random() * 0.6})
+            if s["spot"] and not s["spotted"] and s["seen"] >= 2:
+                s["spotted"] = True
+                self.spots += 1
+                call = next(w for w in s["text"].split() if CALL_RE.match(w))
+                self._send({"type": "spot", "khz": s["khz"], "call": call, "snr": base["snr"],
+                            "wpm": round(wpm), "utc": now})
+
+    def _status(self) -> None:
+        self._send({
+            "type": "status", "cpu": 30 + random.randint(0, 12),
+            "rss_mb": 330 + random.randint(0, 4),
+            "bins": len(self.inst.signals) * 2 + 6, "spots": self.spots,
+            "uptime_s": round(time.time() - self.start), "utc": time.time(),
+        })
 
 
 QML_IMPORT_NAME = "SparkGap"
@@ -847,6 +1054,7 @@ class Console(QObject):
         self._store = store  # where the server list is kept; None keeps it in memory only
         self._instances = [Instance(u, t, self) for u, t in feeds]
         self._current = 0
+        self._back = 0  # the server shown before demo
         for i in self._instances:
             i.open()
         # instances not on screen still move their spectrum rows into history, so switching to
@@ -854,6 +1062,32 @@ class Console(QObject):
         self._bg = QTimer(self, interval=50)
         self._bg.timeout.connect(self._advance_background)
         self._bg.start()
+
+    @Property(bool, notify=instancesChanged)
+    def demo(self) -> bool:
+        return any(i.is_demo for i in self._instances)
+
+    @Slot(bool)
+    def setDemo(self, on: bool) -> None:  # noqa: N802
+        """Demo is a view: the servers stay connected and keep their history while it shows."""
+        if self._store is not None:
+            self._store.setValue("ui/demo", on)
+        at = next((n for n, i in enumerate(self._instances) if i.is_demo), -1)
+        if on and at < 0:
+            self._back = self._current
+            inst = Instance(DEMO_URL, "", self)
+            self._instances.append(inst)
+            inst.open()
+            self._current = len(self._instances) - 1
+        elif not on and at >= 0:
+            old = self._instances.pop(at)
+            old.close()
+            old.deleteLater()
+            self._current = min(self._back, max(0, len(self._instances) - 1))
+        else:
+            return
+        self.instancesChanged.emit()
+        self.currentChanged.emit()
 
     def _advance_background(self) -> None:
         for n, inst in enumerate(self._instances):
@@ -883,7 +1117,7 @@ class Console(QObject):
 
     def _save(self) -> None:
         if self._store is not None:
-            save_feeds(self._store, [i.feed for i in self._instances])
+            save_feeds(self._store, [i.feed for i in self._instances if not i.is_demo])
 
     @Slot(int, result="QVariantMap")
     def feedAt(self, i: int) -> dict[str, Any]:  # noqa: N802

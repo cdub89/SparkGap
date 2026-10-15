@@ -9,14 +9,18 @@ import os
 import socket
 import struct
 import time
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 import feed_server
 from feed_server import (
+    CLOSE_LOCKED_OUT,
+    CLOSE_WRONG_CODE,
     CODE_LENGTH,
     CODE_MINT_ALPHABET,
+    CODE_PROTOCOL,
     FEED_VERSION,
     LOCKOUT_S,
     LOCKOUT_TRIES,
@@ -84,7 +88,14 @@ def test_new_code_from_mint_alphabet() -> None:
 class WS:
     """Minimal test client."""
 
-    def __init__(self, port: int, token: str | None = None, path: str = "/feed") -> None:
+    def __init__(
+        self,
+        port: int,
+        token: str | None = None,
+        path: str = "/feed",
+        extra: list[str] | None = None,
+        protocols: str = PROTOCOL,
+    ) -> None:
         self.s = socket.create_connection(("127.0.0.1", port), timeout=3)
         key = base64.b64encode(os.urandom(16)).decode()
         hdr = [
@@ -94,7 +105,8 @@ class WS:
             "Connection: Upgrade",
             f"Sec-WebSocket-Key: {key}",
             "Sec-WebSocket-Version: 13",
-            f"Sec-WebSocket-Protocol: {PROTOCOL}",
+            f"Sec-WebSocket-Protocol: {protocols}",
+            *(extra or []),
         ]
         if token:
             hdr.append(f"Authorization: Bearer {token}")
@@ -370,3 +382,95 @@ def test_fragmented_message_accepted(feed: FeedServer) -> None:
     c.send(OP_PING, b"")  # control frames may come between fragments
     c.send(OP_CONT, b'"spectrum_hz":5}')
     wait_for(lambda: next(iter(feed.clients)).spectrum_hz == 5.0)
+
+
+def http_get(port: int, path: str) -> tuple[int, dict[str, str], bytes]:
+    s = socket.create_connection(("127.0.0.1", port), timeout=3)
+    s.sendall(f"GET {path} HTTP/1.1\r\nHost: x\r\n\r\n".encode())
+    raw = b""
+    while chunk := s.recv(65_536):
+        raw += chunk
+    head, _, body = raw.partition(b"\r\n\r\n")
+    lines = head.decode().split("\r\n")
+    hdrs = {k.lower(): v.strip() for k, v in (h.split(":", 1) for h in lines[1:])}
+    return int(lines[0].split(" ")[1]), hdrs, body
+
+
+def test_web_pages(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "index.html").write_text("<!doctype html>")
+    (tmp_path / "app.js").write_text("1")
+    (tmp_path / ".hidden.js").write_text("1")
+    monkeypatch.setattr(feed_server, "WEB_DIR", tmp_path)
+    f = FeedServer({"bind": "127.0.0.1", "port": 0, "web": True}, HELLO)
+    f.start()
+    try:
+        status, hdrs, body = http_get(f.port, "/")
+        assert status == 200 and body == b"<!doctype html>" and "text/html" in hdrs["content-type"]
+        assert http_get(f.port, "/app.js")[1]["content-type"].startswith("text/javascript")
+        assert http_get(f.port, "/fonts/Sora.ttf")[1]["content-type"] == "font/ttf"
+        assert http_get(f.port, "/icons/sparkgap.svg")[1]["content-type"] == "image/svg+xml"
+        for bad in ("/../feed_server.py", "/fonts/../../feed_server.py", "/.hidden.js",
+                    "/fonts/OFL.txt", "/nope.html", "/a/b.js"):
+            assert http_get(f.port, bad)[0] == 404, bad
+        assert WS(f.port).status == 101  # the feed still answers on /feed
+        (tmp_path / "leak.html").symlink_to(Path(feed_server.__file__))
+        assert http_get(f.port, "/leak.html")[0] == 404  # a symlink out of web/
+    finally:
+        f.stop()
+
+
+def test_web_off_by_default(feed: FeedServer) -> None:
+    assert http_get(feed.port, "/")[0] == 404
+
+
+def close_code(c: WS) -> int:
+    while True:
+        op, data = c.frame()
+        if op == OP_CLOSE:
+            return struct.unpack("!H", data[:2])[0]
+
+
+def test_browser_join_code_as_subprotocol() -> None:
+    f = FeedServer({"bind": "127.0.0.1", "port": 0, "join_code": "XXX-XXX"}, HELLO)
+    f.start()
+    try:
+        page = ["Origin: http://100.64.0.1:7320"]  # any origin: the code is the protection
+        ok = WS(f.port, extra=page, protocols=f"{PROTOCOL}, {CODE_PROTOCOL}XXXXXX")
+        assert ok.status == 101 and f"Sec-WebSocket-Protocol: {PROTOCOL}\r\n" in ok.headers
+        assert ok.json("hello")["v"] == FEED_VERSION
+        bad = WS(f.port, extra=page, protocols=f"{PROTOCOL}, {CODE_PROTOCOL}XXXXXA")
+        assert bad.status == 101 and close_code(bad) == CLOSE_WRONG_CODE
+        for _ in range(LOCKOUT_TRIES):
+            WS(f.port, extra=page, protocols=f"{PROTOCOL}, {CODE_PROTOCOL}XXXXXA")
+        locked = WS(f.port, extra=page, protocols=f"{PROTOCOL}, {CODE_PROTOCOL}XXXXXX")
+        assert close_code(locked) == CLOSE_LOCKED_OUT
+        assert WS(f.port, "XXXXXX").status == 429  # native clients still get HTTP statuses
+    finally:
+        f.stop()
+
+
+def test_missing_code_not_counted() -> None:
+    f = FeedServer({"bind": "127.0.0.1", "port": 0, "join_code": "XXX-XXX"}, HELLO)
+    f.start()
+    try:
+        for _ in range(LOCKOUT_TRIES + 2):
+            assert WS(f.port).status == 401
+        assert WS(f.port, "XXXXXX").status == 101
+    finally:
+        f.stop()
+
+
+def test_origin_checked_without_join_code(feed: FeedServer) -> None:
+    port = feed.port
+    assert WS(port, extra=["Origin: https://example.com"]).status == 403
+    assert WS(port, extra=["Origin: null"]).status == 403
+    assert WS(port, extra=[f"Origin: http://127.0.0.1:{port + 1}"]).status == 403
+    assert WS(port, extra=[f"Origin: http://127.0.0.1:{port}"]).status == 101
+    assert WS(port, extra=[f"Origin: http://localhost:{port}"]).status == 101
+
+
+def test_dns_rebinding_refused(feed: FeedServer) -> None:
+    # a site whose name now points at 127.0.0.1 sends a matching Host; the origin is still not ours
+    port = feed.port
+    c = WS(port, extra=[f"Origin: http://evil.example:{port}", f"Host: evil.example:{port}"])
+    assert c.status == 403

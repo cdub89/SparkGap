@@ -1,10 +1,11 @@
 # SparkGap Console (experimental)
 
-A desktop client that shows what a running SparkGap hears: a live waterfall of
-the receiver's span, the calls on a frequency ladder, and the decoded text of
-the signal you pick. SparkGap stays an independent service next to the radio;
-the console connects to it over the network and can come and go without
-disturbing decoding. One console can watch several SparkGaps.
+A desktop client, and SparkGap Web, its browser twin, that show what a running
+SparkGap hears: a live waterfall of the receiver's span, the calls on a
+frequency ladder, and the decoded text of the signal you pick. SparkGap stays an
+independent service next to the radio; the console connects to it over the
+network and can come and go without disturbing decoding. One console can watch
+several SparkGaps.
 
 ![SparkGap Console on Windows during a 40m CWT](console.png)
 
@@ -16,7 +17,7 @@ a launcher.
 The feed is off unless the config has a `gui_feed` block:
 
 ```json
-"gui_feed": {"bind": "127.0.0.1", "port": 7320, "join_code": null}
+"gui_feed": {"bind": "127.0.0.1", "port": 7320, "join_code": null, "web": false}
 ```
 
 - `bind`: the address to listen on. `127.0.0.1` serves only the same machine. To
@@ -32,8 +33,10 @@ The feed is off unless the config has a `gui_feed` block:
   GUI feed on ws://100.64.0.1:7320/feed, join code XXX-XXX
   ```
 
-- Five wrong codes from one address lock that address out for 10 minutes.
+- Five wrong codes from one address lock that address out for 10 minutes. A
+  missing code is refused but not counted.
 - At most 16 consoles at once; one that stops reading is disconnected.
+- `web`: `true` also serves SparkGap Web on the same port (see below).
 - `tls_cert` and `tls_key` (optional) serve `wss://`. Tailscale already encrypts
   the link. Settings adds servers as `ws://`, so give a `wss://` server on the
   command line.
@@ -80,11 +83,68 @@ The result is `dist\SparkGapConsole`, a folder of about 125 MB with
 folder. Settings shows the build's commit when a `build.txt` holding it sits
 next to the spec at build time.
 
+## SparkGap Web
+
+The same console in a browser, with nothing to install. Set `"web": true` in
+the `gui_feed` block and open the address SparkGap logs at startup:
+
+```text
+GUI feed: browser console at http://100.64.0.1:7320/
+```
+
+Settings works as in the desktop console: add the server with its join code
+(the address and port are filled in from the page). The list, theme and demo
+setting are kept in that browser, separately for each address the page is
+opened from.
+
+Demo mode shows made-up signals, so the page can be tried without a server; it
+is on until a server has been added. Turning it on only switches the view: the
+servers stay connected and keep their waterfall, spots and text, and the server
+list is hidden until demo is off again. The desktop console has no demo mode
+yet.
+
+The page also opens from a file (`web/index.html`), for demo mode or for
+servers that do not serve it. A server without a join code accepts a page only
+when the page itself was opened from a loopback address on the feed's port.
+
 ## Using it
 
 - Drag or two-finger drag pans the waterfall; Ctrl+scroll or a pinch zooms; the
-  arrows at the scroll bar's ends nudge it. The Span slider and Full button set
-  the width.
+  scroll bar beside it moves through the receiver's span. The Span slider and
+  Full button set the width.
 - Click a trace or a call to see its decoded windows. Ctrl+F searches calls,
   decoded text and frequencies.
 - Window size, position and theme are kept between runs.
+
+## Keeping the two clients in step
+
+The desktop console (`gui/`) and SparkGap Web (`web/`) are two builds of one
+design. A change to either lands in the other in the same commit, or this list
+says why not.
+
+Shared, and kept the same:
+
+- Feed handling: the wide reading of each window on top unless it has no fit;
+  a wrong join code is not retried; a lockout is retried after 10 minutes;
+  reconnects back off over 1, 2, 5, 10 and 20 seconds; a change in the
+  spectrum's bins, start, bin width or dB step clears the waterfall.
+- The constants at the top of `gui/backend.py` and `web/app.js`: same names,
+  same values.
+- Layout, theme tokens (`t` in `Main.qml`, `:root` in `style.css`), the
+  waterfall palette (dark in both themes), header glyphs and fonts.
+- Call ladder, bubbles, decoded windows, search, status bar and zoom.
+- Settings: demo, connections, the read-only spot rule, validation and call
+  source, at 480 px.
+- Demo mode: the same made-up signals; turning it on only switches the view.
+- Scroll bars: thin, with small arrows, the same on the waterfall and the
+  decoded text.
+- Server names: host name and band, then the address.
+
+Different on purpose:
+
+- Desktop only: window size and position kept between runs; the build version
+  in Settings.
+- Web only: the layout for narrow (phone) screens and touch pan and pinch; the
+  page fills in its own server's address when one is added.
+- Refusals: the desktop console reads the HTTP status, the browser the close
+  code. Both show the same message.

@@ -19,6 +19,13 @@ version 13):
 - `Authorization: Bearer <join code>` whenever the feed has a join code, which
   it must have unless it is bound to a loopback address. Case, spaces and
   dashes are ignored, so `xxx-xxx` and `XXXXXX` are the same code.
+- A browser cannot set that header, so it offers the code as a second
+  subprotocol instead: `sparkgap.code.<join code>`, after `sparkgap.v1`. The
+  server echoes only `sparkgap.v1`.
+- A feed without a join code accepts a request with an `Origin` header only
+  when that origin is a loopback address (`localhost`, `127.0.0.1`, `::1`) on
+  the feed's own port, so a web page from elsewhere cannot read a feed on this
+  machine, even through a name that resolves to 127.0.0.1.
 
 The server refuses a connection with a plain HTTP reply and closes it:
 
@@ -26,6 +33,7 @@ The server refuses a connection with a plain HTTP reply and closes it:
 | --- | --- |
 | 400 | Not a WebSocket upgrade, or not version 13 |
 | 401 | Wrong or missing join code |
+| 403 | No join code, and the `Origin` is not loopback on this port |
 | 404 | Path is not `/feed` |
 | 405 | Not a `GET` |
 | 429 | This address gave 5 wrong codes in the last 10 minutes |
@@ -33,7 +41,24 @@ The server refuses a connection with a plain HTTP reply and closes it:
 | 503 | 16 clients are already connected |
 
 A 401 should not be retried with the same code. A 429 clears as the oldest
-wrong try passes 10 minutes.
+wrong try passes 10 minutes. A missing code is refused but does not count as a
+wrong try.
+
+A browser cannot read an HTTP refusal, so a request with an `Origin` header is
+refused differently: the server completes the handshake, then closes at once
+with one of these codes.
+
+| Close code | When |
+| --- | --- |
+| 4401 | Wrong or missing join code (HTTP 401) |
+| 4429 | Locked out after wrong codes (HTTP 429) |
+| 4503 | Too many clients (HTTP 503) |
+
+Other refusals (400, 403, 404, 405, 431) are HTTP replies for browsers too.
+
+With `"web": true` in the `gui_feed` block, other `GET` paths on the same port
+serve SparkGap Web, the browser console: the files in `web/` at `/`, and the
+console's fonts and icons at `/fonts/` and `/icons/`. Anything else is a 404.
 
 ## Messages from the server
 
@@ -49,7 +74,7 @@ they happen.
 Who this SparkGap is and the settings it runs with.
 
 ```json
-{"type": "hello", "v": 1, "call": "W1AW", "decoder": "itila2",
+{"type": "hello", "v": 1, "host": "shack-pc", "call": "W1AW", "decoder": "itila2",
  "config": {"callsign": "W1AW", "cw_decoder": "itila2",
             "sample_rate": 96000, "flex_daxiq_channel": 2,
             "telnet_port": 7300, "enable_ft8": false,
@@ -64,6 +89,7 @@ Who this SparkGap is and the settings it runs with.
 ```
 
 - `v`: feed version.
+- `host`: the host name of the machine SparkGap runs on.
 - `config`: settings in effect, including defaults SparkGap applied.
   `flex_daxiq_channel` is `null` off a Flex; `rbn_known_days` is `null` unless
   the known calls come from RBN.

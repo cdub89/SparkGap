@@ -76,6 +76,8 @@ def main() -> int:
     feeds = merge_feeds(load_feeds(store), parse(args))
     save_feeds(store, feeds)
     console = Console(feeds, store)
+    # no saved servers yet: start in demo
+    console.setDemo(str(store.value("ui/demo", not feeds)).lower() == "true")
     engine = QQmlApplicationEngine()
     engine.rootContext().setContextProperty("console_", console)
     engine.rootContext().setContextProperty("build_", build_id())

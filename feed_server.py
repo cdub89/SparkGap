@@ -6,9 +6,10 @@ thread. With no client connected, publishing only updates the connect snapshot.
 
 Config block (off unless present):
     "gui_feed": {"bind": "127.0.0.1", "port": 7320, "join_code": null,
-                 "tls_cert": null, "tls_key": null}
+                 "tls_cert": null, "tls_key": null, "web": false}
 A join code is required whenever bind is not a loopback address: 6 characters, case, spaces and
 dashes ignored. A fresh one: python3 feed_server.py --new-code
+"web": true also serves the browser console (web/) at http://<bind>:<port>/.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ import json
 import logging
 import os
 import secrets
+import socket
 import ssl
 import struct
 import sys
@@ -30,7 +32,9 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import numpy as np
 
@@ -40,6 +44,21 @@ PROTOCOL = "sparkgap.v1"
 FEED_VERSION = 1
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 PATH = "/feed"
+CODE_PROTOCOL = "sparkgap.code."  # a browser offers its join code as this subprotocol + code
+# browser clients learn of a refused code from these close codes (they cannot read the HTTP status)
+CLOSE_WRONG_CODE, CLOSE_LOCKED_OUT, CLOSE_FULL = 4401, 4429, 4503
+WEB_DIR = Path(__file__).resolve().parent / "web"
+FONT_DIR = Path(__file__).resolve().parent / "gui" / "fonts"
+ICON_DIR = Path(__file__).resolve().parent / "gui" / "icons"
+WEB_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".ttf": "font/ttf",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+}
 
 SNAPSHOT_WINDOW_S = 600  # decoded windows replayed to a client on connect
 SNAPSHOT_SPOTS = 200
@@ -177,7 +196,8 @@ class FeedServer:
             self.tls.load_cert_chain(cfg["tls_cert"], cfg.get("tls_key"))
         if not is_loopback(self.bind) and not self.code:
             raise ValueError(f"gui_feed: bind {self.bind} is not loopback, a join_code is required")
-        self.hello = {"type": "hello", "v": FEED_VERSION, **hello}
+        self.web = bool(cfg.get("web", False))
+        self.hello = {"type": "hello", "v": FEED_VERSION, "host": socket.gethostname(), **hello}
         self.clients: set[Client] = set()
         self.windows: collections.deque[dict[str, Any]] = collections.deque()
         self.spots: collections.deque[dict[str, Any]] = collections.deque(maxlen=SNAPSHOT_SPOTS)
@@ -213,6 +233,9 @@ class FeedServer:
                 "wss" if self.tls else "ws", self.bind, self.port, PATH,
                 f", join code {show_code(self.code)}" if self.code else "",
             )
+            if self.web:
+                log.info("GUI feed: browser console at http%s://%s:%d/",
+                         "s" if self.tls else "", self.bind, self.port)
         except OSError as e:
             log.error("GUI feed failed to start on %s:%d: %s", self.bind, self.port, e)
             self.started.set()
@@ -370,6 +393,8 @@ class FeedServer:
             misses.popleft()
         if len(misses) >= LOCKOUT_TRIES:
             return None
+        if not normalize_code(given):
+            return False  # no code is not a guess: refused, not counted towards a lockout
         if hmac.compare_digest(normalize_code(given).encode(), str(self.code).encode()):
             return True
         misses.append(now)
@@ -379,7 +404,10 @@ class FeedServer:
                         host, LOCKOUT_S // 60, LOCKOUT_TRIES)
         return False
 
-    async def _handshake(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> bool:
+    async def _handshake(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> bool | None:
+        """True: a client to serve. False: refused. None: a page was served."""
         try:
             raw = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 10)
         except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, asyncio.TimeoutError):
@@ -395,7 +423,10 @@ class FeedServer:
                 headers[k.strip().lower()] = v.strip()
         if len(parts) != 3 or parts[0] != "GET":
             return self._reject(writer, 405, "Method Not Allowed")
-        if parts[1].split("?")[0] != PATH:
+        path = parts[1].split("?")[0]
+        if path != PATH:
+            if self.web and headers.get("upgrade", "").lower() != "websocket":
+                return self._serve_file(writer, path)
             return self._reject(writer, 404, "Not Found")
         if (
             headers.get("upgrade", "").lower() != "websocket"
@@ -404,19 +435,36 @@ class FeedServer:
             or "sec-websocket-key" not in headers
         ):
             return self._reject(writer, 400, "Bad Request")
-        if self.code:
-            auth = headers.get("authorization", "")
-            given = auth[7:] if auth.lower().startswith("bearer ") else ""
-            ok = self._code_ok(str(writer.get_extra_info("peername")[0]), given)
-            if ok is None:
-                return self._reject(writer, 429, "Too Many Requests")
-            if not ok:
-                return self._reject(writer, 401, "Unauthorized")
-        if len(self.clients) >= MAX_CLIENTS:
-            return self._reject(writer, 503, "Service Unavailable")
         offered = [
             p.strip() for p in headers.get("sec-websocket-protocol", "").split(",") if p.strip()
         ]
+        # without a join code only this machine can connect; a browser on it must be on our page,
+        # or any web site it visits could read the feed. Host is the requester's to set (DNS
+        # rebinding), so the origin itself must be a loopback address on our port.
+        origin = headers.get("origin")
+        if not self.code and origin is not None and not self._local_origin(origin):
+            return self._reject(writer, 403, "Forbidden")
+        # a browser cannot set headers or read an HTTP refusal: it offers the code as a
+        # subprotocol and learns of a refusal from the close code
+        browser = origin is not None
+        refused = 0
+        if self.code:
+            auth = headers.get("authorization", "")
+            given = auth[7:] if auth.lower().startswith("bearer ") else ""
+            if not given:
+                given = next(
+                    (p[len(CODE_PROTOCOL) :] for p in offered if p.startswith(CODE_PROTOCOL)), ""
+                )
+            ok = self._code_ok(str(writer.get_extra_info("peername")[0]), given)
+            if not browser and ok is None:
+                return self._reject(writer, 429, "Too Many Requests")
+            if not browser and not ok:
+                return self._reject(writer, 401, "Unauthorized")
+            refused = CLOSE_LOCKED_OUT if ok is None else 0 if ok else CLOSE_WRONG_CODE
+        if len(self.clients) >= MAX_CLIENTS:
+            if not browser:
+                return self._reject(writer, 503, "Service Unavailable")
+            refused = refused or CLOSE_FULL
         reply = [
             "HTTP/1.1 101 Switching Protocols",
             "Upgrade: websocket",
@@ -426,8 +474,55 @@ class FeedServer:
         if PROTOCOL in offered:
             reply.append(f"Sec-WebSocket-Protocol: {PROTOCOL}")
         writer.write(("\r\n".join(reply) + "\r\n\r\n").encode())
+        if refused:
+            # a browser sees only the close code: accept the upgrade, then close with the reason
+            reason = {CLOSE_WRONG_CODE: "wrong join code", CLOSE_LOCKED_OUT: "locked out",
+                      CLOSE_FULL: "too many clients"}[refused]
+            writer.write(encode_frame(OP_CLOSE, struct.pack("!H", refused) + reason.encode()))
+            await writer.drain()
+            return False
         await writer.drain()
         return True
+
+    def _local_origin(self, origin: str) -> bool:
+        try:
+            u = urlsplit(origin)
+            local = is_loopback(u.hostname or "") and u.port == self.port
+            return u.scheme in ("http", "https") and local
+        except ValueError:
+            return False
+
+    @staticmethod
+    def _serve_file(writer: asyncio.StreamWriter, path: str) -> bool | None:
+        """The browser console: web/ and the console's fonts and icons, nothing else."""
+        name = path.lstrip("/") or "index.html"
+        folder, _, leaf = name.rpartition("/")
+        base = {"": WEB_DIR, "fonts": FONT_DIR, "icons": ICON_DIR}.get(folder)
+        if base is None:
+            return FeedServer._reject(writer, 404, "Not Found")
+        f = base / leaf
+        if (
+            not leaf
+            or leaf.startswith(".")
+            or "\\" in leaf
+            or f.suffix not in WEB_TYPES
+            or not f.is_file()
+            or not f.resolve().is_relative_to(base.resolve())  # no symlink out of the folder
+        ):
+            return FeedServer._reject(writer, 404, "Not Found")
+        body = f.read_bytes()
+        head = [
+            "HTTP/1.1 200 OK",
+            f"Content-Type: {WEB_TYPES[f.suffix]}",
+            f"Content-Length: {len(body)}",
+            "Cache-Control: no-cache",
+            "X-Content-Type-Options: nosniff",
+            "Content-Security-Policy: default-src 'self'; connect-src 'self' ws: wss:; "
+            "style-src 'self' 'unsafe-inline'",
+            "Connection: close",
+        ]
+        writer.write(("\r\n".join(head) + "\r\n\r\n").encode() + body)
+        return None
 
     @staticmethod
     def _reject(writer: asyncio.StreamWriter, code: int, reason: str) -> bool:
@@ -439,8 +534,10 @@ class FeedServer:
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         host, port = writer.get_extra_info("peername")[:2]
         peer = f"{host}:{port}"
-        if not await self._handshake(reader, writer):
-            log.info("GUI feed: refused %s", peer)
+        accepted = await self._handshake(reader, writer)
+        if not accepted:
+            if accepted is False:
+                log.info("GUI feed: refused %s", peer)
             writer.close()
             return
         c = Client(writer, peer)
