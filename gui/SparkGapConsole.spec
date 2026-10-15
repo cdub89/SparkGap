@@ -5,7 +5,7 @@ import re
 
 a = Analysis(
     ["console.py"],
-    datas=[("qml", "qml"), ("fonts", "fonts")] + ([("build.txt", ".")] if os.path.exists("build.txt") else []),
+    datas=[("qml", "qml"), ("fonts", "fonts"), ("icons", "icons")] + ([("build.txt", ".")] if os.path.exists("build.txt") else []),
     hiddenimports=["backend", "PySide6.QtWebSockets", "PySide6.QtQuick", "PySide6.QtQml"],
     excludes=["tkinter", "PySide6.QtWidgets", "PySide6.QtWebEngineCore", "PySide6.Qt3DCore",
               "PySide6.QtMultimedia", "PySide6.QtPdf", "PySide6.QtCharts"],
@@ -26,5 +26,6 @@ a.binaries = [b for b in a.binaries if not _drop.search(b[0].replace("\\", "/"))
 a.datas = [d for d in a.datas if not _drop.search(d[0].replace("\\", "/"))]
 
 pyz = PYZ(a.pure)
-exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="SparkGapConsole", console=False)
+exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="SparkGapConsole", console=False,
+          icon="icons/sparkgap.ico")
 coll = COLLECT(exe, a.binaries, a.datas, name="SparkGapConsole")

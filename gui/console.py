@@ -82,7 +82,10 @@ def main() -> int:
     engine.load(HERE / "qml" / "Main.qml")
     if not engine.rootObjects():
         return 1
-    app.setWindowIcon(QIcon())
+    icon = QIcon()
+    for f in sorted((HERE / "icons").glob("sparkgap-*.png")):
+        icon.addFile(str(f))
+    app.setWindowIcon(icon)
     rc = app.exec()
     del engine  # QML goes before the objects it binds to
     return rc
