@@ -7,8 +7,8 @@ thread. With no client connected, publishing only updates the connect snapshot.
 Config block (off unless present):
     "gui_feed": {"bind": "127.0.0.1", "port": 7320, "join_code": null,
                  "tls_cert": null, "tls_key": null}
-A join code is required whenever bind is not a loopback address: 6 characters as SKCCLogger's
-relay uses them, case, spaces and dashes ignored. A fresh one: python3 feed_server.py --new-code
+A join code is required whenever bind is not a loopback address: 6 characters, case, spaces and
+dashes ignored. A fresh one: python3 feed_server.py --new-code
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ PING_INTERVAL_S = 20.0
 IDLE_TIMEOUT_S = 60.0
 COST_REPORT_S = 60.0
 
-# join codes as SKCCLogger's relay mints them: no pair confused by eye or over the air
+# join codes are minted without any pair confused by eye or over the air (O/0, I/1, S/5 ...)
 CODE_MINT_ALPHABET = "ACDEFHJKMNPRTUVWXY3479"
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # accepted on entry
 CODE_LENGTH = 6

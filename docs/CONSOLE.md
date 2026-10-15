@@ -24,9 +24,9 @@ The feed is off unless the config has a `gui_feed` block:
   the feed is then reachable from your tailnet and nothing else.
 - `port`: 7320 by default.
 - `join_code`: required whenever `bind` is not a loopback address. Six
-  characters, as SKCCLogger's relay uses them; case, spaces and dashes are
-  ignored on entry. Make one with `python3 feed_server.py --new-code`. SparkGap
-  logs the code at startup:
+  characters, minted without any pair easily confused by eye or over the air
+  (O/0, I/1 and similar); case, spaces and dashes are ignored on entry. Make one
+  with `python3 feed_server.py --new-code`. SparkGap logs the code at startup:
 
   ```text
   GUI feed on ws://100.64.0.1:7320/feed, join code XXX-XXX
