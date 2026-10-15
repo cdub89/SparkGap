@@ -369,17 +369,22 @@ class Instance(QObject):
 
     demo = Property(bool, lambda self: self.is_demo, constant=True)
 
-    @Property(str, notify=changed)
-    def title(self) -> str:
-        if self.is_demo:
-            return "Demo"
+    def _station(self) -> str:
+        """Host and band from hello; empty until the first hello. The address is for Settings."""
         bands = self.hello.get("bands") or []
         band = ""
         if bands:
             name = str(bands[0]["name"])
             band = f"{bands[0]['center_khz']:g} kHz" if name.isdigit() else name
-        parts = [p for p in (self.hello.get("host"), band) if p]
-        return " · ".join(parts) or self._url.split("//")[-1].split("/")[0]
+        return " · ".join(p for p in (self.hello.get("host"), band) if p)
+
+    station = Property(str, _station, notify=changed)
+
+    @Property(str, notify=changed)
+    def title(self) -> str:
+        if self.is_demo:
+            return "Demo"
+        return self._station() or self._url.split("//")[-1].split("/")[0]
 
     @Property(dict, notify=changed)
     def info(self) -> dict[str, Any]:

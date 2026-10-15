@@ -140,7 +140,7 @@ Shared, and kept the same:
 - Demo mode: the same made-up signals; turning it on only switches the view.
 - Scroll bars: thin, with small arrows, the same on the waterfall and the
   decoded text.
-- Server names: host name and band, then the address.
+- Server names: host name and band; the address appears only in Settings.
 
 Different on purpose:
 

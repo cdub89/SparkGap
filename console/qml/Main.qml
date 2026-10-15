@@ -196,7 +196,7 @@ ApplicationWindow {
                     color: t.muted; font.family: t.mono; font.features: t.zero; font.pixelSize: 12
                     text: !inst ? "No feed" : inst.demo ? "DEMO MODE" : (inst.state === "live" ? "Live" : inst.state === "connecting" ? "Connecting"
                                             : inst.state === "refused" ? "Refused" : "Reconnecting")
-                          + "  " + inst.url.replace("ws://", "").replace("wss://", "").replace("/feed", "")
+                          + (inst && !inst.demo && inst.station ? "  " + inst.station : "")
                           + (inst && inst.state !== "live" && inst.error ? "  ·  " + inst.error : "")
                 }
             }
@@ -390,7 +390,7 @@ ApplicationWindow {
                         Text {
                             anchors.centerIn: parent
                             visible: !inst || inst.state !== "live" || inst.highKhz === 0
-                            text: !inst ? "No feed configured" : inst.state === "live" ? "Waiting for spectrum" : "Connecting to " + inst.url
+                            text: !inst ? "No feed configured" : inst.state === "live" ? "Waiting for spectrum" : (inst.station ? "Connecting to " + inst.station : "Connecting")
                             color: t.muted; font.pixelSize: 15
                         }
                     }

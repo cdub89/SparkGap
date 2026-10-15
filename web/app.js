@@ -272,12 +272,14 @@ class Instance {
 
   matchesSelection(khz) { return this.selKhz !== null && Math.abs(khz - this.selKhz) <= FREQ_MATCH_KHZ; }
 
-  get title() {
-    if (this.demo) return "Demo";
+  // host and band from hello; empty until the first hello. No address: that is for Settings.
+  get station() {
     const b = (this.hello.bands || [])[0];
     const band = b ? (/^\d+$/.test(String(b.name)) ? `${b.center_khz} kHz` : String(b.name)) : "";
-    return [this.hello.host, band].filter(x => x).join(" · ") || this.url.split("//").pop().split("/")[0];
+    return [this.hello.host, band].filter(x => x).join(" · ");
   }
+
+  get title() { return this.demo ? "Demo" : this.station || this.url.split("//").pop().split("/")[0]; }
 
   get lowKhz() { return this.nBins ? this.firstHz / 1000 : 0; }
   get highKhz() { return this.nBins ? (this.firstHz + this.nBins * this.hzPerBin) / 1000 : 0; }
@@ -868,10 +870,10 @@ function renderState() {
   }
   dot.style.background = cs.getPropertyValue(i.state === "live" ? "--good" : i.state === "connecting" ? "--accent" : "--bad");
   const word = { live: "Live", connecting: "Connecting", refused: "Refused" }[i.state] || "Reconnecting";
-  $("stateText").textContent = i.demo ? "DEMO MODE" : word + "  " + shortUrl(i.url)
+  $("stateText").textContent = i.demo ? "DEMO MODE" : word + (i.station ? "  " + i.station : "")
     + (i.state !== "live" && i.error ? "  ·  " + i.error : "");
   let msg = "";
-  if (i.state !== "live") msg = "Connecting to " + shortUrl(i.url);
+  if (i.state !== "live") msg = i.station ? "Connecting to " + i.station : "Connecting";
   else if (!i.highKhz) msg = "Waiting for spectrum";
   $("wfmsg").textContent = msg;
 }

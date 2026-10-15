@@ -192,3 +192,15 @@ def test_demo_is_a_view(tmp_path: Path) -> None:
     assert load_feeds(store) == [("ws://127.0.0.1:9/feed", "")]  # demo is never saved
     c.setDemo(False)
     assert not c.demo and c.current is server and len(c.instances) == 1
+
+
+def test_station_name_has_no_address() -> None:
+    from backend import Instance
+    from PySide6.QtCore import QCoreApplication
+
+    app = QCoreApplication.instance() or QCoreApplication([])  # noqa: F841
+    inst: Any = Instance("ws://100.64.0.1:7320/feed")
+    assert inst.station == "" and inst.title == "100.64.0.1:7320"  # Settings still has the address
+    inst._on_text('{"type": "hello", "v": 1, "host": "shack-pc",'
+                  ' "bands": [{"name": "20m", "center_khz": 14048.0, "span_khz": 96.0}]}')
+    assert inst.station == "shack-pc · 20m" and inst.title == "shack-pc · 20m"
