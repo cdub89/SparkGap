@@ -1132,19 +1132,25 @@ class Probe(QObject):
         self.done.emit(self.port, result)
 
 
-def scan_report(found: dict[int, str], listed: list[int]) -> tuple[list[int], str]:
-    """The ports a scan adds, and a line for the operator."""
+def scan_report(found: dict[int, str], listed: list[int],
+                stale: list[int] | None = None) -> tuple[list[int], list[int], str]:
+    """The ports a scan adds, the listed ones whose code it updates (stale: saved with another
+    code), and a line for the operator."""
     def ports(r: str) -> list[int]:
         return sorted(p for p, v in found.items() if v == r)
 
+    stale = stale or []
     add = [p for p in ports("ok") if p not in listed]
-    have = [p for p in ports("ok") if p in listed]
+    update = [p for p in ports("ok") if p in stale]
+    have = [p for p in ports("ok") if p in listed and p not in stale]
     def joined(ps: list[int]) -> str:
         return ", ".join(map(str, ps))
 
     parts = []
     if add:
         parts.append(f"Added {joined(add)}.")
+    if update:
+        parts.append(f"Join code updated on {joined(update)}.")
     if have:
         parts.append(f"Already in the list: {joined(have)}.")
     if ports("code"):
@@ -1155,7 +1161,7 @@ def scan_report(found: dict[int, str], listed: list[int]) -> tuple[list[int], st
         parts.append(f"Too many clients on {joined(ports('full'))}.")
     if not parts:
         parts.append(f"No SparkGap answered on ports {SCAN_PORTS[0]} to {SCAN_PORTS[-1]}.")
-    return add, " ".join(parts)
+    return add, update, " ".join(parts)
 
 
 def feed_url(address: str, port: int) -> str:
@@ -1221,7 +1227,7 @@ class Console(QObject):
 
     instancesChanged = Signal()
     currentChanged = Signal()
-    scanDone = Signal(bool, str)  # whether servers were added, and what the search found
+    scanDone = Signal(bool, str)  # whether servers were added or updated, and what the search found
 
     def __init__(self, feeds: list[tuple[str, str]], store: QSettings | None = None) -> None:
         super().__init__()
@@ -1232,6 +1238,7 @@ class Console(QObject):
         self._scan: dict[int, str] = {}  # port -> result of the search under way
         self._probes: list[Probe] = []
         self._scan_at = ("", "")  # (address, code) being searched
+        self._scan_edit = -1  # the row the search replaces, or -1 when adding
         for i in self._instances:
             i.open()
         # instances not on screen still move their spectrum rows into history, so switching to
@@ -1328,16 +1335,17 @@ class Console(QObject):
         self.currentChanged.emit()
         return ""
 
-    @Slot(str, str, result=str)
-    def findFeeds(self, address: str, token: str) -> str:  # noqa: N802
-        """Tries every port in SCAN_PORTS on address with one code; scanDone reports.
-        Returns why the search cannot start, or ""."""
+    @Slot(int, str, str, result=str)
+    def findFeeds(self, i: int, address: str, token: str) -> str:  # noqa: N802
+        """Tries every port in SCAN_PORTS on address with one code; scanDone reports. i: the row
+        being edited, which the result replaces, or -1. Returns why it cannot start, or ""."""
         if err := check_feed(address, DEFAULT_PORT, token):
             return err
         if self._scan_at[0]:
             return "already searching"
         address, token = address.strip(), normalize_code(token)
         self._scan, self._scan_at = {}, (address, token)
+        self._scan_edit = i if 0 <= i < len(self._instances) else -1
         self._probes = [Probe(feed_url(address, port), token, self) for port in SCAN_PORTS]
         for probe in self._probes:
             probe.done.connect(self._probed)
@@ -1351,20 +1359,41 @@ class Console(QObject):
             probe.deleteLater()
         self._probes = []
         address, token = self._scan_at
-        self._scan_at = ("", "")
-        listed = [url_parts(i.feed[0])[1] for i in self._instances
-                  if not i.is_demo and url_parts(i.feed[0])[0] == address]
-        add, text = scan_report(self._scan, listed)
-        for port in add:
-            inst = Instance(feed_url(address, port), token, self)
-            self._instances.append(inst)
-            inst.open()
-        if add:
-            self._current = len(self._instances) - len(add)
+        edit, self._scan_at, self._scan_edit = self._scan_edit, ("", ""), -1
+        others = [inst for n, inst in enumerate(self._instances) if n != edit
+                  and not inst.is_demo and url_parts(inst.feed[0])[0] == address]
+        listed = [url_parts(inst.feed[0])[1] for inst in others]
+        stale = [url_parts(inst.feed[0])[1] for inst in others if inst.feed[1] != token]
+        add, update, text = scan_report(self._scan, listed, stale)
+        if add or update:
+            at = len(self._instances)
+            if 0 <= edit < len(self._instances):
+                self._drop(edit)
+                at = edit
+            for port in update:
+                k = next(n for n, inst in enumerate(self._instances)
+                         if inst.feed[0] == feed_url(address, port))
+                self._drop(k)
+                self._insert(k, Instance(feed_url(address, port), token, self))
+            for k, port in enumerate(add):
+                self._insert(min(at + k, len(self._instances)),
+                             Instance(feed_url(address, port), token, self))
+            self._current = (min(at, len(self._instances) - 1) if add else next(
+                n for n, inst in enumerate(self._instances)
+                if inst.feed[0] == feed_url(address, update[0])))
             self._save()
             self.instancesChanged.emit()
             self.currentChanged.emit()
-        self.scanDone.emit(bool(add), text)
+        self.scanDone.emit(bool(add or update), text)
+
+    def _drop(self, i: int) -> None:
+        old = self._instances.pop(i)
+        old.close()
+        old.deleteLater()
+
+    def _insert(self, i: int, inst: Instance) -> None:
+        self._instances.insert(i, inst)
+        inst.open()
 
     @Slot(int)
     def removeFeed(self, i: int) -> None:  # noqa: N802

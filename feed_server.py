@@ -71,6 +71,7 @@ TLS_HANDSHAKE = b"\x16"  # first byte of every TLS connection
 PROBLEMS_KEPT = 5  # last warnings and errors shown on the status page
 PROBLEM_CHARS = 200
 CLOCK_CHECK_S = 60.0
+CPU_AVG_S = 60.0  # status CPU averaged this long: decoding is bursty, a 2 s sample swings
 SPECTRUM_QUEUE_MAX = 4  # spectrum rows queued per client; oldest dropped first
 DEFAULT_SPECTRUM_HZ = 20.0
 PING_INTERVAL_S = 20.0
@@ -857,12 +858,13 @@ def clock_synced() -> bool | None:
 
 
 class ProcessStats:
-    """CPU % since the previous call, resident memory and clock sync of this process's machine.
+    """CPU % over the last CPU_AVG_S, resident memory and clock sync of this process's machine.
     The clock is read on a thread of its own: timedatectl may be slow, and sample() runs in
     SparkGap's main loop."""
 
     def __init__(self) -> None:
-        self.last = (time.monotonic(), sum(os.times()[:2]))
+        self.cpu_times: collections.deque[tuple[float, float]] = collections.deque(
+            [(time.monotonic(), sum(os.times()[:2]))])
         self.clock: bool | None = None
         self.clock_thread: threading.Thread | None = None
 
@@ -873,9 +875,12 @@ class ProcessStats:
 
     def sample(self) -> dict[str, Any]:
         now, cpu = time.monotonic(), sum(os.times()[:2])
-        dt = now - self.last[0]
-        pct = round(100 * (cpu - self.last[1]) / dt) if dt > 0 else None
-        self.last = (now, cpu)
+        self.cpu_times.append((now, cpu))
+        while len(self.cpu_times) > 2 and now - self.cpu_times[1][0] >= CPU_AVG_S:
+            self.cpu_times.popleft()
+        t0, cpu0 = self.cpu_times[0]
+        dt = now - t0
+        pct = round(100 * (cpu - cpu0) / dt) if dt > 0 else None
         rss_mb = None
         try:
             with open("/proc/self/statm") as fh:

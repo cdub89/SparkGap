@@ -44,8 +44,8 @@ The feed is off unless the config has a `gui_feed` block:
 What the feed sends is described in [GUI_FEED_PROTOCOL.md](GUI_FEED_PROTOCOL.md).
 
 The feed works in live and file mode and needs no extra Python packages on the
-server. Its spectrum costs under 1% of a core, and nothing while no client is
-connected.
+server. With one or two consoles connected it costs about 5% of a core (96 kHz
+on a Ryzen 5 5500U), and nothing while no client is connected.
 
 ## Console: running from source
 

@@ -1015,15 +1015,16 @@ ApplicationWindow {
                             property string err: ""
                             property string note: ""  // what the last search for servers found
                             property bool searching: false
+                            property int scanFor: -2  // the form a search was started from
                             function edit(i) {
                                 const f = i >= 0 ? console_.feedAt(i) : { address: "", port: "", token: "" }  // no port: find them all
                                 addr.text = f.address; port.text = String(f.port); tok.text = f.token
                                 err = ""; note = ""; editing = i; addr.forceActiveFocus()
                             }
                             function save() {
-                                if (editing === -1 && port.text.trim() === "") {
-                                    const e = console_.findFeeds(addr.text, tok.text)
-                                    if (e) err = e; else { err = ""; searching = true }
+                                if (port.text.trim() === "") {
+                                    const e = console_.findFeeds(editing, addr.text, tok.text)
+                                    if (e) err = e; else { err = ""; searching = true; scanFor = editing }
                                     return
                                 }
                                 const e = console_.saveFeed(editing, addr.text, parseInt(port.text) || 0, tok.text)
@@ -1033,7 +1034,7 @@ ApplicationWindow {
                                 target: console_
                                 function onScanDone(added, text) {
                                     conns.searching = false
-                                    if (conns.editing !== -1) return  // cancelled meanwhile
+                                    if (conns.editing !== conns.scanFor) return  // cancelled meanwhile
                                     if (added) { conns.note = text; conns.editing = -2 } else conns.err = text
                                 }
                             }

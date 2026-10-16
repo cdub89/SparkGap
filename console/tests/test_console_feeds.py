@@ -209,10 +209,13 @@ def test_station_name_has_no_address() -> None:
 def test_scan_report() -> None:
     from backend import SCAN_PORTS, scan_report
 
-    add, text = scan_report({7320: "ok", 7321: "ok", 7322: "code", 7323: "none"}, [7321])
-    assert add == [7320]
+    add, update, text = scan_report({7320: "ok", 7321: "ok", 7322: "code", 7323: "none"}, [7321])
+    assert (add, update) == ([7320], [])
     assert text == "Added 7320. Already in the list: 7321. Different join code on 7322."
-    assert scan_report({p: "none" for p in SCAN_PORTS}, [])[1].startswith("No SparkGap answered")
+    assert scan_report({p: "none" for p in SCAN_PORTS}, [])[2].startswith("No SparkGap answered")
+    add, update, text = scan_report({7320: "ok", 7321: "ok"}, [7320, 7321], stale=[7321])
+    assert (add, update) == ([], [7321])
+    assert text == "Join code updated on 7321. Already in the list: 7320."
 
 
 def test_find_feeds_adds_every_instance_with_the_code(tmp_path: Path, monkeypatch: Any) -> None:
@@ -237,8 +240,8 @@ def test_find_feeds_adds_every_instance_with_the_code(tmp_path: Path, monkeypatc
         c = backend.Console([], store)
         done: list[tuple[bool, str]] = []
         c.scanDone.connect(lambda added, text: (done.append((added, text)), app.quit()))
-        assert c.findFeeds("127.0.0.1", "xxx-xxx") == ""
-        assert c.findFeeds("127.0.0.1", "XXXXXX") == "already searching"
+        assert c.findFeeds(-1, "127.0.0.1", "xxx-xxx") == ""
+        assert c.findFeeds(-1, "127.0.0.1", "XXXXXX") == "already searching"
         QTimer.singleShot(8000, app.quit)
         app.exec()
         ok = sorted(f.port for f in feeds[:2])
@@ -247,6 +250,44 @@ def test_find_feeds_adds_every_instance_with_the_code(tmp_path: Path, monkeypatc
         assert all(t == "XXXXXX" for _, t in load_feeds(store))
         assert f"Different join code on {feeds[2].port}." in done[0][1]
         assert len(feeds[2].misses["127.0.0.1"]) == 1
+        for i in c._instances:
+            i.close()
+    finally:
+        for f in feeds:
+            f.stop()
+
+
+def test_edit_without_port_finds_all_and_replaces_stale_codes(tmp_path: Path,
+                                                              monkeypatch: Any) -> None:
+    # a SparkGap restarted with a new code: edit one entry, clear its port, give the new code
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    import backend
+    from PySide6.QtCore import QCoreApplication, QTimer
+
+    import feed_server
+
+    app = QCoreApplication.instance() or QCoreApplication([])
+    feeds = [feed_server.FeedServer({"bind": "127.0.0.1", "port": 0, "join_code": "XXXXXX"}, {})
+             for _ in range(2)]
+    for f in feeds:
+        f.start()
+        f.started.wait(5)
+    try:
+        monkeypatch.setattr(backend, "SCAN_PORTS", [f.port for f in feeds])
+        store = QSettings(str(tmp_path / "c.ini"), QSettings.Format.IniFormat)
+        c = backend.Console([], store)
+        for f in feeds:
+            assert c.saveFeed(-1, "127.0.0.1", f.port, "YYYYYY") == ""  # the old code
+        done: list[tuple[bool, str]] = []
+        c.scanDone.connect(lambda added, text: (done.append((added, text)), app.quit()))
+        assert c.findFeeds(0, "127.0.0.1", "XXXXXX") == ""
+        QTimer.singleShot(8000, app.quit)
+        app.exec()
+        assert done and done[0][0]
+        saved = load_feeds(store)
+        assert sorted(url_parts(u)[1] for u, _ in saved) == sorted(f.port for f in feeds)
+        assert all(t == "XXXXXX" for _, t in saved)
+        assert f"Join code updated on {feeds[1].port}." in done[0][1]
         for i in c._instances:
             i.close()
     finally:

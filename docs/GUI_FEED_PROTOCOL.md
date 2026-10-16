@@ -172,7 +172,7 @@ Every 2 seconds.
 
 Process and decoding:
 
-- `cpu`: percent of one core since the last status.
+- `cpu`: percent of one core, averaged over the last minute (all threads).
 - `rss_mb`: resident memory; `null` where the OS does not report it.
 - `clock_synced`: whether the system clock is NTP-synchronised; `null` where
   that cannot be read.

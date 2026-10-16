@@ -852,17 +852,20 @@ function probeFeed(url, token) {
 }
 
 // what a scan found: the ports to add and a line for the operator
-function scanReport(found, listed) {
+// stale: listed ports saved with another code; one that answers to this code gets it
+function scanReport(found, listed, stale = []) {
   const ports = r => found.filter(f => f[1] === r).map(f => f[0]);
-  const add = ports("ok").filter(p => !listed.includes(p)), have = ports("ok").filter(p => listed.includes(p));
+  const add = ports("ok").filter(p => !listed.includes(p)), update = ports("ok").filter(p => stale.includes(p));
+  const have = ports("ok").filter(p => listed.includes(p) && !stale.includes(p));
   const parts = [];
   if (add.length) parts.push(`Added ${add.join(", ")}.`);
+  if (update.length) parts.push(`Join code updated on ${update.join(", ")}.`);
   if (have.length) parts.push(`Already in the list: ${have.join(", ")}.`);
   if (ports("code").length) parts.push(`Different join code on ${ports("code").join(", ")}.`);
   if (ports("lockout").length) parts.push(`Locked out for ${LOCKOUT_S / 60} min on ${ports("lockout").join(", ")}.`);
   if (ports("full").length) parts.push(`Too many clients on ${ports("full").join(", ")}.`);
   if (!parts.length) parts.push(`No SparkGap answered on ports ${SCAN_PORTS[0]} to ${SCAN_PORTS[SCAN_PORTS.length - 1]}.`);
-  return { add, text: parts.join(" ") };
+  return { add, update, text: parts.join(" ") };
 }
 
 function saveFeeds() { save("connections", app.instances.filter(i => !i.demo).map(i => ({ url: i.url, token: i.token }))); }
@@ -1291,7 +1294,9 @@ function editConn(n) {
   $("fAddr").focus();
 }
 
+// a server added or edited without a port: every SparkGap on the address that takes the code
 async function findConns() {
+  const n = app.editing;  // -1 adding, else the row being edited, which the search replaces
   const address = $("fAddr").value.trim(), code = normalizeCode($("fCode").value);
   const err = checkFeed(address, DEFAULT_PORT, code);
   if (err) { $("fErr").textContent = err; $("fErr").hidden = false; return; }
@@ -1300,19 +1305,27 @@ async function findConns() {
   $("fSave").textContent = "Searching...";
   const found = await Promise.all(SCAN_PORTS.map(p => probeFeed(feedUrl(address, p), code).then(r => [p, r])));
   $("fSave").disabled = false;
-  if (app.editing !== -1) return;  // cancelled meanwhile
-  const listed = app.instances.filter(i => urlParts(i.url)[0] === address).map(i => urlParts(i.url)[1]);
-  const r = scanReport(found, listed);
-  if (!r.add.length) { $("fErr").textContent = r.text; $("fErr").hidden = false; renderConns(); return; }
-  for (const p of r.add) addInstance(feedUrl(address, p), code);
+  if (app.editing !== n) return;  // cancelled meanwhile
+  const others = app.instances.filter((i, k) => k !== n && urlParts(i.url)[0] === address);
+  const listed = others.map(i => urlParts(i.url)[1]);
+  const r = scanReport(found, listed, others.filter(i => i.token !== code).map(i => urlParts(i.url)[1]));
+  if (!r.add.length && !r.update.length) { $("fErr").textContent = r.text; $("fErr").hidden = false; renderConns(); return; }
+  let at = app.instances.length;
+  if (n >= 0) { app.instances.splice(n, 1)[0].close(); at = n; }
+  for (const p of r.update) {
+    const k = app.instances.findIndex(i => i.url === feedUrl(address, p));
+    app.instances.splice(k, 1)[0].close();
+    addInstance(feedUrl(address, p), code, k);
+  }
+  r.add.forEach((p, k) => addInstance(feedUrl(address, p), code, Math.min(at + k, app.instances.length)));
   app.editing = -2;
   app.note = r.text;
   saveFeeds();
-  setCurrent(app.instances.length - r.add.length);
+  setCurrent(r.add.length ? Math.min(at, app.instances.length - 1) : app.instances.findIndex(i => i.url === feedUrl(address, r.update[0])));
 }
 
 function saveConn() {
-  if (app.editing === -1 && !$("fPort").value.trim()) { findConns(); return; }
+  if (!$("fPort").value.trim()) { findConns(); return; }
   const address = $("fAddr").value, port = parseInt($("fPort").value) || 0, code = $("fCode").value;
   let err = checkFeed(address, port, code);
   const url = feedUrl(address, port), n = app.editing;

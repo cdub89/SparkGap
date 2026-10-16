@@ -8,6 +8,7 @@ import json
 import os
 import socket
 import struct
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -553,3 +554,21 @@ def test_https_attempt_closed_at_once(feed: FeedServer) -> None:
     assert time.monotonic() - t < 1.0
     s.close()
     assert WS(feed.port).status == 101  # plain clients still served
+
+
+def test_status_cpu_is_a_minute_average(monkeypatch: pytest.MonkeyPatch) -> None:
+    # decoding is bursty: a busy 2 s must not read as the minute's load
+    clock = {"t": 0.0, "cpu": 0.0}
+    monkeypatch.setattr(feed_server.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(feed_server.os, "times", lambda: (clock["cpu"], 0.0, 0.0, 0.0, 0.0))
+    stats = feed_server.ProcessStats()
+    stats.clock_thread = threading.Thread()  # no clock check in a test
+    pct = None
+    for _ in range(60):  # two minutes: 2 s of a full core in every 30 s, idle otherwise
+        clock["t"] += 2.0
+        clock["cpu"] += 2.0 if clock["t"] % 30 == 2 else 0.0
+        pct = stats.sample()["cpu"]
+    assert pct == 7
+    clock["t"] += 2.0
+    clock["cpu"] += 2.0
+    assert stats.sample()["cpu"] < 15  # one more busy 2 s moves it a little, not to 100
