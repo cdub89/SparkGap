@@ -26,3 +26,10 @@ def test_repeat_rule_with_rbn_validation() -> None:
 def test_calls_ignored_without_validation() -> None:
     eff, _, _ = _gui_settings({"spot_validation_calls": "rbn"}, 48_000)
     assert eff["spot_validation_calls"] == "off" and eff["rbn_known_days"] is None
+
+
+def test_validation_off_is_accepted() -> None:
+    from sparkgap import _make_spot_rule
+    eff, _, _ = _gui_settings({"spot_validation": "off", "spot_validation_calls": "rbn"}, 48_000)
+    assert eff["spot_validation"] == "off" and eff["spot_validation_calls"] == "off"
+    assert _make_spot_rule({"spot_validation": "off"}, None).threshold is None

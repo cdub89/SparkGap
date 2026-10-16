@@ -131,6 +131,13 @@ def test_the_station_being_called_is_not_the_runner() -> None:
     assert runner_calls("CQ S52Y DE N8EM K") == []
     assert runner_calls("CQ S52Y S52Y DE N8EM N8EM K") == []      # N8EM is calling, not running
     assert runner_calls("CQ DE N8EM N8EM K") == ["N8EM"]
+
+
+def test_caller_echoing_the_runner_keeps_the_runners_copy() -> None:
+    # hotairfred/SparkGap#52 review: after TEST or DE the call is the runner's, not one being called
+    assert runner_calls("CQ CQ DE K1ABC K1ABC K1ABC DE N2XX N2XX K") == ["K1ABC"]
+    assert runner_calls("CQ TEST K1ABC DE N2XX") == ["K1ABC"]
+    assert runner_calls("CQ TEST W1AW DE W1AWX") == ["W1AW"]
     assert runner_calls("CQ K4DH DE K4DH K") == ["K4DH"]
 
 

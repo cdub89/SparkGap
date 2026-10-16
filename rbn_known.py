@@ -2,7 +2,8 @@
 
 A call is known when, on any of the last `days` days, MIN_SKIMMERS or more other skimmers spotted it
 in CW. The archives (https://data.reversebeacon.net/rbn_history/YYYYMMDD.zip) are public files and
-need no login. Our own spotter's spots never count, so a call we bust cannot vouch for itself.
+need no login. Our own spotter's spots never count, so a call we bust cannot vouch for itself,
+and an operator's nodes (W1NT-2, W1NT-6) count as one skimmer.
 Each day is reduced to call counts once and cached; a day not yet published is tried at the next
 start. Downloads are spaced FETCH_PAUSE_S apart, so a first start with a long window takes a while
 (365 days: about an hour); run it alone first: python rbn_known.py --callsign WX7V --days 365
@@ -12,6 +13,7 @@ import argparse
 import csv
 import io
 import logging
+import re
 import time
 import urllib.error
 import urllib.request
@@ -28,6 +30,7 @@ KEEP_DAYS = 30                # cached days older than this (and than the window
 FETCH_TIMEOUT_S = 30.0
 FETCH_PAUSE_S = 10.0          # between downloads: polite to RBN
 USER_AGENT = "SparkGap rbn_known"
+CACHE_VERSION = 2             # in cached day names; 2: nodes of one operator count once
 
 log = logging.getLogger("sparkgap")
 
@@ -37,16 +40,22 @@ def base_call(call: str) -> str:
     return max(call.upper().split("/"), key=len)
 
 
+def spotter(call: str) -> str:
+    """The operator behind a skimmer node: WF8Z-2, WF8Z-# and WX7V/5 -> WF8Z, WF8Z, WX7V."""
+    return base_call(re.sub(r"-(\d+|#)$", "", call.strip()))
+
+
 def day_counts(rows: Iterable[dict[str, str]], own_call: str) -> Counter[str]:
-    """Distinct CW skimmers per spotted base call in one day's rows, our own spotter left out."""
-    own = base_call(own_call) if own_call else None
+    """Distinct CW skimmer operators per spotted base call in one day's rows, our own left out."""
+    own = spotter(own_call) if own_call else None
     skimmers: dict[str, set[str]] = {}
     for r in rows:
         if r.get("tx_mode") != "CW" or not r.get("dx") or not r.get("callsign"):
             continue
-        if own is not None and base_call(r["callsign"]) == own:
+        op = spotter(r["callsign"])
+        if op == own:
             continue
-        skimmers.setdefault(base_call(r["dx"]), set()).add(base_call(r["callsign"]))
+        skimmers.setdefault(base_call(r["dx"]), set()).add(op)
     return Counter({c: len(s) for c, s in skimmers.items()})
 
 
@@ -94,14 +103,14 @@ def refresh(cache_dir: Path, own_call: str, days: int = DAYS, today: date | None
     """Fetch any missing day of the last DAYS (yesterday back); write and return the known calls."""
     today = today or datetime.now(timezone.utc).date()
     cache_dir.mkdir(parents=True, exist_ok=True)
-    tag = base_call(own_call) if own_call else "ALL"
+    tag = spotter(own_call) if own_call else "ALL"
     counted: list[Counter[str]] = []
     have: list[date] = []
     offline = False
     fetched = 0
     for back in range(1, days + 1):
         day = today - timedelta(days=back)
-        path = cache_dir / f"{day:%Y%m%d}_{tag}.calls"
+        path = cache_dir / f"{day:%Y%m%d}_{tag}_v{CACHE_VERSION}.calls"
         counts = _load(path) if path.exists() else None
         if counts is None:
             if offline:
@@ -111,12 +120,19 @@ def refresh(cache_dir: Path, own_call: str, days: int = DAYS, today: date | None
             fetched += 1
             try:
                 counts = day_counts(read_archive(fetch(day)), own_call)
-            except (urllib.error.HTTPError, zipfile.BadZipFile, StopIteration) as e:
-                log.warning("rbn_known: no archive for %s (%s)", day, e)
+            except urllib.error.HTTPError as e:
+                if e.code == 404:                    # not published yet
+                    log.warning("rbn_known: no archive for %s (%s)", day, e)
+                    continue
+                log.warning("rbn_known: archive for %s refused (%s); using the cache only", day, e)
+                offline = True                       # RBN refusing: no more tries this start
                 continue
             except OSError as e:
                 log.warning("rbn_known: no archive for %s (%s); using the cache only", day, e)
                 offline = True                       # one network failure: no more tries this start
+                continue
+            except Exception as e:                   # truncated or damaged download
+                log.warning("rbn_known: unreadable archive for %s (%r)", day, e)
                 continue
             _write(path, "".join(f"{c}\t{n}\n" for c, n in sorted(counts.items())))
         counted.append(counts)

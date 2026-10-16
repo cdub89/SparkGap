@@ -49,8 +49,8 @@ def refresh(cache_dir: Path, fetch: Callable[[], bytes] = _fetch,
             tmp = path.with_suffix(".tmp")
             tmp.write_text(data)
             tmp.replace(path)
-        except (OSError, ValueError) as e:
-            log.warning("skcc_roster: no roster download (%s); using the cache", e)
+        except Exception as e:                   # offline, refused, truncated or not a roster
+            log.warning("skcc_roster: no roster download (%r); using the cache", e)
     calls = member_calls(path.read_text(errors="replace")) if path.exists() else set()
     log.info("skcc_roster: %d member calls", len(calls))
     return calls
