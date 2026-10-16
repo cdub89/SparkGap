@@ -204,3 +204,51 @@ def test_station_name_has_no_address() -> None:
     inst._on_text('{"type": "hello", "v": 1, "host": "shack-pc",'
                   ' "bands": [{"name": "20m", "center_khz": 14048.0, "span_khz": 96.0}]}')
     assert inst.station == "shack-pc · 20m" and inst.title == "shack-pc · 20m"
+
+
+def test_scan_report() -> None:
+    from backend import SCAN_PORTS, scan_report
+
+    add, text = scan_report({7320: "ok", 7321: "ok", 7322: "code", 7323: "none"}, [7321])
+    assert add == [7320]
+    assert text == "Added 7320. Already in the list: 7321. Different join code on 7322."
+    assert scan_report({p: "none" for p in SCAN_PORTS}, [])[1].startswith("No SparkGap answered")
+
+
+def test_find_feeds_adds_every_instance_with_the_code(tmp_path: Path, monkeypatch: Any) -> None:
+    # one code finds each SparkGap on the address; a different code is reported, once, never retried
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    import backend
+    from PySide6.QtCore import QCoreApplication, QTimer
+
+    import feed_server
+
+    app = QCoreApplication.instance() or QCoreApplication([])
+    feeds = [feed_server.FeedServer({"bind": "127.0.0.1", "port": 0, "join_code": c}, {})
+             for c in ("XXXXXX", "XXXXXX", "YYYYYY")]
+    for f in feeds:
+        f.start()
+        f.started.wait(5)
+    try:
+        used = [f.port for f in feeds]
+        closed = next(p for p in range(used[0] + 1, used[0] + 10) if p not in used)
+        monkeypatch.setattr(backend, "SCAN_PORTS", [f.port for f in feeds] + [closed])
+        store = QSettings(str(tmp_path / "c.ini"), QSettings.Format.IniFormat)
+        c = backend.Console([], store)
+        done: list[tuple[bool, str]] = []
+        c.scanDone.connect(lambda added, text: (done.append((added, text)), app.quit()))
+        assert c.findFeeds("127.0.0.1", "xxx-xxx") == ""
+        assert c.findFeeds("127.0.0.1", "XXXXXX") == "already searching"
+        QTimer.singleShot(8000, app.quit)
+        app.exec()
+        ok = sorted(f.port for f in feeds[:2])
+        assert done and done[0][0]
+        assert sorted(url_parts(u)[1] for u, _ in load_feeds(store)) == ok
+        assert all(t == "XXXXXX" for _, t in load_feeds(store))
+        assert f"Different join code on {feeds[2].port}." in done[0][1]
+        assert len(feeds[2].misses["127.0.0.1"]) == 1
+        for i in c._instances:
+            i.close()
+    finally:
+        for f in feeds:
+            f.stop()

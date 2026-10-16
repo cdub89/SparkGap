@@ -6,6 +6,8 @@ const CODE_PROTOCOL = "sparkgap.code.";  // the join code, offered as a subproto
 const FEED_VERSION = 1;
 const MAX_BINS = 16_384;
 const DEFAULT_PORT = 7320;
+const SCAN_PORTS = Array.from({ length: 20 }, (_, k) => DEFAULT_PORT + k);  // tried when a server is added without a port
+const SCAN_TIMEOUT_S = 3;
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 const CODE_LENGTH = 6;
 const SPECTRUM_HZ = 60;
@@ -21,6 +23,7 @@ const TRACE_MIN_PX = 5;
 const FREQ_MATCH_KHZ = 0.15;
 const SEARCH_MAX = 8;
 const NO_FIT = 999.0;
+const DECODED = ["both", "wide", "narrow", "lowest"];  // which readings of each window the panel shows
 const DETAIL_MATCH_KHZ = 0.06;
 const CALL_RE = /^(?:[A-Z]{1,2}|[A-Z]\d|\d[A-Z])\d[A-Z]{1,4}$/;
 const HEARD_S = 90.0;
@@ -762,6 +765,8 @@ const app = {
   selectedKhz: -1,
   back: 0,  // the server shown before demo
   editing: -2,  // -2 no form, -1 adding, else the row being edited
+  note: "",  // what the last search for servers found
+  decoded: "both",
   matches: [],
 };
 const wf = new Waterfall($("wf"));
@@ -787,6 +792,46 @@ function checkFeed(address, port, code) {
   return "";
 }
 function shortUrl(url) { return url.replace(/^wss?:\/\//, "").replace(/\/feed$/, ""); }
+
+// one try of a feed: "ok" once its hello arrives (a browser sees a refusal only as a close after the open),
+// else "code", "lockout", "full" or "none"
+function probeFeed(url, token) {
+  return new Promise(resolve => {
+    let ws = null, done = false;
+    const finish = result => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      if (ws) ws.close();
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish("none"), SCAN_TIMEOUT_S * 1000);
+    try {
+      ws = new WebSocket(url, token ? [PROTOCOL, CODE_PROTOCOL + token] : [PROTOCOL]);
+    } catch {
+      finish("none");
+      return;
+    }
+    ws.onmessage = e => {
+      try { if (typeof e.data === "string" && JSON.parse(e.data).type === "hello") finish("ok"); } catch { /* not a feed */ }
+    };
+    ws.onclose = e => finish({ [CLOSE_WRONG_CODE]: "code", [CLOSE_LOCKED_OUT]: "lockout", [CLOSE_FULL]: "full" }[e.code] || "none");
+  });
+}
+
+// what a scan found: the ports to add and a line for the operator
+function scanReport(found, listed) {
+  const ports = r => found.filter(f => f[1] === r).map(f => f[0]);
+  const add = ports("ok").filter(p => !listed.includes(p)), have = ports("ok").filter(p => listed.includes(p));
+  const parts = [];
+  if (add.length) parts.push(`Added ${add.join(", ")}.`);
+  if (have.length) parts.push(`Already in the list: ${have.join(", ")}.`);
+  if (ports("code").length) parts.push(`Different join code on ${ports("code").join(", ")}.`);
+  if (ports("lockout").length) parts.push(`Locked out for ${LOCKOUT_S / 60} min on ${ports("lockout").join(", ")}.`);
+  if (ports("full").length) parts.push(`Too many clients on ${ports("full").join(", ")}.`);
+  if (!parts.length) parts.push(`No SparkGap answered on ports ${SCAN_PORTS[0]} to ${SCAN_PORTS[SCAN_PORTS.length - 1]}.`);
+  return { add, text: parts.join(" ") };
+}
 
 function saveFeeds() { save("connections", app.instances.filter(i => !i.demo).map(i => ({ url: i.url, token: i.token }))); }
 
@@ -943,6 +988,18 @@ function renderView() {
 function costText(v) { return v === null || v === undefined ? "-" : v >= NO_FIT ? "no fit" : v.toFixed(2); }
 function rateName(r) { return r === 100 ? "narrow" : r === 200 ? "wide" : "cost"; }
 
+// the readings of a window to show: both, one filter width, or the lower timing cost (a tie or no fit keeps wide)
+function readings(r, mode) {
+  const all = [{ html: r.html, rate: r.rate, cost: r.cost }];
+  if (r.altHtml) all.push({ html: r.altHtml, rate: r.altRate, cost: r.altCost });
+  if (mode === "both" || all.length === 1) return all;
+  const wide = all.find(x => x.rate === 200) || all[0];
+  if (mode === "wide") return [wide];
+  if (mode === "narrow") return [all.find(x => x.rate === 100) || all[0]];
+  const k = c => (c === null || c === undefined || c >= NO_FIT ? Infinity : c);
+  return [k(all[0].cost) === k(all[1].cost) ? wide : k(all[0].cost) < k(all[1].cost) ? all[0] : all[1]];
+}
+
 function renderDetail() {
   const i = inst(), d = i && app.selectedKhz > 0 ? i.detail : null;
   $("dTitle").textContent = d ? d.call || d.khz.toFixed(1) : "Pick a signal";
@@ -955,10 +1012,13 @@ function renderDetail() {
   $("dNote").hidden = !(d && d.note);
   $("dNote").textContent = d ? d.note : "";
   // both decodes of each window: wide filter on top, narrow dimmed
-  $("dWins").innerHTML = (d ? d.windows : []).map(r => `<div class="win"><span class="t">${r.utc}</span><div class="x">`
-    + `<span>${r.html}</span>${r.altHtml ? `<span class="alt">${r.altHtml}</span>` : ""}`
-    + `<span class="c">${r.altHtml ? `${rateName(r.rate)} ${costText(r.cost)}  ·  ${rateName(r.altRate)} ${costText(r.altCost)}` : "cost " + costText(r.cost)}</span>`
-    + "</div></div>").join("");
+  $("dWins").innerHTML = (d ? d.windows : []).map(r => {
+    const rs = readings(r, app.decoded);
+    return `<div class="win"><span class="t">${r.utc}</span><div class="x">`
+      + rs.map((x, n) => `<span${n ? ' class="alt"' : ""}>${x.html}</span>`).join("")
+      + `<span class="c">${rs.length > 1 || r.altHtml ? rs.map(x => `${rateName(x.rate)} ${costText(x.cost)}`).join("  ·  ") : "cost " + costText(r.cost)}</span>`
+      + "</div></div>";
+  }).join("");
 }
 
 function renderStatus() {
@@ -984,6 +1044,9 @@ function seg(el, labels, current, onPick) {
 function renderSettings() {
   const demo = app.instances.some(x => x.demo);
   seg($("demoSeg"), ["Off", "On"], demo ? 1 : 0, n => { if ((n === 1) !== demo) setDemo(n === 1); });
+  seg($("decSeg"), ["Both", "Wide", "Narrow", "Lowest cost"], DECODED.indexOf(app.decoded), n => {
+    app.decoded = DECODED[n]; save("decoded", app.decoded); renderSettings(); renderDetail();
+  });
   $("connSection").hidden = demo;
   $("demoHint").hidden = !demo;
   const c = (inst() && inst().hello.config) || {}, v = ["off", "permissive", "normal", "aggressive"];
@@ -1021,24 +1084,49 @@ function renderConns() {
   if (!app.instances.some(i => !i.demo) && app.editing === -2) {
     const p = document.createElement("div"); p.className = "small muted"; p.textContent = "No servers yet."; box.appendChild(p);
   }
+  if (app.note && app.editing === -2) {
+    const p = document.createElement("div"); p.className = "small muted"; p.textContent = app.note; box.appendChild(p);
+  }
   $("connForm").hidden = app.editing === -2;
   $("addConn").hidden = app.editing !== -2;
-  $("fSave").textContent = app.editing === -1 ? "Add" : "Save";
+  $("fSave").textContent = $("fSave").disabled ? "Searching..." : app.editing === -1 ? "Add" : "Save";
 }
 
 function editConn(n) {
   const i = app.instances[n];
   // a new server defaults to the SparkGap that served this page, if one did
   const served = /^https?:$/.test(location.protocol);
-  const [address, port] = i ? urlParts(i.url) : served ? [location.hostname, Number(location.port) || DEFAULT_PORT] : ["", DEFAULT_PORT];
+  const [address, port] = i ? urlParts(i.url) : [served ? location.hostname : "", ""];  // no port: find them all
   $("fAddr").value = address; $("fPort").value = port; $("fCode").value = i ? i.token : "";
   $("fErr").hidden = true;
   app.editing = n;
+  app.note = "";
   renderConns();
   $("fAddr").focus();
 }
 
+async function findConns() {
+  const address = $("fAddr").value.trim(), code = normalizeCode($("fCode").value);
+  const err = checkFeed(address, DEFAULT_PORT, code);
+  if (err) { $("fErr").textContent = err; $("fErr").hidden = false; return; }
+  $("fErr").hidden = true;
+  $("fSave").disabled = true;
+  $("fSave").textContent = "Searching...";
+  const found = await Promise.all(SCAN_PORTS.map(p => probeFeed(feedUrl(address, p), code).then(r => [p, r])));
+  $("fSave").disabled = false;
+  if (app.editing !== -1) return;  // cancelled meanwhile
+  const listed = app.instances.filter(i => urlParts(i.url)[0] === address).map(i => urlParts(i.url)[1]);
+  const r = scanReport(found, listed);
+  if (!r.add.length) { $("fErr").textContent = r.text; $("fErr").hidden = false; renderConns(); return; }
+  for (const p of r.add) addInstance(feedUrl(address, p), code);
+  app.editing = -2;
+  app.note = r.text;
+  saveFeeds();
+  setCurrent(app.instances.length - r.add.length);
+}
+
 function saveConn() {
+  if (app.editing === -1 && !$("fPort").value.trim()) { findConns(); return; }
   const address = $("fAddr").value, port = parseInt($("fPort").value) || 0, code = $("fCode").value;
   let err = checkFeed(address, port, code);
   const url = feedUrl(address, port), n = app.editing;
@@ -1175,6 +1263,7 @@ function start() {
   wf.onview = renderView;
   bindInput();
   setTheme(load("theme", "dark"));
+  app.decoded = DECODED.includes(load("decoded", "both")) ? load("decoded", "both") : "both";
   // no saved servers yet: start in demo
   loadServers();
   setDemo(load("demo", !app.instances.length));

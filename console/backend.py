@@ -36,6 +36,8 @@ PROTOCOL = "sparkgap.v1"
 FEED_VERSION = 1
 MAX_BINS = 16_384  # a row wider than this is not a spectrum the feed sends
 DEFAULT_PORT = 7320
+SCAN_PORTS = range(DEFAULT_PORT, DEFAULT_PORT + 20)  # tried when a server is added without a port
+SCAN_TIMEOUT_S = 3.0
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # join codes, as the feed server accepts them
 CODE_LENGTH = 6
 SPECTRUM_HEADER = struct.Struct("<IddffH")
@@ -159,12 +161,8 @@ class Instance(QObject):
             self.source = Demo(self)
             self._set_state("live")
             return
-        req = QNetworkRequest(QUrl(self._url))
-        req.setRawHeader(b"Sec-WebSocket-Protocol", PROTOCOL.encode())
-        if self._token:
-            req.setRawHeader(b"Authorization", f"Bearer {self._token}".encode())
         self._set_state("connecting")
-        self.ws.open(req)
+        self.ws.open(open_request(self._url, self._token))
 
     @property
     def feed(self) -> tuple[str, str]:
@@ -197,11 +195,11 @@ class Instance(QObject):
 
     def _on_error(self, _err: Any) -> None:
         err = self.ws.errorString()
-        # Qt reports the feed's 401 as an unsupported WWW-Authenticate challenge
-        if "WWW-Authenticate" in err or "401" in err:
-            self.refused, err = "code", "wrong join code"
-        elif "429" in err:
-            self.refused, err = "lockout", "locked out after wrong join codes; retrying in 10 min"
+        self.refused = refusal(err)
+        if self.refused == "code":
+            err = "wrong join code"
+        elif self.refused == "lockout":
+            err = "locked out after wrong join codes; retrying in 10 min"
         self._error = err
         if self.refused:
             # a retry with the same code would only count towards a lockout
@@ -989,6 +987,84 @@ class Waterfall(QQuickPaintedItem):
             p.drawLine(QPointF(0, y), QPointF(w, y))
 
 
+def refusal(err: str) -> str:
+    """"code" or "lockout" when a socket error is the feed refusing the join code, else ""."""
+    # Qt reports the feed's 401 as an unsupported WWW-Authenticate challenge
+    if "WWW-Authenticate" in err or "401" in err:
+        return "code"
+    return "lockout" if "429" in err else ""
+
+
+def open_request(url: str, token: str) -> QNetworkRequest:
+    req = QNetworkRequest(QUrl(url))
+    req.setRawHeader(b"Sec-WebSocket-Protocol", PROTOCOL.encode())
+    if token:
+        req.setRawHeader(b"Authorization", f"Bearer {token}".encode())
+    return req
+
+
+class Probe(QObject):
+    """One try of a feed: done(port, result), result "ok" once its hello arrives, else "code",
+    "lockout", "full" or "none"."""
+
+    done = Signal(int, str)
+
+    def __init__(self, url: str, token: str, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self.port = url_parts(url)[1]
+        self.result = ""
+        self.ws = QWebSocket()
+        self.ws.textMessageReceived.connect(self._on_text)
+        self.ws.errorOccurred.connect(self._on_error)
+        self.ws.disconnected.connect(lambda: self._finish("none"))
+        QTimer.singleShot(int(SCAN_TIMEOUT_S * 1000), self, lambda: self._finish("none"))
+        self.ws.open(open_request(url, token))
+
+    def _on_text(self, text: str) -> None:
+        try:
+            if json.loads(text).get("type") == "hello":
+                self._finish("ok")
+        except (ValueError, AttributeError):
+            pass
+
+    def _on_error(self, _err: Any) -> None:
+        err = self.ws.errorString()
+        self._finish(refusal(err) or ("full" if "503" in err else "none"))
+
+    def _finish(self, result: str) -> None:
+        if self.result:
+            return
+        self.result = result
+        self.ws.abort()
+        self.done.emit(self.port, result)
+
+
+def scan_report(found: dict[int, str], listed: list[int]) -> tuple[list[int], str]:
+    """The ports a scan adds, and a line for the operator."""
+    def ports(r: str) -> list[int]:
+        return sorted(p for p, v in found.items() if v == r)
+
+    add = [p for p in ports("ok") if p not in listed]
+    have = [p for p in ports("ok") if p in listed]
+    def joined(ps: list[int]) -> str:
+        return ", ".join(map(str, ps))
+
+    parts = []
+    if add:
+        parts.append(f"Added {joined(add)}.")
+    if have:
+        parts.append(f"Already in the list: {joined(have)}.")
+    if ports("code"):
+        parts.append(f"Different join code on {joined(ports('code'))}.")
+    if ports("lockout"):
+        parts.append(f"Locked out for {LOCKOUT_S // 60} min on {joined(ports('lockout'))}.")
+    if ports("full"):
+        parts.append(f"Too many clients on {joined(ports('full'))}.")
+    if not parts:
+        parts.append(f"No SparkGap answered on ports {SCAN_PORTS[0]} to {SCAN_PORTS[-1]}.")
+    return add, " ".join(parts)
+
+
 def feed_url(address: str, port: int) -> str:
     return f"ws://{address.strip()}:{port}/feed"
 
@@ -1052,6 +1128,7 @@ class Console(QObject):
 
     instancesChanged = Signal()
     currentChanged = Signal()
+    scanDone = Signal(bool, str)  # whether servers were added, and what the search found
 
     def __init__(self, feeds: list[tuple[str, str]], store: QSettings | None = None) -> None:
         super().__init__()
@@ -1059,6 +1136,9 @@ class Console(QObject):
         self._instances = [Instance(u, t, self) for u, t in feeds]
         self._current = 0
         self._back = 0  # the server shown before demo
+        self._scan: dict[int, str] = {}  # port -> result of the search under way
+        self._probes: list[Probe] = []
+        self._scan_at = ("", "")  # (address, code) being searched
         for i in self._instances:
             i.open()
         # instances not on screen still move their spectrum rows into history, so switching to
@@ -1154,6 +1234,44 @@ class Console(QObject):
         self.instancesChanged.emit()
         self.currentChanged.emit()
         return ""
+
+    @Slot(str, str, result=str)
+    def findFeeds(self, address: str, token: str) -> str:  # noqa: N802
+        """Tries every port in SCAN_PORTS on address with one code; scanDone reports.
+        Returns why the search cannot start, or ""."""
+        if err := check_feed(address, DEFAULT_PORT, token):
+            return err
+        if self._scan_at[0]:
+            return "already searching"
+        address, token = address.strip(), normalize_code(token)
+        self._scan, self._scan_at = {}, (address, token)
+        self._probes = [Probe(feed_url(address, port), token, self) for port in SCAN_PORTS]
+        for probe in self._probes:
+            probe.done.connect(self._probed)
+        return ""
+
+    def _probed(self, port: int, result: str) -> None:
+        self._scan[port] = result
+        if len(self._scan) < len(SCAN_PORTS):
+            return
+        for probe in self._probes:
+            probe.deleteLater()
+        self._probes = []
+        address, token = self._scan_at
+        self._scan_at = ("", "")
+        listed = [url_parts(i.feed[0])[1] for i in self._instances
+                  if not i.is_demo and url_parts(i.feed[0])[0] == address]
+        add, text = scan_report(self._scan, listed)
+        for port in add:
+            inst = Instance(feed_url(address, port), token, self)
+            self._instances.append(inst)
+            inst.open()
+        if add:
+            self._current = len(self._instances) - len(add)
+            self._save()
+            self.instancesChanged.emit()
+            self.currentChanged.emit()
+        self.scanDone.emit(bool(add), text)
 
     @Slot(int)
     def removeFeed(self, i: int) -> None:  # noqa: N802

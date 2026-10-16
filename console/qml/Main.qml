@@ -20,7 +20,7 @@ ApplicationWindow {
         property int height: 800
         property bool maximized: false
     }
-    Settings { category: "ui"; property alias theme: win.themeOverride }
+    Settings { category: "ui"; property alias theme: win.themeOverride; property alias decoded: win.decoded }
     Component.onCompleted: {
         width = geom.width; height = geom.height
         const onScreen = Qt.application.screens.some(s => geom.x >= s.virtualX && geom.y >= s.virtualY
@@ -38,10 +38,36 @@ ApplicationWindow {
 
     property var inst: console_.current
     property string themeOverride: "dark"  // dark by default; the toggle switches it
+    property string decoded: "both"  // readings of each window shown: both, wide, narrow, lowest (cost)
     property alias settingsOpen: settings.visible
     readonly property bool dark: themeOverride ? themeOverride === "dark"
                                                : Application.styleHints.colorScheme === Qt.ColorScheme.Dark
     property var selectedKhz: -1
+
+    // the readings of a window to show: both, one filter width, or the lower timing cost (a tie or no fit keeps wide)
+    function readings(w, mode) {
+        const all = [{ html: w.html, rate: w.rate, cost: w.cost }]
+        if (w.alt_html) all.push({ html: w.alt_html, rate: w.alt_rate, cost: w.alt_cost })
+        if (mode === "both" || all.length === 1) return all
+        const wide = all.find(x => x.rate === 200) || all[0]
+        if (mode === "wide") return [wide]
+        if (mode === "narrow") return [all.find(x => x.rate === 100) || all[0]]
+        const k = c => (c === null || c === undefined || c >= 999 ? Infinity : c)  // 999: itila2's "no fit"
+        return [k(all[0].cost) === k(all[1].cost) ? wide : k(all[0].cost) < k(all[1].cost) ? all[0] : all[1]]
+    }
+    // the decoded windows as one rich-text document: time, readings (the second dimmed), costs
+    function windowsHtml(ws, mode) {
+        const c = v => v === null || v === undefined ? "-" : v >= 999 ? "no fit" : v.toFixed(2)
+        const n = r => r === 100 ? "narrow" : r === 200 ? "wide" : "cost"
+        return "<table cellspacing='0' cellpadding='0' width='100%'>" + ws.map(w => {
+            const rs = readings(w, mode)
+            const costs = rs.length > 1 || w.alt_html ? rs.map(x => n(x.rate) + " " + c(x.cost)).join("  ·  ") : "cost " + c(w.cost)
+            return "<tr><td valign='top' style='padding-right:10px; padding-bottom:8px; color:" + t.faint + "'>" + w.utc + "</td>"
+                + "<td valign='top' style='padding-bottom:8px'>"
+                + rs.map((x, i) => i ? "<br><span style='color:" + t.muted + "'>" + x.html + "</span>" : x.html).join("")
+                + "<br><span style='font-size:10px; color:" + t.faint + "'>" + costs + "</span></td></tr>"
+        }).join("") + "</table>"
+    }
     property int ladderTick: 0
 
     // ---- theme tokens ----
@@ -445,7 +471,14 @@ ApplicationWindow {
                             }
                         }
                         Rectangle { Layout.fillWidth: true; height: 1; color: t.line }
-                        Text { Layout.leftMargin: 16; Layout.topMargin: 10; text: "DECODED WINDOWS"; color: t.muted; font.pixelSize: 11; font.letterSpacing: 1 }
+                        RowLayout {
+                            Layout.fillWidth: true; Layout.leftMargin: 16; Layout.rightMargin: 16; Layout.topMargin: 6
+                            Text { Layout.fillWidth: true; text: "DECODED WINDOWS"; color: t.muted; font.pixelSize: 11; font.letterSpacing: 1 }
+                            Btn {
+                                text: "Copy"; visible: (detailPane.d.windows || []).length > 0
+                                onClicked: { winText.selectAll(); winText.copy(); winText.deselect() }
+                            }
+                        }
                         Text {
                             visible: !!detailPane.d.note
                             Layout.fillWidth: true; Layout.margins: 16; Layout.topMargin: 6
@@ -455,42 +488,21 @@ ApplicationWindow {
                             Layout.fillWidth: true; Layout.fillHeight: true
                             Layout.leftMargin: 16; Layout.rightMargin: 2; Layout.topMargin: 6; Layout.bottomMargin: 16
                             readonly property bool overflows: winList.contentHeight > winList.height
-                            ListView {
+                            // one read-only document, so a drag selects across windows and Ctrl+C copies
+                            Flickable {
                                 id: winList
                                 anchors.fill: parent; anchors.rightMargin: 13
-                                clip: true; spacing: 8
+                                clip: true; contentWidth: width; contentHeight: winText.height
+                                boundsBehavior: Flickable.StopAtBounds
                                 ScrollBar.vertical: winBar
-                                model: detailPane.d.windows || []
-                                // both decodes of each window: wide filter on top, narrow dimmed
-                                delegate: RowLayout {
-                                    required property var modelData
-                                    width: ListView.view.width; spacing: 10
-                                    Column {
-                                        Layout.alignment: Qt.AlignTop
-                                        Text { text: modelData.utc; color: t.faint; font.family: t.mono; font.features: t.zero; font.pixelSize: 11 }
-                                    }
-                                    Column {
-                                        Layout.fillWidth: true; spacing: 3
-                                        Text {
-                                            width: parent.width; text: modelData.html; textFormat: Text.RichText
-                                            wrapMode: Text.WrapAnywhere; color: t.fg; font.family: t.mono; font.features: t.zero; font.pixelSize: 11
-                                        }
-                                        Text {
-                                            visible: !!modelData.alt_html
-                                            width: parent.width; text: modelData.alt_html; textFormat: Text.RichText
-                                            wrapMode: Text.WrapAnywhere; color: t.muted; opacity: 0.75
-                                            font.family: t.mono; font.features: t.zero; font.pixelSize: 11
-                                        }
-                                        Text {
-                                            // top reading first; "no fit" is the decoder's cost 999
-                                            function c(v) { return v === null || v === undefined ? "-" : v >= 999 ? "no fit" : v.toFixed(2) }
-                                            function n(r) { return r === 100 ? "narrow" : r === 200 ? "wide" : "cost" }
-                                            width: parent.width; wrapMode: Text.WordWrap
-                                            text: modelData.alt_html ? n(modelData.rate) + " " + c(modelData.cost) + "  ·  " + n(modelData.alt_rate) + " " + c(modelData.alt_cost)
-                                                                     : "cost " + c(modelData.cost)
-                                            color: t.faint; font.family: t.mono; font.features: t.zero; font.pixelSize: 10
-                                        }
-                                    }
+                                TextEdit {
+                                    id: winText
+                                    width: winList.width
+                                    readOnly: true; selectByMouse: true
+                                    textFormat: TextEdit.RichText; wrapMode: TextEdit.WrapAnywhere
+                                    color: t.fg; selectionColor: Qt.alpha(t.accent, 0.35); selectedTextColor: t.fg
+                                    font.family: t.mono; font.features: t.zero; font.pixelSize: 11
+                                    text: win.windowsHtml(detailPane.d.windows || [], win.decoded)
                                 }
                             }
                             function scrollBy(dy) {
@@ -632,134 +644,180 @@ ApplicationWindow {
         Overlay.modal: Rectangle { color: Qt.alpha("#000000", win.dark ? 0.55 : 0.35) }
         readonly property var c: inst && inst.info.config ? inst.info.config : ({})
         background: Rectangle { radius: 10; color: t.surface; border.color: t.line }
+        height: Math.min(implicitHeight, win.height - 32)  // a short window scrolls the settings, Close stays in view
         contentItem: ColumnLayout {
             spacing: 14
-            Text { text: "Settings"; color: t.fg; font.family: t.display; font.pixelSize: 15; font.weight: Font.DemiBold }
-            Rectangle {
-                visible: console_.demo
-                Layout.fillWidth: true; Layout.topMargin: -6; implicitHeight: hintTxt.implicitHeight + 16; radius: 8; color: t.sunken
-                Text {
-                    id: hintTxt; x: 10; width: parent.width - 20; anchors.verticalCenter: parent.verticalCenter; wrapMode: Text.WordWrap
-                    text: "Demo mode is on. Turn it off to add or connect to a SparkGap server."; color: t.muted; font.pixelSize: 12
-                }
-            }
-            RowLayout {
-                spacing: 10
-                Text { Layout.preferredWidth: 92; text: "DEMO"; color: t.muted; font.pixelSize: 11; font.letterSpacing: 1 }
-                Seg { labels: ["Off", "On"]; current: console_.demo ? 1 : 0; onPicked: (i) => console_.setDemo(i === 1) }
-                Text { text: "Made-up signals instead of your servers."; color: t.faint; font.pixelSize: 11 }
-            }
-            component Setting: ColumnLayout {
-                property alias label: lbl.text
-                default property alias control: holder.data
-                spacing: 6
-                Text { id: lbl; color: t.muted; font.pixelSize: 11; font.letterSpacing: 1 }
-                Item { id: holder; implicitWidth: childrenRect.width; implicitHeight: childrenRect.height }
-            }
-            component Btn: Rectangle {
-                property alias text: btnTxt.text
-                signal clicked()
-                width: btnTxt.implicitWidth + 24; height: 28; radius: 8
-                color: btnHov.hovered ? t.sunken : "transparent"; border.color: t.line
-                Text { id: btnTxt; anchors.centerIn: parent; color: t.fg; font.pixelSize: 12 }
-                HoverHandler { id: btnHov; cursorShape: Qt.PointingHandCursor }
-                TapHandler { onTapped: parent.clicked() }
-            }
-            component Field: TextField {
-                Layout.fillWidth: true; implicitHeight: 30
-                placeholderTextColor: t.faint; color: t.fg
-                font.family: t.mono; font.features: t.zero; font.pixelSize: 12
-                leftPadding: 8; topPadding: 0; bottomPadding: 0; verticalAlignment: TextInput.AlignVCenter
-                background: Rectangle { radius: 8; color: t.sunken; border.color: parent.activeFocus ? t.accent : t.line }
-            }
-            Setting {
-                visible: !console_.demo
-                label: "CONNECTIONS"
-                // the SparkGap servers this console watches, kept between runs; a click on a row shows that one
+            Flickable {
+                id: setFlick
+                Layout.fillWidth: true; Layout.fillHeight: true
+                implicitHeight: setCol.implicitHeight; contentHeight: setCol.implicitHeight
+                clip: true; boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: ScrollBar { policy: setFlick.contentHeight > setFlick.height ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff }
                 ColumnLayout {
-                    id: conns
-                    width: 444; spacing: 4
-                    property int editing: -2  // -2 no form, -1 adding, else the row being edited
-                    property string err: ""
-                    function edit(i) {
-                        const f = i >= 0 ? console_.feedAt(i) : { address: "", port: 7320, token: "" }
-                        addr.text = f.address; port.text = String(f.port); tok.text = f.token
-                        err = ""; editing = i; addr.forceActiveFocus()
+                    id: setCol
+                    width: setFlick.width - (setFlick.contentHeight > setFlick.height ? 14 : 0)
+                    spacing: 14
+                    Text { text: "Settings"; color: t.fg; font.family: t.display; font.pixelSize: 15; font.weight: Font.DemiBold }
+                    Rectangle {
+                        visible: console_.demo
+                        Layout.fillWidth: true; Layout.topMargin: -6; implicitHeight: hintTxt.implicitHeight + 16; radius: 8; color: t.sunken
+                        Text {
+                            id: hintTxt; x: 10; width: parent.width - 20; anchors.verticalCenter: parent.verticalCenter; wrapMode: Text.WordWrap
+                            text: "Demo mode is on. Turn it off to add or connect to a SparkGap server."; color: t.muted; font.pixelSize: 12
+                        }
                     }
-                    function save() {
-                        const e = console_.saveFeed(editing, addr.text, parseInt(port.text) || 0, tok.text)
-                        if (e) err = e; else editing = -2
+                    RowLayout {
+                        spacing: 10
+                        Text { Layout.preferredWidth: 92; text: "DEMO"; color: t.muted; font.pixelSize: 11; font.letterSpacing: 1 }
+                        Seg { labels: ["Off", "On"]; current: console_.demo ? 1 : 0; onPicked: (i) => console_.setDemo(i === 1) }
+                        Text { text: "Made-up signals instead of your servers."; color: t.faint; font.pixelSize: 11 }
                     }
-                    Repeater {
-                        model: console_.instances
-                        delegate: Rectangle {
-                            required property int index
-                            required property var modelData
-                            readonly property bool cur: index === console_.currentIndex
-                            visible: !modelData.demo  // demo is the toggle above, not a server
-                            Layout.fillWidth: true; height: 34; radius: 8
-                            color: cur ? t.sunken : rowHov.hovered ? Qt.alpha(t.sunken, 0.5) : "transparent"
-                            border.color: cur ? t.line : "transparent"
-                            HoverHandler { id: rowHov; cursorShape: Qt.PointingHandCursor }
-                            TapHandler { onTapped: console_.setCurrent(index) }
-                            RowLayout {
-                                anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 4; spacing: 8
-                                Rectangle {
-                                    width: 8; height: 8; radius: 4
-                                    color: modelData.state === "live" ? t.good : modelData.state === "connecting" ? t.accent : t.bad
-                                }
-                                Text {
-                                    Layout.fillWidth: true; elide: Text.ElideRight
-                                    text: modelData.title; color: t.fg; font.pixelSize: 13
-                                }
-                                Text {
-                                    readonly property bool failing: modelData.state !== "live" && !!modelData.error
-                                    text: failing ? modelData.error : modelData.url.replace("ws://", "").replace("wss://", "").replace("/feed", "")
-                                    color: failing ? t.bad : t.muted; font.family: t.mono; font.features: t.zero; font.pixelSize: 11
-                                    Layout.maximumWidth: 170; elide: Text.ElideRight
-                                }
-                                Btn { text: "Edit"; onClicked: conns.edit(index) }
-                                Btn { text: "✕"; onClicked: { console_.removeFeed(index); conns.editing = -2 } }
+                    RowLayout {
+                        spacing: 10
+                        Text { Layout.preferredWidth: 92; text: "DECODED"; color: t.muted; font.pixelSize: 11; font.letterSpacing: 1 }
+                        Seg {
+                            readonly property var modes: ["both", "wide", "narrow", "lowest"]
+                            labels: ["Both", "Wide", "Narrow", "Lowest cost"]; current: modes.indexOf(win.decoded)
+                            onPicked: (i) => win.decoded = modes[i]
+                        }
+                    }
+                    Text { Layout.leftMargin: 102; Layout.topMargin: -8; text: "Readings of each window shown."; color: t.faint; font.pixelSize: 11 }
+                    component Setting: ColumnLayout {
+                        property alias label: lbl.text
+                        default property alias control: holder.data
+                        spacing: 6
+                        Text { id: lbl; color: t.muted; font.pixelSize: 11; font.letterSpacing: 1 }
+                        Item { id: holder; implicitWidth: childrenRect.width; implicitHeight: childrenRect.height }
+                    }
+                    component Btn: Rectangle {
+                        property alias text: btnTxt.text
+                        signal clicked()
+                        width: btnTxt.implicitWidth + 24; height: 28; radius: 8
+                        color: btnHov.hovered ? t.sunken : "transparent"; border.color: t.line
+                        Text { id: btnTxt; anchors.centerIn: parent; color: t.fg; font.pixelSize: 12 }
+                        HoverHandler { id: btnHov; cursorShape: Qt.PointingHandCursor }
+                        TapHandler { onTapped: parent.clicked() }
+                    }
+                    component Field: TextField {
+                        Layout.fillWidth: true; implicitHeight: 30
+                        placeholderTextColor: t.faint; color: t.fg
+                        font.family: t.mono; font.features: t.zero; font.pixelSize: 12
+                        leftPadding: 8; topPadding: 0; bottomPadding: 0; verticalAlignment: TextInput.AlignVCenter
+                        background: Rectangle { radius: 8; color: t.sunken; border.color: parent.activeFocus ? t.accent : t.line }
+                    }
+                    Setting {
+                        visible: !console_.demo
+                        label: "CONNECTIONS"
+                        // the SparkGap servers this console watches, kept between runs; a click on a row shows that one
+                        ColumnLayout {
+                            id: conns
+                            width: 444; spacing: 4
+                            property int editing: -2  // -2 no form, -1 adding, else the row being edited
+                            property string err: ""
+                            property string note: ""  // what the last search for servers found
+                            property bool searching: false
+                            function edit(i) {
+                                const f = i >= 0 ? console_.feedAt(i) : { address: "", port: "", token: "" }  // no port: find them all
+                                addr.text = f.address; port.text = String(f.port); tok.text = f.token
+                                err = ""; note = ""; editing = i; addr.forceActiveFocus()
                             }
+                            function save() {
+                                if (editing === -1 && port.text.trim() === "") {
+                                    const e = console_.findFeeds(addr.text, tok.text)
+                                    if (e) err = e; else { err = ""; searching = true }
+                                    return
+                                }
+                                const e = console_.saveFeed(editing, addr.text, parseInt(port.text) || 0, tok.text)
+                                if (e) err = e; else editing = -2
+                            }
+                            Connections {
+                                target: console_
+                                function onScanDone(added, text) {
+                                    conns.searching = false
+                                    if (conns.editing !== -1) return  // cancelled meanwhile
+                                    if (added) { conns.note = text; conns.editing = -2 } else conns.err = text
+                                }
+                            }
+                            Repeater {
+                                model: console_.instances
+                                delegate: Rectangle {
+                                    required property int index
+                                    required property var modelData
+                                    readonly property bool cur: index === console_.currentIndex
+                                    visible: !modelData.demo  // demo is the toggle above, not a server
+                                    Layout.fillWidth: true; height: 34; radius: 8
+                                    color: cur ? t.sunken : rowHov.hovered ? Qt.alpha(t.sunken, 0.5) : "transparent"
+                                    border.color: cur ? t.line : "transparent"
+                                    HoverHandler { id: rowHov; cursorShape: Qt.PointingHandCursor }
+                                    TapHandler { onTapped: console_.setCurrent(index) }
+                                    RowLayout {
+                                        anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 4; spacing: 8
+                                        Rectangle {
+                                            width: 8; height: 8; radius: 4
+                                            color: modelData.state === "live" ? t.good : modelData.state === "connecting" ? t.accent : t.bad
+                                        }
+                                        Text {
+                                            Layout.fillWidth: true; elide: Text.ElideRight
+                                            text: modelData.title; color: t.fg; font.pixelSize: 13
+                                        }
+                                        Text {
+                                            readonly property bool failing: modelData.state !== "live" && !!modelData.error
+                                            text: failing ? modelData.error : modelData.url.replace("ws://", "").replace("wss://", "").replace("/feed", "")
+                                            color: failing ? t.bad : t.muted; font.family: t.mono; font.features: t.zero; font.pixelSize: 11
+                                            Layout.maximumWidth: 170; elide: Text.ElideRight
+                                        }
+                                        Btn { text: "Edit"; onClicked: conns.edit(index) }
+                                        Btn { text: "✕"; onClicked: { console_.removeFeed(index); conns.editing = -2 } }
+                                    }
+                                }
+                            }
+                            Text {
+                                visible: !console_.instances.some(i => !i.demo) && conns.editing === -2
+                                text: "No servers yet."; color: t.muted; font.pixelSize: 12
+                            }
+                            Text {
+                                visible: !!conns.note && conns.editing === -2
+                                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                text: conns.note; color: t.muted; font.pixelSize: 12
+                            }
+                            ColumnLayout {
+                                visible: conns.editing > -2
+                                Layout.fillWidth: true; Layout.topMargin: 6; spacing: 6
+                                Field { id: addr; placeholderText: "Address: tailnet name or IP"; onAccepted: conns.save() }
+                                Field {
+                                    id: port; placeholderText: "Port: blank finds every SparkGap on 7320 to 7339"; onAccepted: conns.save()
+                                    validator: IntValidator { bottom: 1; top: 65535 }
+                                }
+                                Field {
+                                    id: tok; placeholderText: "Join code, e.g. XXX-XXX"; onAccepted: conns.save()
+                                    font.capitalization: Font.AllUppercase
+                                }
+                                Text { visible: !!conns.err; text: conns.err; color: t.bad; font.pixelSize: 12 }
+                                Row {
+                                    spacing: 8
+                                    Btn {
+                                        text: conns.searching ? "Searching..." : conns.editing === -1 ? "Add" : "Save"
+                                        enabled: !conns.searching; onClicked: conns.save()
+                                    }
+                                    Btn { text: "Cancel"; onClicked: conns.editing = -2 }
+                                }
+                            }
+                            Btn { visible: conns.editing === -2; Layout.topMargin: 4; text: "+ Add server"; onClicked: conns.edit(-1) }
                         }
                     }
-                    Text {
-                        visible: !console_.instances.some(i => !i.demo) && conns.editing === -2
-                        text: "No servers yet."; color: t.muted; font.pixelSize: 12
+                    GridLayout {
+                        columns: 2; columnSpacing: 10; rowSpacing: 8
+                        component GridLabel: Text { Layout.preferredWidth: 92; color: t.muted; font.pixelSize: 11; font.letterSpacing: 1 }
+                        GridLabel { text: "SPOT RULE" }
+                        Seg { readOnly: true; labels: ["off", "on"]; current: settings.c.spot_rule === "repeat" ? 1 : settings.c.spot_rule ? 0 : -1 }
+                        GridLabel { text: "VALIDATION"; visible: "spot_validation" in settings.c }
+                        Seg { visible: "spot_validation" in settings.c; readOnly: true; labels: ["off", "permissive", "normal", "aggressive"]; current: labels.indexOf(settings.c.spot_validation || (settings.c.spot_rule ? "off" : "")) }
+                        GridLabel { text: "CALL SOURCE"; visible: "spot_validation" in settings.c }
+                        Seg { visible: "spot_validation" in settings.c; readOnly: true; labels: ["SCP", "RBN", "RBN + SKCC"]; current: ["scp", "rbn", "rbn+skcc"].indexOf(settings.c.spot_validation_calls) }
+                        Item { width: 1; height: 1 }
+                        Text { text: "From the selected server's config."; color: t.faint; font.pixelSize: 11 }
                     }
-                    ColumnLayout {
-                        visible: conns.editing > -2
-                        Layout.fillWidth: true; Layout.topMargin: 6; spacing: 6
-                        Field { id: addr; placeholderText: "Address: tailnet name or IP"; onAccepted: conns.save() }
-                        Field {
-                            id: port; placeholderText: "Port"; onAccepted: conns.save()
-                            validator: IntValidator { bottom: 1; top: 65535 }
-                        }
-                        Field {
-                            id: tok; placeholderText: "Join code, e.g. XXX-XXX"; onAccepted: conns.save()
-                            font.capitalization: Font.AllUppercase
-                        }
-                        Text { visible: !!conns.err; text: conns.err; color: t.bad; font.pixelSize: 12 }
-                        Row {
-                            spacing: 8
-                            Btn { text: conns.editing === -1 ? "Add" : "Save"; onClicked: conns.save() }
-                            Btn { text: "Cancel"; onClicked: conns.editing = -2 }
-                        }
-                    }
-                    Btn { visible: conns.editing === -2; Layout.topMargin: 4; text: "+ Add server"; onClicked: conns.edit(-1) }
                 }
-            }
-            GridLayout {
-                columns: 2; columnSpacing: 10; rowSpacing: 8
-                component GridLabel: Text { Layout.preferredWidth: 92; color: t.muted; font.pixelSize: 11; font.letterSpacing: 1 }
-                GridLabel { text: "SPOT RULE" }
-                Seg { readOnly: true; labels: ["off", "on"]; current: settings.c.spot_rule === "repeat" ? 1 : settings.c.spot_rule ? 0 : -1 }
-                GridLabel { text: "VALIDATION"; visible: "spot_validation" in settings.c }
-                Seg { visible: "spot_validation" in settings.c; readOnly: true; labels: ["off", "permissive", "normal", "aggressive"]; current: labels.indexOf(settings.c.spot_validation || (settings.c.spot_rule ? "off" : "")) }
-                GridLabel { text: "CALL SOURCE"; visible: "spot_validation" in settings.c }
-                Seg { visible: "spot_validation" in settings.c; readOnly: true; labels: ["SCP", "RBN", "RBN + SKCC"]; current: ["scp", "rbn", "rbn+skcc"].indexOf(settings.c.spot_validation_calls) }
-                Item { width: 1; height: 1 }
-                Text { text: "From the selected server's config."; color: t.faint; font.pixelSize: 11 }
             }
             RowLayout {
                 Layout.fillWidth: true
