@@ -13,6 +13,7 @@ const CODE_LENGTH = 6;
 const SPECTRUM_HZ = 60;
 const HISTORY_COLS = 2_400;
 const PLAYOUT_MARGIN_S = 0.20;
+const PENDING_MAX = 120;  // rows waiting to be drawn; a hidden tab draws none, so older ones go
 const SPOT_KEEP_S = 600;
 const SIGNAL_KEEP_S = 180;
 const RECONNECT_S = [1, 2, 5, 10, 20];
@@ -24,6 +25,8 @@ const FREQ_MATCH_KHZ = 0.15;
 const SEARCH_MAX = 8;
 const NO_FIT = 999.0;
 const DECODED = ["both", "wide", "narrow", "lowest"];  // which readings of each window the panel shows
+const ZOOM_STEPS = [["Full", 1], ["Half", 2], ["Quarter", 4]];  // the zoom button: name and fraction of the band
+const ZOOM_MATCH = 0.05;  // a view within 5% of a step's span is at that step
 const DETAIL_MATCH_KHZ = 0.06;
 const CALL_RE = /^(?:[A-Z]{1,2}|[A-Z]\d|\d[A-Z])\d[A-Z]{1,4}$/;
 const HEARD_S = 90.0;
@@ -66,6 +69,10 @@ class Instance {
     this.heardList = [];
     this.selKhz = null;
     this.selCall = "";
+    this.since = 0;  // when this console last connected (status page)
+    this.reconnects = 0;
+    this.goKhz = null;  // a search match on another band: centred once that band's rows arrive
+    this.band = 0;  // which of hello.bands the waterfall shows; a SparkGap may run several
     this.firstHz = 0; this.hzPerBin = 1; this.nBins = 0; this.dbUnit = 0.25;
     this.ring = null;  // HISTORY_COLS columns of nBins levels, column-major
     this.head = 0; this.cols = 0; this.total = 0;
@@ -107,6 +114,8 @@ class Instance {
     let opened = false;
     ws.onopen = () => {
       opened = true;
+      if (this.since) this.reconnects++;
+      this.since = now();
       this.retry = 0;
       this.error = "";
       ws.send(JSON.stringify({ type: "subscribe", spectrum_hz: SPECTRUM_HZ }));
@@ -160,6 +169,7 @@ class Instance {
   message(m) {
     if (m.type === "hello") {
       this.hello = m;
+      if (!this.bands[this.band]) this.band = 0;
       this.windows = []; this.spots.clear(); this.signals.clear(); this.recent.clear();
       this.on("hello");
     } else if (m.type === "snapshot") {
@@ -224,6 +234,8 @@ class Instance {
   }
 
   row(utc, first, hz, unit, row) {
+    const b = this.bands[this.band];
+    if (this.bands.length > 1 && b && Math.abs(first - (b.center_khz * 1000 - b.span_khz * 500)) > hz) return;  // another band's row
     if (row.length !== this.nBins || first !== this.firstHz || hz !== this.hzPerBin || unit !== this.dbUnit) {
       this.firstHz = first; this.hzPerBin = hz; this.nBins = row.length; this.dbUnit = unit;
       this.ring = new Uint8Array(this.nBins * HISTORY_COLS);
@@ -235,6 +247,7 @@ class Instance {
     const off = now() - utc;
     if (this.clockOffset === null || off < this.clockOffset) this.clockOffset = off;  // server clock and network delay
     this.pending.push([utc + this.clockOffset + PLAYOUT_MARGIN_S, row]);
+    if (this.pending.length > PENDING_MAX) this.pending.splice(0, this.pending.length - PENDING_MAX);
   }
 
   // move due rows into the ring; true when the picture moved
@@ -276,9 +289,20 @@ class Instance {
   matchesSelection(khz) { return this.selKhz !== null && Math.abs(khz - this.selKhz) <= FREQ_MATCH_KHZ; }
 
   // host and band from hello; empty until the first hello. No address: that is for Settings.
+  get bands() { return this.hello.bands || []; }
+  bandAt(khz) { return this.bands.findIndex(b => Math.abs(khz - b.center_khz) <= b.span_khz / 2); }
+  setBand(n) {
+    if (n === this.band || !this.bands[n]) return;
+    this.band = n;
+    this.nBins = 0;  // the next row of the new band starts a fresh history
+    this.ring = null; this.pending = []; this.head = this.cols = this.total = 0;
+    this.selKhz = null; this.selCall = "";
+    this.on("hello");
+  }
+
   get station() {
-    const b = (this.hello.bands || [])[0];
-    const band = b ? (/^\d+$/.test(String(b.name)) ? `${b.center_khz} kHz` : String(b.name)) : "";
+    const b = this.bands[this.band] || this.bands[0];
+    const band = b ? bandLabel(b) : "";
     return [this.hello.host, band].filter(x => x).join(" · ");
   }
 
@@ -431,11 +455,15 @@ class Instance {
       html: this.marked(w.text, call), cost: w.cost, rate: w.rate,
       altHtml: w.alt ? this.marked(w.alt.text, call) : "", altCost: w.alt ? w.alt.cost : null, altRate: w.alt ? w.alt.rate : null,
     }));
-    let snr = last.snr ?? null;
+    // speed and level of the call shown: the spot's own when it was spotted, else the newest window
+    // that copied the call (the newest at this frequency may be noise after the station stopped)
+    const spot = call ? this.spots.get(call) : null;
+    const src = spot || (call && wins.find(w => w.text.split(" ").includes(call))) || last;
+    let snr = src.snr ?? null;
     if (snr === null) { const p = this.peak(k, FREQ_MATCH_KHZ); snr = p ? p[1] : null; }
     const note = rows.length ? "" : "No decoded text at this frequency yet. SparkGap skips the FT8 and digital segments, "
       + "and starts a decoder only on a steady signal above its SNR threshold. Text appears here if it does.";
-    return { khz: k, call, spotted: this.spots.has(call), wpm: last.wpm ?? null, snr, windows: rows, note };
+    return { khz: k, spotKhz: spot ? spot.khz : null, call, spotted: !!spot, wpm: src.wpm ?? null, snr, windows: rows, note };
   }
 }
 
@@ -607,7 +635,11 @@ class Waterfall {
 
   fit() {
     const inst = this.inst;
-    if (inst && inst.nBins && !(inst.lowKhz <= this.lo && this.lo < this.hi && this.hi <= inst.highKhz)) {
+    if (inst && inst.nBins && inst.goKhz) {
+      const span = this.hi > this.lo ? this.hi - this.lo : 30;
+      this.setView(inst.goKhz - span / 2, inst.goKhz + span / 2);
+      inst.goKhz = null;
+    } else if (inst && inst.nBins && !(inst.lowKhz <= this.lo && this.lo < this.hi && this.hi <= inst.highKhz)) {
       const mid = (inst.lowKhz + inst.highKhz) / 2;
       this.setView(mid - 15, mid + 15);
     }
@@ -766,7 +798,7 @@ const app = {
   back: 0,  // the server shown before demo
   editing: -2,  // -2 no form, -1 adding, else the row being edited
   note: "",  // what the last search for servers found
-  decoded: "both",
+  decoded: "lowest",
   matches: [],
 };
 const wf = new Waterfall($("wf"));
@@ -845,9 +877,9 @@ function addInstance(url, token, at) {
 
 function changed(i, what) {
   if (what === "state") { renderConns(); if (i === inst()) renderState(); return; }
-  if (i !== inst()) { if (what === "hello") renderConns(); return; }
-  if (what === "hello") { wf.fit(); renderState(); renderStation(); renderSettings(); renderConns(); renderLadder(); }
-  else if (what === "status") renderStatus();
+  if (i !== inst()) { if (what === "hello") { renderConns(); renderBands(); } return; }
+  if (what === "hello") { wf.fit(); renderBands(); renderState(); renderStation(); renderSettings(); renderConns(); renderLadder(); }
+  else if (what === "status") { renderStatus(); if (!$("statusModal").hidden) renderStatusPage(); }
   else if (what === "ladder") renderLadder();
   else if (what === "detail") { renderDetail(); renderStatus(); }
 }
@@ -889,12 +921,11 @@ function pick(khz, call) {
 
 // centre the waterfall on a match (keeping the span) and select it
 function goTo(m) {
+  const b = inst() ? inst().bandAt(m.khz) : -1;
+  if (b >= 0 && b !== inst().band) { inst().goKhz = m.khz; setBand(b); }  // the match is on another band
   const span = wf.hi - wf.lo;
   wf.setView(m.khz - span / 2, m.khz + span / 2);
-  let khz = m.khz;
-  const i = inst();
-  if (!m.call && i) { const near = i.nearestSignal(m.khz, 0.5); if (near > 0) khz = near; }
-  pick(khz, m.call);
+  pick(m.khz, m.call);  // a typed frequency is taken as typed
   $("search").blur();
   $("matches").hidden = true;
 }
@@ -902,7 +933,7 @@ function goTo(m) {
 // ---- rendering ----
 
 function renderAll() {
-  renderState(); renderStation(); renderLadder(); renderDetail(); renderStatus(); renderSettings(); renderConns(); renderView();
+  renderBands(); renderState(); renderStation(); renderLadder(); renderDetail(); renderStatus(); renderSettings(); renderConns(); renderView();
 }
 
 function renderState() {
@@ -915,12 +946,159 @@ function renderState() {
   }
   dot.style.background = cs.getPropertyValue(i.state === "live" ? "--good" : i.state === "connecting" ? "--accent" : "--bad");
   const word = { live: "Live", connecting: "Connecting", refused: "Refused" }[i.state] || "Reconnecting";
-  $("stateText").textContent = i.demo ? "DEMO MODE" : word + (i.station ? "  " + i.station : "")
+  // the station by the state only when no picker shows it
+  $("stateText").textContent = i.demo ? "DEMO MODE" : word + (i.station && $("bandSel").hidden ? "  " + i.station : "")
     + (i.state !== "live" && i.error ? "  ·  " + i.error : "");
   let msg = "";
   if (i.state !== "live") msg = i.station ? "Connecting to " + i.station : "Connecting";
   else if (!i.highKhz) msg = "Waiting for spectrum";
   $("wfmsg").textContent = msg;
+}
+
+// ---- status page: radio, SparkGap, decoding and this console, for troubleshooting ----
+
+const NEAR_WAV_LIMIT = 3.5 * 2 ** 30;  // record_wav files break past 4 GiB
+const LOST_WARN = 0.001;  // packets lost above this share of those received are worth a look
+const dash = v => (v === null || v === undefined || v === "" ? "-" : String(v));
+const utcTime = t => (t ? new Date(t * 1000).toISOString().slice(11, 19) + "Z" : "-");
+function duration(s) {
+  if (!(s >= 0)) return "-";
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
+  return h ? `${h}h ${m}m` : `${m}m ${Math.floor(s % 60)}s`;
+}
+const gb = b => (b === null || b === undefined ? "-" : b >= 2 ** 30 ? (b / 2 ** 30).toFixed(2) + " GiB" : (b / 2 ** 20).toFixed(0) + " MiB");
+
+function renderStatusPage() {
+  const i = inst(), s = (i && i.status) || {}, h = (i && i.hello) || {}, run = h.run || {}, r = s.radio || {};
+  if (!i || i.demo) {
+    $("statusHead").innerHTML = "";
+    $("statusBody").innerHTML = '<div class="small muted">Status is shown for a connected SparkGap, not demo mode.</div>';
+    return;
+  }
+  const num = v => (v === null || v === undefined ? "-" : Number(v).toLocaleString("en-US"));
+  // one row: label left, value right; mono for numbers; sub is a muted second line (a file's folder)
+  // o.key: a value that signals trouble (full weight); o.ref: reference detail (muted); o.bad: red
+  const row = (k, v, o = {}) => `<div class="srow"><span class="k">${esc(k)}</span><span class="v${o.mono ? " mono" : ""}${o.bad ? " bad" : ""}${o.key ? " key" : ""}${o.ref ? " ref" : ""}"`
+    + `${o.title ? ` title="${esc(o.title)}"` : ""}>${esc(dash(v))}${o.sub ? `<span class="sub">${esc(o.sub)}</span>` : ""}</span></div>`;
+  const file = p => { const n = String(p).lastIndexOf("/"); return n < 0 ? [p, ""] : [p.slice(n + 1), p.slice(0, n)]; };
+  const fileRow = (k, p, none, o = {}) => {
+    if (!p) return row(k, none, o);
+    const [name, dir] = file(p);
+    return row(k, name, Object.assign({ sub: dir, title: p }, o));
+  };
+  const pill = (text, cls) => `<span class="pill ${cls}">${esc(text)}</span>`;
+  const card = (title, rows, wide, tag) => `<section class="scard${wide ? " wide" : ""}"><h3><span>${title}</span>${tag || ""}</h3>${rows.join("")}</section>`;
+
+  const live = ["live", "replaying"].includes(r.state);
+  $("statusHead").innerHTML = `<span class="sname">${esc(i.station || "")}</span>`
+    + (r.state ? `<span class="pill ${live ? "ok" : "warn"}">${esc(String(r.state).toUpperCase())}</span>` : "");
+  const tile = (k, v, sub, bad, primary) => `<div class="stat${bad ? " bad" : ""}${primary ? " primary" : ""}"><div class="label">${k}</div><div class="mono">${esc(dash(v))}</div>`
+    + `${sub ? `<div class="tsub">${esc(sub)}</div>` : ""}</div>`;
+  const tiles = [tile("UPTIME", duration(s.uptime_s)),
+    tile("SPOTS", num(s.spots), s.spots_hour !== undefined ? `${s.spots_hour} last hour` : "", false, true),
+    tile("CALLS", num(s.calls), "", false, true), tile("WINDOWS", num(s.windows), "", false, true),
+    tile("BINS", num(s.bins), s.bins_peak !== undefined ? `peak ${s.bins_peak}` : ""),
+    tile("IQ TRIMMED", s.iq_trimmed_s !== undefined ? s.iq_trimmed_s + " s" : "-", s.iq_trimmed_s > 0 ? "decoder behind" : "", s.iq_trimmed_s > 0),
+    tile("CPU", s.cpu !== undefined && s.cpu !== null ? s.cpu + "%" : "-", "of a core" + (s.rss_mb ? ` · ${s.rss_mb} MB` : ""))];
+
+  const lossy = r.packets > 0 && r.lost / r.packets > LOST_WARN;
+  const radio = [row("Type", r.type === "flex" ? "FlexRadio" : r.type === "hpsdr" ? "HPSDR" : r.type === "file" ? "File replay" : r.type, { ref: true }),
+    r.type === "file" ? fileRow("File", r.address, "-", { ref: true }) : row("Address", r.address, { mono: true, ref: true })];
+  if ("station" in r) radio.push(row("Station", r.station, { ref: true }), row("DAX-IQ channel", r.daxiq_channel, { mono: true, ref: true }));
+  if ("packets" in r) radio.push(row("Packets", num(r.packets), { mono: true, ref: true }), row("Lost", num(r.lost), { mono: true, key: true, bad: lossy }));
+  if ("pkt_per_s" in r) radio.push(row("Packets a second", num(r.pkt_per_s), { mono: true, key: true }));
+  if ("reconnects" in r) radio.push(row("Reconnects", r.reconnects ? `${r.reconnects}, last ${utcTime(r.last_reconnect)}` : "none", { mono: !!r.reconnects, key: true, bad: r.reconnects > 0 }));
+  if ("station" in r) radio.push(row("Other stations", (r.others || []).join(", ") || "none", { key: true }));
+  if ("position_s" in r) radio.push(row("Position", duration(r.position_s), { mono: true }));
+
+  const rec = s.recording, near = rec && rec.bytes > NEAR_WAV_LIMIT;
+  const sg = [row("Host", h.host, { ref: true }), row("Build", h.build, { mono: true, ref: true }), row("Decoder", h.decoder, { ref: true }),
+    row("Bands", (h.bands || []).map(b => `${bandLabel(b)} (${b.center_khz} kHz)`).join(", "), { key: true }),
+    row("Started", utcTime(run.started), { mono: true, ref: true }),
+    fileRow("Config", run.config, "-", { ref: true }), fileRow("Log", run.log, "terminal", { ref: true }),
+    rec ? fileRow("Recording", rec.file, "off", { bad: near, ref: !near }) : row("Recording", "off", { ref: true }),
+    ...(rec ? [row("Recording size", gb(rec.bytes) + (near ? "  (near the 4 GiB limit)" : ""), { mono: true, key: true, bad: near })] : []),
+    row("Clock", s.clock_synced === true ? "NTP synchronised" : s.clock_synced === false ? "not synchronised" : "unknown", { key: true, bad: s.clock_synced === false })];
+
+  const out = s.telnet ? [row("Telnet port", s.telnet.port, { mono: true, ref: true }), row("Telnet clients", s.telnet.clients, { mono: true, key: true })]
+    : [row("Telnet", "not reported")];
+
+  const rate = i.statTotal !== undefined ? (i.total - i.statTotal) / Math.max(0.5, now() - i.statAt) : null;
+  i.statTotal = i.total; i.statAt = now();
+  const cons = [row("This console", `since ${utcTime(i.since)}${i.reconnects ? `, ${i.reconnects} reconnects` : ""}`, { mono: true, ref: true }),
+    row("Rows a second", rate === null ? null : rate.toFixed(0), { mono: true, key: true }),
+    ...(s.clients || []).map(c => row(c.peer, `${num(c.dropped)} dropped`, { mono: true, sub: `since ${utcTime(c.since)}`, key: true, bad: c.dropped > 600 }))];
+
+  const p = s.problems || {};
+  const probs = [`<div class="srow"><span class="k">Since start</span><span class="v"><span class="mono${p.errors ? " bad" : ""}">${num(p.errors)}</span> errors, `
+    + `<span class="mono">${num(p.warnings)}</span> warnings</span></div>`,
+    ...(p.last || []).slice().reverse().map(e => `<div class="prob"><span class="mono t">${utcTime(e.utc)}</span>`
+      + `<span class="pill ${e.level === "WARNING" ? "warnlvl" : "warn"}">${esc(e.level)}</span><span class="m">${esc(e.msg)}</span></div>`)];
+
+  // health at a glance: what needs attention, worst first
+  const issues = [];
+  if (r.state && !live) issues.push(["bad", `Radio ${r.state}`]);
+  if (s.iq_trimmed_s > 0) issues.push(["bad", `Decoder behind: ${s.iq_trimmed_s} s of IQ trimmed`]);
+  if (s.clock_synced === false) issues.push(["bad", "Clock not NTP synchronised"]);
+  if (p.errors > 0) issues.push(["bad", `${num(p.errors)} errors since start`]);
+  if (r.reconnects > 0) issues.push(["warn", `Radio reconnected ${r.reconnects}x, last ${utcTime(r.last_reconnect)}`]);
+  if (lossy) issues.push(["warn", `${num(r.lost)} packets lost (${(100 * r.lost / r.packets).toFixed(2)}%)`]);
+  if (near) issues.push(["warn", "Recording near the 4 GiB limit"]);
+  for (const c of s.clients || []) if (c.dropped > 600) issues.push(["warn", `Console ${c.peer} falling behind`]);
+  if (p.warnings > 0) issues.push(["warn", `${num(p.warnings)} warnings since start`]);
+  const worst = issues.some(x => x[0] === "bad") ? "bad" : issues.length ? "warn" : "ok";
+  const banner = `<div class="health ${worst}">${issues.length ? issues.map(([lv, t]) => `<span class="${lv}">${esc(t)}</span>`).join("")
+    : "<span>Healthy: radio live, decoding keeping up, no errors</span>"}</div>`;
+  const tagRadio = r.state ? pill(String(r.state).toUpperCase(), live ? (r.reconnects || lossy ? "warnlvl" : "ok") : "warn") : "";
+  const tagSg = s.clock_synced === false ? pill("CLOCK OFF", "warn") : s.clock_synced ? pill("CLOCK OK", "ok") : "";
+  const tagProb = p.errors ? pill(`${num(p.errors)} ERRORS`, "warn") : p.warnings ? pill(`${num(p.warnings)} WARNINGS`, "warnlvl") : pill("NONE", "ok");
+
+  $("statusBody").innerHTML = banner + `<div class="stats stiles">${tiles.join("")}</div><div class="scards">`
+    + card("RADIO", radio, false, tagRadio) + card("SPARKGAP", sg, false, tagSg) + card("SPOT OUTPUT", out) + card("CONSOLES", cons)
+    + card("PROBLEMS", probs, true, tagProb) + "</div>";
+}
+
+// band picker: shown when one SparkGap runs several bands
+// the band picker: every band of every connected server ("Beelink 40m"), when there is a choice
+const HAM_BANDS = [["160m", 1800, 2000], ["80m", 3500, 4000], ["60m", 5330, 5410], ["40m", 7000, 7300], ["30m", 10100, 10150],
+  ["20m", 14000, 14350], ["17m", 18068, 18168], ["15m", 21000, 21450], ["12m", 24890, 24990], ["10m", 28000, 29700]];
+// a band's name; a band given as a frequency is named by the amateur band it falls in
+function bandLabel(b) {
+  if (!/^\d+$/.test(String(b.name))) return String(b.name);
+  const h = HAM_BANDS.find(([, lo, hi]) => b.center_khz >= lo && b.center_khz <= hi);
+  return h ? h[0] : `${b.center_khz} kHz`;
+}
+function bandChoices() {
+  const out = [];
+  app.instances.forEach((i, n) => {
+    if (i.demo) return;
+    const host = i.hello.host || shortUrl(i.url);
+    const bands = i.bands.length ? i.bands : [null];
+    bands.forEach((b, k) => out.push({ n, band: k, label: b ? `${host} ${bandLabel(b)}` : host }));
+  });
+  return out;
+}
+
+function renderBands() {
+  const i = inst(), all = i && !i.demo ? bandChoices() : [], sel = $("bandSel");
+  sel.hidden = all.length < 2;
+  if (all.length < 2) return;
+  sel.innerHTML = all.map((c, k) => `<option value="${k}">${esc(c.label)}</option>`).join("");
+  sel.value = String(all.findIndex(c => c.n === app.current && c.band === i.band));
+  sel.onchange = () => {
+    const c = all[Number(sel.value)];
+    if (c.n !== app.current) setCurrent(c.n);
+    if (c.band !== inst().band) setBand(c.band); else renderAll();
+  };
+}
+
+function setBand(n) {
+  const i = inst();
+  if (!i) return;
+  i.setBand(n);
+  app.selectedKhz = -1;
+  wf.sel = -1;
+  renderAll();
 }
 
 function renderStation() {
@@ -969,8 +1147,16 @@ function renderLadder() {
   }
 }
 
+// the zoom step the view is at (index into ZOOM_STEPS), or -1 between steps
+function zoomStep(i) {
+  const full = i.highKhz - i.lowKhz, span = wf.hi - wf.lo;
+  return ZOOM_STEPS.findIndex(([, d]) => Math.abs(span - full / d) <= full / d * ZOOM_MATCH);
+}
+
 function renderView() {
   const i = inst(), full = i ? i.highKhz - i.lowKhz : 0, span = wf.hi - wf.lo;
+  const k = i && full > 0 ? zoomStep(i) : 0;  // the button names the zoom shown
+  $("full").textContent = k >= 0 ? ZOOM_STEPS[k][0] : Math.round(100 * span / full) + "%";
   $("range").textContent = wf.hi > wf.lo ? `${wf.lo.toFixed(1)} – ${wf.hi.toFixed(1)} kHz` : "";
   const s = $("span");
   s.max = Math.max(3, full);
@@ -1006,7 +1192,7 @@ function renderDetail() {
   const pill = $("dPill");
   pill.hidden = !d;
   if (d) { pill.textContent = d.spotted ? "SPOTTED" : "HEARD"; pill.className = "pill" + (d.spotted ? " spot" : ""); }
-  $("dKhz").textContent = d ? d.khz.toFixed(2) : "-";
+  $("dKhz").textContent = d ? (d.spotKhz !== null ? d.spotKhz.toFixed(1) : d.khz.toFixed(2)) : "-";  // a spot as spotted
   $("dWpm").textContent = d && d.wpm ? Math.round(d.wpm) : "-";
   $("dSnr").textContent = d && d.snr ? Math.round(d.snr) + " dB" : "-";
   $("dNote").hidden = !(d && d.note);
@@ -1155,6 +1341,9 @@ function closeSettings() { $("modal").hidden = true; app.editing = -2; }
 
 function bindInput() {
   $("gear").onclick = () => ($("modal").hidden ? openSettings() : closeSettings());
+  $("statusBtn").onclick = () => { renderStatusPage(); $("statusModal").hidden = !$("statusModal").hidden; };
+  $("statusClose").onclick = () => { $("statusModal").hidden = true; };
+  $("statusModal").onmousedown = e => { if (e.target === $("statusModal")) $("statusModal").hidden = true; };
   $("close").onclick = closeSettings;
   $("modal").onmousedown = e => { if (e.target === $("modal")) closeSettings(); };
   $("addConn").onclick = () => editConn(-1);
@@ -1188,6 +1377,7 @@ function bindInput() {
   document.addEventListener("keydown", e => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") { e.preventDefault(); search.focus(); search.select(); }
     else if (e.key === "Escape" && !$("modal").hidden) closeSettings();
+    else if (e.key === "Escape") $("statusModal").hidden = true;
   });
 
   // waterfall: a tap picks the nearest signal, a drag pans, the wheel pans, Ctrl+wheel or a pinch zooms
@@ -1246,7 +1436,13 @@ function bindInput() {
   });
 
   $("span").oninput = e => { const mid = (wf.lo + wf.hi) / 2, v = Number(e.target.value); wf.setView(mid - v / 2, mid + v / 2); };
-  $("full").onclick = () => { const i = inst(); if (i) wf.setView(i.lowKhz, i.highKhz); };
+  $("full").onclick = () => {  // the next step: Full, Half, Quarter of the band around the view's centre
+    const i = inst();
+    if (!i || !i.nBins) return;
+    const k = zoomStep(i), d = ZOOM_STEPS[k < 0 ? 0 : (k + 1) % ZOOM_STEPS.length][1];
+    const span = (i.highKhz - i.lowKhz) / d, mid = d === 1 ? (i.lowKhz + i.highKhz) / 2 : (wf.lo + wf.hi) / 2;
+    wf.setView(mid - span / 2, mid + span / 2);
+  };
   window.addEventListener("resize", () => { wf.dirty = true; renderView(); });
 }
 
@@ -1263,7 +1459,7 @@ function start() {
   wf.onview = renderView;
   bindInput();
   setTheme(load("theme", "dark"));
-  app.decoded = DECODED.includes(load("decoded", "both")) ? load("decoded", "both") : "both";
+  app.decoded = DECODED.includes(load("decoded", "lowest")) ? load("decoded", "lowest") : "lowest";
   // no saved servers yet: start in demo
   loadServers();
   setDemo(load("demo", !app.instances.length));

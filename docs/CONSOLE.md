@@ -110,11 +110,19 @@ when the page itself was opened from a loopback address on the feed's port.
 
 - Drag or two-finger drag pans the waterfall; Ctrl+scroll or a pinch zooms; the
   scroll bar beside it moves through the receiver's span.
-- The panel under the decoded text: Zoom sets the width shown (Full shows the
-  whole receiver), Span is the range on screen, and SNR is the waterfall's
-  colour scale.
+- The panel under the decoded text: Zoom sets the width shown (its button steps
+  through Full, Half and Quarter of the receiver), Span is the range on screen,
+  and SNR is the waterfall's colour scale.
 - Click a trace or a call to see its decoded windows. Ctrl+F searches calls,
-  decoded text and frequencies.
+  decoded text and frequencies; a frequency is taken as typed. Decoded text can
+  be selected and copied.
+- A SparkGap running several bands shows a band picker in the header; a search
+  for a call or frequency on another band switches to it.
+- Settings, DECODED: each window's readings (Both, Wide, Narrow, or the one
+  with the Lowest cost, the default).
+- The status page (ⓘ in the header) shows the radio, SparkGap's run (config and
+  log files, recording, clock), decoding counts, spot output, the connected
+  consoles, CPU and memory, and SparkGap's last warnings and errors.
 - Window size, position and theme are kept between runs.
 
 ## Keeping the two clients in step
@@ -133,10 +141,11 @@ Shared, and kept the same:
   same values.
 - Layout, theme tokens (`t` in `Main.qml`, `:root` in `style.css`), the
   waterfall palette (dark in both themes), header glyphs and fonts.
-- Call ladder, bubbles, decoded windows, search, status bar, and the zoom
-  panel (Zoom, Span and SNR rows).
-- Settings: demo, connections, the read-only spot rule, validation and call
-  source (shown when the server reports them), the build, at 480 px.
+- Call ladder, bubbles, decoded windows, search, status bar, band picker,
+  status page, and the zoom panel (Zoom, Span and SNR rows).
+- Settings: demo, decoded readings, connections (a server added without a port
+  is searched for on ports 7320 to 7339), the read-only spot rule, validation and
+  call source (shown when the server reports them), the build, at 480 px.
 - Demo mode: the same made-up signals; turning it on only switches the view.
 - Scroll bars: thin, with small arrows, the same on the waterfall and the
   decoded text.
@@ -144,8 +153,11 @@ Shared, and kept the same:
 
 Different on purpose:
 
-- Desktop only: window size and position kept between runs.
-- Web only: the layout for narrow (phone) screens and touch pan and pinch; the
-  page fills in its own server's address when one is added.
+- Desktop only: window size and position kept between runs; a Copy button for
+  the decoded text (a browser selects across windows by itself); Settings
+  scrolls inside its window (the browser page scrolls).
+- Web only: the layout for narrow (phone) and short screens, where the page
+  scrolls, and touch pan and pinch; the page fills in its own server's address
+  when one is added.
 - Refusals: the desktop console reads the HTTP status, the browser the close
   code. Both show the same message.

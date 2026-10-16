@@ -17,10 +17,12 @@
       <div id="matches" class="matches" hidden></div>
     </div>
     <div class="grow"></div>
+    <select id="bandSel" class="bandsel" title="Server and band" hidden></select>
     <div id="station" class="station mono"></div>
     <div class="state"><span id="stateDot" class="sdot"></span><span id="stateText">No feed</span></div>
     <button id="gear" class="icon" title="Settings">⚙</button>
     <button id="theme" class="icon" title="Light or dark"><span class="half"></span></button>
+    <button id="statusBtn" class="icon" title="Status">ⓘ</button>
   </header>
 
   <main>
@@ -110,6 +112,13 @@
       <span></span><span class="small faint">From the selected server's config.</span>
     </div>
     <div class="row foot"><span id="build" class="small faint mono"></span><button id="close" class="btn">Close</button></div>
+  </div>
+</div>
+<div id="statusModal" class="modal" hidden>
+  <div class="dialog status" role="dialog" aria-label="Status">
+    <div class="shead"><h2>Status</h2><div id="statusHead"></div></div>
+    <div id="statusBody"></div>
+    <div class="row foot"><span class="small faint">Refreshed every 2 s.</span><button id="statusClose" class="btn">Close</button></div>
   </div>
 </div>
 </body>

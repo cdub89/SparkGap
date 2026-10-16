@@ -36,6 +36,10 @@ PROTOCOL = "sparkgap.v1"
 FEED_VERSION = 1
 MAX_BINS = 16_384  # a row wider than this is not a spectrum the feed sends
 DEFAULT_PORT = 7320
+HAM_BANDS = (("160m", 1800, 2000), ("80m", 3500, 4000), ("60m", 5330, 5410),
+             ("40m", 7000, 7300), ("30m", 10100, 10150), ("20m", 14000, 14350),
+             ("17m", 18068, 18168), ("15m", 21000, 21450), ("12m", 24890, 24990),
+             ("10m", 28000, 29700))  # kHz, to name a band given as a frequency
 SCAN_PORTS = range(DEFAULT_PORT, DEFAULT_PORT + 20)  # tried when a server is added without a port
 SCAN_TIMEOUT_S = 3.0
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # join codes, as the feed server accepts them
@@ -44,6 +48,7 @@ SPECTRUM_HEADER = struct.Struct("<IddffH")
 SPECTRUM_HZ = 60  # rows asked of the server (one pixel column each)
 HISTORY_COLS = 2_400  # waterfall columns kept per instance
 PLAYOUT_MARGIN_S = 0.20  # jitter buffer: rows are shown this long after they arrive
+PENDING_MAX = 120  # rows waiting to be drawn; a hidden window draws none, so older ones go
 SPOT_KEEP_S = 600
 SIGNAL_KEEP_S = 180
 RECONNECT_S = (1, 2, 5, 10, 20)
@@ -121,6 +126,10 @@ class Instance(QObject):
         self._heard: list[tuple[float, bool]] = []
         self._sel_khz: float | None = None
         self._sel_call = ""
+        self._since = 0.0  # when this console last connected (status page)
+        self._reconnects = 0
+        self._band = 0  # which of hello's bands the waterfall shows; a SparkGap may run several
+        self.go_khz: float | None = None  # match on another band: centred once its rows arrive
         self._accent = "#f3a640"
         # spectrum
         self.first_hz = 0.0
@@ -177,6 +186,9 @@ class Instance(QObject):
         self.ws.close()
 
     def _on_connected(self) -> None:
+        if self._since:
+            self._reconnects += 1
+        self._since = time.time()
         self.retry = 0
         self._error = ""
         self.ws.sendTextMessage(json.dumps({"type": "subscribe", "spectrum_hz": SPECTRUM_HZ}))
@@ -224,6 +236,8 @@ class Instance(QObject):
         kind = m.get("type")
         if kind == "hello":
             self.hello = m
+            if not 0 <= self._band < len(self._bands()):
+                self._band = 0
             self.windows, self.spots, self.signals, self.recent = [], {}, {}, {}
             self.changed.emit()
         elif kind == "snapshot":
@@ -288,6 +302,11 @@ class Instance(QObject):
             return
         if not all(math.isfinite(x) for x in (utc, first, hz, unit)) or hz <= 0 or unit <= 0:
             return
+        bands = self._bands()
+        if len(bands) > 1 and 0 <= self._band < len(bands):
+            b = bands[self._band]
+            if abs(first - (b["center_khz"] * 1000 - b["span_khz"] * 500)) > hz:
+                return  # another band's row
         row = np.frombuffer(data, dtype=np.uint8, count=n, offset=SPECTRUM_HEADER.size)
         if (n, first, hz, unit) != (self.n_bins, self.first_hz, self.hz_per_bin, self.db_unit):
             self.first_hz, self.hz_per_bin, self.n_bins, self.db_unit = first, hz, n, unit
@@ -301,6 +320,8 @@ class Instance(QObject):
         if self.clock_offset is None or off < self.clock_offset:
             self.clock_offset = off  # tracks server clock and network delay
         self.pending.append((utc + self.clock_offset + PLAYOUT_MARGIN_S, row.copy()))
+        if len(self.pending) > PENDING_MAX:
+            del self.pending[:-PENDING_MAX]
 
     def advance(self) -> bool:
         """Move due rows into the ring; returns True when the picture moved."""
@@ -367,16 +388,55 @@ class Instance(QObject):
 
     demo = Property(bool, lambda self: self.is_demo, constant=True)
 
+    def _bands(self) -> list[dict[str, Any]]:
+        return self.hello.get("bands") or []
+
+    @Property(list, notify=changed)
+    def bandNames(self) -> list[str]:  # noqa: N802
+        """One label per band, for the band picker."""
+        return [band_label(b) for b in self._bands()]
+
+    @Property(int, notify=changed)
+    def band(self) -> int:
+        return self._band
+
+    @Slot(int)
+    def setBand(self, n: int) -> None:  # noqa: N802
+        """Show band n: the next row of it starts a fresh waterfall history."""
+        if n == self._band or not 0 <= n < len(self._bands()):
+            return
+        self._band = n
+        self.n_bins = 0
+        self.ring = None
+        self.pending.clear()
+        self.head = self.cols = self.total = 0
+        self._sel_khz, self._sel_call = None, ""
+        self.changed.emit()
+        self.detailChanged.emit()
+
+    @Slot(float, result=int)
+    def bandAt(self, khz: float) -> int:  # noqa: N802
+        """The band holding khz, or -1."""
+        return next((n for n, b in enumerate(self._bands())
+                     if abs(khz - b["center_khz"]) <= b["span_khz"] / 2), -1)
+
+    @Slot(float)
+    def goTo(self, khz: float) -> None:  # noqa: N802
+        """Centre on khz once its band's rows arrive (after setBand)."""
+        self.go_khz = khz
+
     def _station(self) -> str:
         """Host and band from hello; empty until the first hello. The address is for Settings."""
-        bands = self.hello.get("bands") or []
-        band = ""
-        if bands:
-            name = str(bands[0]["name"])
-            band = f"{bands[0]['center_khz']:g} kHz" if name.isdigit() else name
+        bands = self._bands()
+        b = bands[self._band] if 0 <= self._band < len(bands) else bands[0] if bands else None
+        band = band_label(b) if b else ""
         return " · ".join(p for p in (self.hello.get("host"), band) if p)
 
     station = Property(str, _station, notify=changed)
+
+    @Property(str, notify=changed)
+    def host(self) -> str:
+        return str(self.hello.get("host") or "")
 
     @Property(str, notify=changed)
     def title(self) -> str:
@@ -391,6 +451,20 @@ class Instance(QObject):
     @Property(dict, notify=statusChanged)
     def status(self) -> dict[str, Any]:
         return self._status
+
+    @Property(float, notify=statusChanged)
+    def since(self) -> float:
+        """When this console last connected (UTC seconds), for the status page."""
+        return self._since
+
+    @Property(int, notify=statusChanged)
+    def reconnects(self) -> int:
+        return self._reconnects
+
+    @Property(int, notify=statusChanged)
+    def rowsTotal(self) -> int:  # noqa: N802
+        """Waterfall rows drawn so far; the status page turns it into a rate."""
+        return self.total
 
     def low_khz(self) -> float:
         return self.first_hz / 1000.0 if self.n_bins else 0.0
@@ -578,7 +652,11 @@ class Instance(QObject):
                     "alt_rate": alt.get("rate"),
                 }
             )
-        snr = last.get("snr")
+        # speed and level of the call shown: the spot's own when spotted, else the newest window
+        # that copied the call (the newest at this frequency may be noise after the station stopped)
+        spot = self.spots.get(call) if call else None
+        src = spot or next((w for w in reversed(wins) if call and call in w["text"].split()), last)
+        snr = src.get("snr")
         if snr is None:  # no decoded text: take the level from the spectrum
             peak = self._peak(k, FREQ_MATCH_KHZ)
             snr = peak[1] if peak else None
@@ -591,9 +669,10 @@ class Instance(QObject):
         )
         return {
             "khz": k,
+            "spot_khz": spot["khz"] if spot else None,
             "call": call,
-            "spotted": call in self.spots,
-            "wpm": last.get("wpm"),
+            "spotted": spot is not None,
+            "wpm": src.get("wpm"),
             "snr": snr,
             "windows": rows,
             "note": note,
@@ -810,7 +889,13 @@ class Waterfall(QQuickPaintedItem):
 
     def _fit(self) -> None:
         inst = self._inst
-        if inst and inst.n_bins and not (inst.low_khz() <= self._lo < self._hi <= inst.high_khz()):
+        if inst and inst.n_bins and inst.go_khz:
+            span = self._hi - self._lo if self._hi > self._lo else 30.0
+            self.setView(inst.go_khz - span / 2, inst.go_khz + span / 2)
+            inst.go_khz = None
+        elif inst and inst.n_bins and not (
+            inst.low_khz() <= self._lo < self._hi <= inst.high_khz()
+        ):
             mid = (inst.low_khz() + inst.high_khz()) / 2
             self.setView(mid - 15, mid + 15)
         self._dirty = True
@@ -985,6 +1070,14 @@ class Waterfall(QQuickPaintedItem):
             y = (self._hi - self._sel) / (self._hi - self._lo) * h
             p.setPen(QPen(self._accent, 1, Qt.PenStyle.DashLine))
             p.drawLine(QPointF(0, y), QPointF(w, y))
+
+
+def band_label(b: dict[str, Any]) -> str:
+    """A band's name; a band given as a frequency is named by the amateur band it falls in."""
+    if not str(b["name"]).isdigit():
+        return str(b["name"])
+    khz = float(b["center_khz"])
+    return next((n for n, lo, hi in HAM_BANDS if lo <= khz <= hi), f"{khz:g} kHz")
 
 
 def refusal(err: str) -> str:

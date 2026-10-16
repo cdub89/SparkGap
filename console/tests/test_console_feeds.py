@@ -252,3 +252,36 @@ def test_find_feeds_adds_every_instance_with_the_code(tmp_path: Path, monkeypatc
     finally:
         for f in feeds:
             f.stop()
+
+
+def test_hidden_window_queue_is_capped() -> None:
+    # a minimised window draws nothing; rows keep arriving and must not pile up without bound
+    from backend import PENDING_MAX, SPECTRUM_HEADER, Instance
+    from PySide6.QtCore import QCoreApplication
+
+    app = QCoreApplication.instance() or QCoreApplication([])  # noqa: F841
+    inst = Instance("ws://127.0.0.1:9/feed")
+    for k in range(PENDING_MAX * 5):
+        inst._on_binary(SPECTRUM_HEADER.pack(1, 1_000.0 + k / 60, 7.0e6, 50.0, 0.25, 4) + bytes(4))
+    assert len(inst.pending) == PENDING_MAX
+
+
+def test_spot_detail_uses_the_spot_not_later_noise() -> None:
+    # after a station stops its bin decodes noise; its spot must still show the spot's numbers
+    from backend import Instance
+    from PySide6.QtCore import QCoreApplication
+
+    app = QCoreApplication.instance() or QCoreApplication([])  # noqa: F841
+    inst = Instance("ws://127.0.0.1:9/feed")
+    heard = ((100.0, "CQ CQ DE WX7V WX7V K", 18.5, 32.6), (160.0, "E E", 31.2, 13.0))
+    for utc, text, wpm, snr in heard:
+        inst._add_window({"type": "window", "khz": 7046.99, "text": text, "wpm": wpm, "snr": snr,
+                          "cost": 0.3, "utc": utc})
+    inst.spots["WX7V"] = {"type": "spot", "khz": 7046.99, "call": "WX7V", "snr": 27.4, "wpm": 19,
+                          "utc": 120.0}
+    inst.select(7047.0, "WX7V")
+    d = inst.property("detail")
+    assert (d["spot_khz"], d["wpm"], d["snr"]) == (7046.99, 19, 27.4)
+    del inst.spots["WX7V"]  # heard, not spotted: the newest window that copied the call
+    d = inst.property("detail")
+    assert (d["spot_khz"], d["wpm"], d["snr"]) == (None, 18.5, 32.6)

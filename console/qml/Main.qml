@@ -38,7 +38,13 @@ ApplicationWindow {
 
     property var inst: console_.current
     property string themeOverride: "dark"  // dark by default; the toggle switches it
-    property string decoded: "both"  // readings of each window shown: both, wide, narrow, lowest (cost)
+    // the zoom step the view is at (0 Full, 1 Half, 2 Quarter), or -1 between steps (a view within 5% of a step is at it)
+    function zoomStep() {
+        if (!inst) return 0
+        const full = inst.highKhz - inst.lowKhz, span = wf.highKhz - wf.lowKhz
+        return full > 0 ? [1, 2, 4].findIndex(d => Math.abs(span - full / d) <= full / d * 0.05) : 0
+    }
+    property string decoded: "lowest"  // readings of each window shown: both, wide, narrow, lowest (cost)
     property alias settingsOpen: settings.visible
     readonly property bool dark: themeOverride ? themeOverride === "dark"
                                                : Application.styleHints.colorScheme === Qt.ColorScheme.Dark
@@ -201,6 +207,47 @@ ApplicationWindow {
                 Keys.onEscapePressed: { text = ""; focus = false }
             }
             Item { Layout.fillWidth: true }
+            // server and band picker: every band of every connected server ("Beelink 40m"), when there is a choice
+            ComboBox {
+                id: bandSeg
+                readonly property var choices: {
+                    const out = []
+                    const all = console_.instances
+                    for (let n = 0; n < all.length; n++) {
+                        const i = all[n]
+                        if (i.demo) continue
+                        const host = i.host || i.title
+                        const names = i.bandNames.length ? i.bandNames : [""]
+                        for (let k = 0; k < names.length; k++)
+                            out.push({ n: n, band: k, label: names[k] ? host + " " + names[k] : host })
+                    }
+                    return out
+                }
+                visible: !!inst && !inst.demo && choices.length > 1
+                implicitWidth: 190; implicitHeight: 30
+                model: choices.map(c => c.label)
+                currentIndex: choices.findIndex(c => c.n === console_.currentIndex && c.band === (inst ? inst.band : 0))
+                onActivated: (k) => {
+                    const c = choices[k]
+                    if (c.n !== console_.currentIndex) console_.setCurrent(c.n)
+                    if (c.band !== inst.band) win.setBand(c.band)
+                }
+                background: Rectangle { radius: 8; color: t.sunken; border.color: bandSeg.activeFocus ? t.accent : t.line }
+                contentItem: Text {
+                    leftPadding: 10; rightPadding: 24; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
+                    text: bandSeg.displayText; color: t.fg; font.family: t.sans; font.pixelSize: 13
+                }
+                indicator: Text { x: bandSeg.width - width - 8; anchors.verticalCenter: parent.verticalCenter; text: "▾"; color: t.muted; font.pixelSize: 12 }
+                delegate: ItemDelegate {
+                    required property int index
+                    required property var modelData
+                    width: bandSeg.width; height: 30
+                    contentItem: Text { text: modelData; color: t.fg; font.family: t.sans; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter }
+                    background: Rectangle { color: highlighted ? t.sunken : t.surface }
+                    highlighted: bandSeg.highlightedIndex === index
+                }
+                popup.background: Rectangle { radius: 8; color: t.surface; border.color: t.line }
+            }
             // station line: set once per station, informative only
             Text {
                 readonly property var c: inst && inst.info.config ? inst.info.config : ({})
@@ -222,7 +269,7 @@ ApplicationWindow {
                     color: t.muted; font.family: t.mono; font.features: t.zero; font.pixelSize: 12
                     text: !inst ? "No feed" : inst.demo ? "DEMO MODE" : (inst.state === "live" ? "Live" : inst.state === "connecting" ? "Connecting"
                                             : inst.state === "refused" ? "Refused" : "Reconnecting")
-                          + (inst && !inst.demo && inst.station ? "  " + inst.station : "")
+                          + (inst && !inst.demo && inst.station && !bandSeg.visible ? "  " + inst.station : "")  // the picker names it
                           + (inst && inst.state !== "live" && inst.error ? "  ·  " + inst.error : "")
                 }
             }
@@ -247,6 +294,14 @@ ApplicationWindow {
                 MouseArea {
                     anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                     onClicked: win.themeOverride = win.dark ? "light" : "dark"
+                }
+            }
+            Rectangle {
+                width: 32; height: 32; radius: 8; color: statusPop.visible ? t.sunken : t.surface; border.color: t.line
+                Text { anchors.centerIn: parent; text: "ⓘ"; color: t.fg; font.pixelSize: 19 }
+                MouseArea {
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    onClicked: statusPop.visible ? statusPop.close() : statusPop.open()
                 }
             }
         }
@@ -454,7 +509,7 @@ ApplicationWindow {
                                 Repeater {
                                     model: {
                                         const d = detailPane.d
-                                        return [["KHZ", d.khz ? d.khz.toFixed(2) : "-"],
+                                        return [["KHZ", d.spot_khz ? d.spot_khz.toFixed(1) : d.khz ? d.khz.toFixed(2) : "-"],  // a spot as spotted
                                                 ["WPM", d.wpm ? Math.round(d.wpm) : "-"],
                                                 ["SNR", d.snr ? Math.round(d.snr) + " dB" : "-"]]
                                     }
@@ -553,9 +608,19 @@ ApplicationWindow {
                                     Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
                                     width: fullTxt.implicitWidth + 14; height: 20; radius: 6
                                     color: fullHov.hovered ? t.sunken : "transparent"; border.color: t.line
-                                    Text { id: fullTxt; anchors.centerIn: parent; text: "Full"; color: t.fg; font.pixelSize: 11 }
+                                    Text { id: fullTxt; anchors.centerIn: parent; color: t.fg; font.pixelSize: 11  // names the zoom shown
+                                           text: { const k = win.zoomStep(); return k >= 0 ? ["Full", "Half", "Quarter"][k]
+                                                       : Math.round(100 * (wf.highKhz - wf.lowKhz) / Math.max(0.001, inst.highKhz - inst.lowKhz)) + "%" } }
                                     HoverHandler { id: fullHov; cursorShape: Qt.PointingHandCursor }
-                                    TapHandler { onTapped: if (inst) wf.setView(inst.lowKhz, inst.highKhz) }
+                                    TapHandler {
+                                        onTapped: {  // the next step: Full, Half, Quarter of the band around the view's centre
+                                            if (!inst) return
+                                            const k = win.zoomStep(), d = [1, 2, 4][k < 0 ? 0 : (k + 1) % 3]
+                                            const span = (inst.highKhz - inst.lowKhz) / d
+                                            const mid = d === 1 ? (inst.lowKhz + inst.highKhz) / 2 : (wf.lowKhz + wf.highKhz) / 2
+                                            wf.setView(mid - span / 2, mid + span / 2)
+                                        }
+                                    }
                                 }
                             ZLabel { text: "Span" }
                             Text {
@@ -630,6 +695,240 @@ ApplicationWindow {
                     Text { text: modelData[0]; color: t.muted; font.pixelSize: 12 }
                     Text { text: modelData[1]; color: t.fg; font.family: t.mono; font.features: t.zero; font.pixelSize: 12 }
                 }
+            }
+        }
+    }
+
+    // ---- status page: radio, SparkGap, decoding and this console, for troubleshooting ----
+    function statusSections() {
+        // { head, live, tiles: [{k, v, sub, bad}], cards: [{title, wide, rows: [{k, v, sub, mono, bad, level}]}] }; empty in demo
+        const i = inst, s = (i && i.status) || {}, h = (i && i.info) || {}, run = h.run || {}, r = s.radio || {}
+        if (!i || i.demo) return { head: "", live: false, health: "ok", issues: [], tiles: [], cards: [] }
+        const dash = v => v === null || v === undefined || v === "" ? "-" : String(v)
+        const num = v => v === null || v === undefined ? "-" : Number(v).toLocaleString(Qt.locale("en_US"), "f", 0)
+        const utc = x => x ? new Date(x * 1000).toISOString().slice(11, 19) + "Z" : "-"
+        const dur = x => !(x >= 0) ? "-" : Math.floor(x / 3600) ? Math.floor(x / 3600) + "h " + Math.floor(x % 3600 / 60) + "m"
+                                                                : Math.floor(x / 60) + "m " + Math.floor(x % 60) + "s"
+        const gb = x => x === null || x === undefined ? "-" : x >= 1073741824 ? (x / 1073741824).toFixed(2) + " GiB" : (x / 1048576).toFixed(0) + " MiB"
+        const near = 3.5 * 1073741824  // record_wav files break past 4 GiB
+        // key: a value that signals trouble (full weight); ref: reference detail (muted); bad: red
+        const row = (k, v, o) => Object.assign({ k: k, v: dash(v), sub: "", mono: false, bad: false, key: false, ref: false, level: "" }, o || {})
+        const fileRow = (k, p, none, o) => {
+            if (!p) return row(k, none, o)
+            const n = String(p).lastIndexOf("/")
+            return row(k, n < 0 ? p : p.slice(n + 1), Object.assign({ sub: n < 0 ? "" : p.slice(0, n) }, o || {}))
+        }
+        const tiles = [
+            { k: "UPTIME", v: dur(s.uptime_s), sub: "", bad: false },
+            { k: "SPOTS", v: num(s.spots), sub: s.spots_hour !== undefined ? s.spots_hour + " last hour" : "", bad: false, primary: true },
+            { k: "CALLS", v: num(s.calls), sub: "", bad: false, primary: true },
+            { k: "WINDOWS", v: num(s.windows), sub: "", bad: false, primary: true },
+            { k: "BINS", v: num(s.bins), sub: s.bins_peak !== undefined ? "peak " + s.bins_peak : "", bad: false },
+            { k: "IQ TRIMMED", v: s.iq_trimmed_s !== undefined ? s.iq_trimmed_s + " s" : "-", sub: s.iq_trimmed_s > 0 ? "decoder behind" : "", bad: s.iq_trimmed_s > 0 },
+            { k: "CPU", v: s.cpu !== undefined && s.cpu !== null ? s.cpu + "%" : "-", sub: "of a core" + (s.rss_mb ? " · " + s.rss_mb + " MB" : ""), bad: false }]
+        const lossy = r.packets > 0 && r.lost / r.packets > 0.001  // more than 0.1% of packets lost is worth a look
+        const radio = [row("Type", r.type === "flex" ? "FlexRadio" : r.type === "hpsdr" ? "HPSDR" : r.type === "file" ? "File replay" : r.type, { ref: true }),
+                       r.type === "file" ? fileRow("File", r.address, "-", { ref: true }) : row("Address", r.address, { mono: true, ref: true })]
+        if ("station" in r) radio.push(row("Station", r.station, { ref: true }), row("DAX-IQ channel", r.daxiq_channel, { mono: true, ref: true }))
+        if ("packets" in r) radio.push(row("Packets", num(r.packets), { mono: true, ref: true }), row("Lost", num(r.lost), { mono: true, key: true, bad: lossy }))
+        if ("pkt_per_s" in r) radio.push(row("Packets a second", num(r.pkt_per_s), { mono: true, key: true }))
+        if ("reconnects" in r) radio.push(row("Reconnects", r.reconnects ? r.reconnects + ", last " + utc(r.last_reconnect) : "none",
+                                              { mono: !!r.reconnects, key: true, bad: r.reconnects > 0 }))
+        if ("station" in r) radio.push(row("Other stations", (r.others || []).join(", ") || "none", { key: true }))
+        if ("position_s" in r) radio.push(row("Position", dur(r.position_s), { mono: true }))
+        const rec = s.recording, nearLimit = !!rec && rec.bytes > near
+        const sg = [row("Host", h.host, { ref: true }), row("Build", h.build, { mono: true, ref: true }), row("Decoder", h.decoder, { ref: true }),
+            row("Bands", (h.bands || []).map(b => /^\d+$/.test(String(b.name)) ? b.center_khz + " kHz" : b.name).join(", "), { key: true }),
+            row("Started", utc(run.started), { mono: true, ref: true }),
+            fileRow("Config", run.config, "-", { ref: true }), fileRow("Log", run.log, "terminal", { ref: true }),
+            rec ? fileRow("Recording", rec.file, "off", { bad: nearLimit, ref: !nearLimit }) : row("Recording", "off", { ref: true })]
+        if (rec) sg.push(row("Recording size", gb(rec.bytes) + (nearLimit ? "  (near the 4 GiB limit)" : ""), { mono: true, key: true, bad: nearLimit }))
+        sg.push(row("Clock", s.clock_synced === true ? "NTP synchronised" : s.clock_synced === false ? "not synchronised" : "unknown",
+                    { key: true, bad: s.clock_synced === false }))
+        const out = s.telnet ? [row("Telnet port", s.telnet.port, { mono: true, ref: true }), row("Telnet clients", s.telnet.clients, { mono: true, key: true })]
+                             : [row("Telnet", "not reported")]
+        const cons = [row("This console", "since " + utc(i.since) + (i.reconnects ? ", " + i.reconnects + " reconnects" : ""), { mono: true, ref: true }),
+                      row("Rows a second", statusPop.rate, { mono: true, key: true })]
+        for (const c of s.clients || []) cons.push(row(c.peer, num(c.dropped) + " dropped", { mono: true, sub: "since " + utc(c.since), key: true, bad: c.dropped > 600 }))
+        const p = s.problems || {}
+        const probs = [row("Since start", num(p.errors) + " errors, " + num(p.warnings) + " warnings", { bad: p.errors > 0 })]
+        for (const e of (p.last || []).slice().reverse()) probs.push(row(utc(e.utc), e.msg, { level: e.level }))
+        // health at a glance: what needs attention, worst first
+        const live = ["live", "replaying"].indexOf(r.state) >= 0
+        const issues = []
+        if (r.state && !live) issues.push({ lv: "bad", t: "Radio " + r.state })
+        if (s.iq_trimmed_s > 0) issues.push({ lv: "bad", t: "Decoder behind: " + s.iq_trimmed_s + " s of IQ trimmed" })
+        if (s.clock_synced === false) issues.push({ lv: "bad", t: "Clock not NTP synchronised" })
+        if (p.errors > 0) issues.push({ lv: "bad", t: num(p.errors) + " errors since start" })
+        if (r.reconnects > 0) issues.push({ lv: "warn", t: "Radio reconnected " + r.reconnects + "x, last " + utc(r.last_reconnect) })
+        if (lossy) issues.push({ lv: "warn", t: num(r.lost) + " packets lost (" + (100 * r.lost / r.packets).toFixed(2) + "%)" })
+        if (nearLimit) issues.push({ lv: "warn", t: "Recording near the 4 GiB limit" })
+        for (const c of s.clients || []) if (c.dropped > 600) issues.push({ lv: "warn", t: "Console " + c.peer + " falling behind" })
+        if (p.warnings > 0) issues.push({ lv: "warn", t: num(p.warnings) + " warnings since start" })
+        const worst = issues.some(x => x.lv === "bad") ? "bad" : issues.length ? "warn" : "ok"
+        const tag = (text, lv) => ({ text: text, lv: lv })
+        return { head: i.station || "", state: r.state ? String(r.state).toUpperCase() : "", live: live,
+                 health: worst, issues: issues.length ? issues : [{ lv: "ok", t: "Healthy: radio live, decoding keeping up, no errors" }],
+                 tiles: tiles,
+                 cards: [{ title: "RADIO", wide: false, rows: radio,
+                           tag: r.state ? tag(String(r.state).toUpperCase(), live ? (r.reconnects || lossy ? "warn" : "ok") : "bad") : null },
+                         { title: "SPARKGAP", wide: false, rows: sg,
+                           tag: s.clock_synced === false ? tag("CLOCK OFF", "bad") : s.clock_synced ? tag("CLOCK OK", "ok") : null },
+                         { title: "SPOT OUTPUT", wide: false, rows: out, tag: null },
+                         { title: "CONSOLES", wide: false, rows: cons, tag: null },
+                         { title: "PROBLEMS", wide: true, rows: probs,
+                           tag: p.errors ? tag(num(p.errors) + " ERRORS", "bad") : p.warnings ? tag(num(p.warnings) + " WARNINGS", "warn") : tag("NONE", "ok") }] }
+    }
+    Popup {
+        id: statusPop
+        anchors.centerIn: Overlay.overlay
+        width: Math.min(760, win.width - 32); padding: 18
+        height: Math.min(implicitHeight, win.height - 32)
+        modal: true; dim: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        Overlay.modal: Rectangle { color: Qt.alpha("#000000", win.dark ? 0.55 : 0.35) }
+        background: Rectangle { radius: 10; color: t.surface; border.color: t.line }
+        property var sections: ({ head: "", state: "", live: false, health: "ok", issues: [], tiles: [], cards: [] })
+        property string rate: "-"  // waterfall rows a second, from rowsTotal between refreshes
+        property real lastTotal: -1
+        property real lastAt: 0
+        function refresh() {
+            if (inst && lastTotal >= 0) {
+                const dt = Date.now() / 1000 - lastAt
+                if (dt > 0.5) rate = ((inst.rowsTotal - lastTotal) / dt).toFixed(0)
+            }
+            lastTotal = inst ? inst.rowsTotal : -1; lastAt = Date.now() / 1000
+            sections = win.statusSections()
+        }
+        onOpened: { lastTotal = -1; rate = "-"; refresh() }
+        Connections { target: inst; enabled: statusPop.visible; function onStatusChanged() { statusPop.refresh() } }
+        contentItem: ColumnLayout {
+            spacing: 12
+            RowLayout {
+                Layout.fillWidth: true; spacing: 10
+                Text { text: "Status"; color: t.fg; font.family: t.display; font.pixelSize: 15; font.weight: Font.DemiBold }
+                Item { Layout.fillWidth: true }
+                Text { text: statusPop.sections.head; color: t.muted; font.family: t.mono; font.features: t.zero; font.pixelSize: 12 }
+                Pill { visible: !!statusPop.sections.state; text: statusPop.sections.state; tone: statusPop.sections.live ? t.good : t.bad }
+            }
+            Flickable {
+                id: statFlick
+                Layout.fillWidth: true; Layout.fillHeight: true
+                implicitHeight: statCol.implicitHeight; contentHeight: statCol.implicitHeight
+                clip: true; boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: ScrollBar { policy: statFlick.contentHeight > statFlick.height ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff }
+                ColumnLayout {
+                    id: statCol
+                    width: statFlick.width - (statFlick.contentHeight > statFlick.height ? 14 : 0)
+                    spacing: 10
+                    Text {
+                        visible: statusPop.sections.cards.length === 0
+                        text: "Status is shown for a connected SparkGap, not demo mode."; color: t.muted; font.pixelSize: 12
+                    }
+                    // health at a glance
+                    Rectangle {
+                        readonly property color tone: statusPop.sections.health === "bad" ? t.bad : statusPop.sections.health === "warn" ? t.accent : t.good
+                        visible: statusPop.sections.cards.length > 0
+                        Layout.fillWidth: true; implicitHeight: issueFlow.implicitHeight + 18; radius: 8
+                        color: Qt.alpha(tone, 0.10); border.color: tone
+                        Flow {
+                            id: issueFlow; x: 12; y: 9; width: parent.width - 24; spacing: 16
+                            Repeater {
+                                model: statusPop.sections.issues
+                                delegate: Text {
+                                    required property var modelData
+                                    text: modelData.t; font.pixelSize: 13; font.weight: Font.Medium
+                                    color: modelData.lv === "bad" ? t.bad : modelData.lv === "warn" ? t.accent : t.good
+                                }
+                            }
+                        }
+                    }
+                    // headline tiles, like the detail panel's KHZ / WPM / SNR
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 8
+                        Repeater {
+                            model: statusPop.sections.tiles
+                            delegate: Rectangle {
+                                required property var modelData
+                                Layout.fillWidth: true; Layout.fillHeight: true; Layout.preferredWidth: 80
+                                implicitHeight: tileCol.implicitHeight + 16; radius: 8; color: t.sunken
+                                Column {
+                                    id: tileCol; x: 10; y: 8; spacing: 1
+                                    Text { text: modelData.k; color: t.muted; font.pixelSize: 10; font.letterSpacing: 1 }
+                                    Text { text: modelData.v; color: modelData.bad ? t.bad : t.fg; font.family: t.mono; font.features: t.zero; font.pixelSize: modelData.primary ? 20 : 15; font.weight: Font.Medium }
+                                    Text { visible: !!modelData.sub; text: modelData.sub; color: t.faint; font.pixelSize: 10 }
+                                }
+                            }
+                        }
+                    }
+                    // cards: two columns, Problems across both
+                    GridLayout {
+                        Layout.fillWidth: true; columns: 2; columnSpacing: 10; rowSpacing: 10
+                        Repeater {
+                            model: statusPop.sections.cards
+                            delegate: Rectangle {
+                                id: card
+                                required property var modelData
+                                Layout.fillWidth: true; Layout.columnSpan: modelData.wide ? 2 : 1; Layout.alignment: Qt.AlignTop
+                                Layout.preferredWidth: 100; Layout.fillHeight: true
+                                implicitHeight: cardCol.implicitHeight + 20; radius: 8; color: t.sunken
+                                ColumnLayout {
+                                    id: cardCol; x: 12; y: 10; width: card.width - 24; spacing: 0
+                                    RowLayout {
+                                        Layout.fillWidth: true; Layout.bottomMargin: 6
+                                        Text { Layout.fillWidth: true; text: card.modelData.title; color: t.muted; font.pixelSize: 11; font.letterSpacing: 1 }
+                                        Pill {
+                                            visible: !!card.modelData.tag; text: card.modelData.tag ? card.modelData.tag.text : ""
+                                            tone: !card.modelData.tag ? t.muted : card.modelData.tag.lv === "bad" ? t.bad : card.modelData.tag.lv === "warn" ? t.accent : t.good
+                                        }
+                                    }
+                                    Repeater {
+                                        model: card.modelData.rows
+                                        delegate: ColumnLayout {
+                                            required property var modelData
+                                            required property int index
+                                            Layout.fillWidth: true; spacing: 0
+                                            Rectangle { visible: index > 0; Layout.fillWidth: true; height: 1; color: Qt.alpha(t.line, 0.5) }
+                                            RowLayout {
+                                                Layout.fillWidth: true; Layout.topMargin: 3; Layout.bottomMargin: 3; spacing: 10
+                                                Text {
+                                                    text: modelData.k; color: modelData.level ? t.faint : t.muted
+                                                    font.family: modelData.level ? t.mono : t.sans; font.pixelSize: modelData.level ? 11 : 12
+                                                    Layout.alignment: Qt.AlignTop
+                                                }
+                                                Pill {
+                                                    visible: !!modelData.level; text: modelData.level
+                                                    tone: modelData.level === "WARNING" ? t.accent : t.bad
+                                                }
+                                                Column {
+                                                    Layout.fillWidth: true; Layout.alignment: Qt.AlignTop
+                                                    Text {
+                                                        width: parent.width; wrapMode: Text.WrapAnywhere
+                                                        horizontalAlignment: modelData.level ? Text.AlignLeft : Text.AlignRight
+                                                        text: modelData.v; font.pixelSize: 12; font.weight: modelData.key ? Font.DemiBold : Font.Normal
+                                                        color: modelData.bad ? t.bad : modelData.ref ? t.muted : t.fg
+                                                        font.family: modelData.mono ? t.mono : t.sans; font.features: t.zero
+                                                    }
+                                                    Text {
+                                                        visible: !!modelData.sub; width: parent.width; horizontalAlignment: Text.AlignRight
+                                                        wrapMode: Text.WrapAnywhere; text: modelData.sub; color: t.faint
+                                                        font.family: t.mono; font.features: t.zero; font.pixelSize: 10
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Text { text: "Refreshed every 2 s."; color: t.faint; font.pixelSize: 11 }
+                Item { Layout.fillWidth: true }
+                Btn { text: "Close"; onClicked: statusPop.close() }
             }
         }
     }
@@ -869,15 +1168,18 @@ ApplicationWindow {
     }
 
     // centre the waterfall on a match (keeping the span) and select it
+    function setBand(n) {
+        if (!inst) return
+        inst.setBand(n)
+        selectedKhz = -1
+    }
+
     function goTo(m) {
+        const b = inst ? inst.bandAt(m.khz) : -1
+        if (b >= 0 && b !== inst.band) { inst.goTo(m.khz); setBand(b) }  // the match is on another band
         const span = wf.highKhz - wf.lowKhz
         wf.setView(m.khz - span / 2, m.khz + span / 2)
-        let khz = m.khz, call = m.call
-        if (!call && inst) {
-            const near = inst.nearestSignal(m.khz, 0.5)
-            if (near > 0) khz = near
-        }
-        pick(khz, call)
+        pick(m.khz, m.call)  // a typed frequency is taken as typed
         search.focus = false
     }
 
