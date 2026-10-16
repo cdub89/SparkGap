@@ -2341,6 +2341,9 @@ def _get_itila_scanner(sample_rate, center_hz, max_bins, min_snr,
         lib.itila_sc_mark_evidence.argtypes = [_ct.c_void_p, _ct.c_double]
         lib.itila_sc_get_snr.restype  = _ct.c_double
         lib.itila_sc_get_snr.argtypes = [_ct.c_void_p, _ct.c_double]
+        if hasattr(lib, 'itila_sc_take_snr'):   # itila2: a window's median SNR (cdub89/SparkGap#11)
+            lib.itila_sc_take_snr.restype  = _ct.c_double
+            lib.itila_sc_take_snr.argtypes = [_ct.c_void_p, _ct.c_double]
         lib.itila_sc_peek_env.restype  = _ct.c_int
         lib.itila_sc_peek_env.argtypes = [
             _ct.c_void_p, _ct.c_double,
@@ -2876,7 +2879,9 @@ class _ItilaScanner:
             return None
 
         f_khz = f_hz / 1000.0
-        snr = self._sc._lib.itila_sc_get_snr(self._sc._h, _ct.c_double(f_hz))
+        sclib = self._sc._lib
+        take = getattr(sclib, 'itila_sc_take_snr', None)   # the window's median where the scanner has it
+        snr = (take or sclib.itila_sc_get_snr)(self._sc._h, _ct.c_double(f_hz))
         decoded = []
         for h, env in ((st['h100'], env100), (st['h200'], env200)):
             if h is None or h.value is None:
