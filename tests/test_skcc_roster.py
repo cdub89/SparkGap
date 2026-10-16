@@ -30,6 +30,12 @@ def test_refresh_daily_and_offline(tmp_path: Path) -> None:
 
     assert refresh(tmp_path, fetch=offline, now=lambda: 2e10) == {"KC9ECI", "K1ABC"}
 
+    def truncated() -> bytes:
+        import http.client
+        raise http.client.IncompleteRead(b"SKCCNR|")
+
+    assert refresh(tmp_path, fetch=truncated, now=lambda: 2e10) == {"KC9ECI", "K1ABC"}
+
 
 def test_refresh_rejects_a_page_that_is_not_the_roster(tmp_path: Path) -> None:
     assert refresh(tmp_path, fetch=lambda: b"<html>maintenance</html>") == set()

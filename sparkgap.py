@@ -1663,6 +1663,7 @@ def _make_spot_rule(config, tracker):
     # (MASTER.SCP), "rbn" (RBN known calls, rbn_known.py, refreshed from the archives here) or
     # "rbn+skcc" (those and SKCC member calls, skcc_roster.py).
     validation = config.get('spot_validation') or None
+    validation = None if validation == 'off' else validation
     calls = config.get('spot_validation_calls') if validation else None
     listed = None
     if calls == 'scp':
@@ -1833,10 +1834,11 @@ def _rtty_scan_band_repeat(skimmer, rtty_lib, bn, band_center_khz, fi, fq, n_sam
         trk = skimmer.tracker
         # As CW but without CQ qualifiers: on an RTTY contest recording they let a caller
         # through (TU KQ4TNF CQ N4TL N4TL .. 59 N4TL FM06), and split_runs gains nothing on
-        # RTTY, which has real spaces.
+        # RTTY, which has real spaces. Same audio within 30 s: scans are a minute apart and a
+        # runner's 100 Hz bin can change between two.
         rule = skimmer._rtty_rule = RepeatSpotRule(
             lambda c: {'active': 2, 'rare': 3}.get(trk._matches_patt3ch(c), 4),
-            cq_groups=True, lockon=True)
+            cq_groups=True, lockon=True, window_s=30.0)
     iq = fi.astype(np.float64) + 1j * fq.astype(np.float64)
     cands = _rtty_candidates(iq, *rng)[:int(skimmer.cfg.get('rtty_max_candidates', 40))]
     if not cands:

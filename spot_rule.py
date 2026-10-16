@@ -289,10 +289,11 @@ def runner_groups(text: str, every: bool = False,
         k = j + 1
         while k < n and toks[k] == toks[j]:       # call sent twice before the closing keyword
             k += 1
-        if t in KEYWORDS and k < n and toks[k] == "DE":
+        if t == "CQ" and j == i + 1 and k < n and toks[k] == "DE":
             j2 = sender(toks, k)
             if j2 is not None and toks[j2] != toks[j]:
-                i = k                             # CQ S52Y DE N8EM: S52Y is being called
+                i = k                             # CQ S52Y DE N8EM: S52Y is being called; after
+                                                  # TEST or DE the call is the runner's
                 continue
         if not is_exchange(toks, j, qualifiers) and (every or all(toks[j] != c for c, _ in out)):
             out.append((toks[j], _call_before(toks, i) if t == "TEST" else None))

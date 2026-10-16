@@ -131,6 +131,13 @@ def test_the_station_being_called_is_not_the_runner() -> None:
     assert runner_calls("CQ S52Y DE N8EM K") == []
     assert runner_calls("CQ S52Y S52Y DE N8EM N8EM K") == []      # N8EM is calling, not running
     assert runner_calls("CQ DE N8EM N8EM K") == ["N8EM"]
+
+
+def test_caller_echoing_the_runner_keeps_the_runners_copy() -> None:
+    # hotairfred/SparkGap#52 review: after TEST or DE the call is the runner's, not one being called
+    assert runner_calls("CQ CQ DE K1ABC K1ABC K1ABC DE N2XX N2XX K") == ["K1ABC"]
+    assert runner_calls("CQ TEST K1ABC DE N2XX") == ["K1ABC"]
+    assert runner_calls("CQ TEST W1AW DE W1AWX") == ["W1AW"]
     assert runner_calls("CQ K4DH DE K4DH K") == ["K4DH"]
 
 
@@ -613,3 +620,8 @@ def test_validation_rival_reading_lowers_confidence() -> None:
     _feed(rival, ["CQ CQ DE K1ABD", "CQ CQ DE K1ABD"])
     assert _feed(plain, ["CQ CQ DE K1ABC K1ABC K"], t0=120.0) == [("K1ABC", 7019.3)]
     assert _feed(rival, ["CQ CQ DE K1ABC K1ABC K"], t0=120.0) == []
+
+
+def test_validation_off_is_accepted() -> None:
+    from sparkgap import _make_spot_rule
+    assert _make_spot_rule({"spot_validation": "off"}, None).threshold is None

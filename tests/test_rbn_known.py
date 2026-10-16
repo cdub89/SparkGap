@@ -7,7 +7,7 @@ from datetime import date
 from email.message import Message
 from pathlib import Path
 
-from rbn_known import base_call, day_counts, known_calls, refresh
+from rbn_known import base_call, day_counts, known_calls, refresh, spotter
 
 HEADER = "callsign,de_pfx,de_cont,freq,band,dx,dx_pfx,dx_cont,mode,db,date,speed,tx_mode\n"
 
@@ -41,6 +41,18 @@ def test_day_counts_distinct_skimmers_without_our_own() -> None:
     assert day_counts(rows, "WX7V") == {"K1ABC": 2}
 
 
+def test_spotter_is_the_operator_behind_a_node() -> None:
+    assert spotter("WF8Z-2") == spotter("WF8Z-#") == spotter("WF8Z") == "WF8Z"
+    assert spotter("WX7V/5") == "WX7V"
+
+
+def test_day_counts_own_nodes_left_out_and_one_operators_nodes_once() -> None:
+    import csv
+    rows = csv.DictReader(io.StringIO(HEADER + _row("WF8Z-2", "OK2PDE") + _row("KM3T-2", "K1ABC")
+                                      + _row("KM3T-5", "K1ABC") + _row("W1NT-6", "K1ABC")))
+    assert day_counts(rows, "WF8Z") == {"K1ABC": 2}
+
+
 def test_known_calls_need_enough_skimmers_on_one_day() -> None:
     from collections import Counter
     assert known_calls([Counter({"K1ABC": 10, "W1AW": 9}), Counter({"W1AW": 9})]) == {"K1ABC"}
@@ -68,7 +80,7 @@ def test_refresh_refetches_a_damaged_day_and_stops_when_offline(tmp_path: Path) 
     good = _zip([_row(f"SK{i}", "K1ABC") for i in range(10)])
     refresh(tmp_path, "WX7V", today=date(2026, 10, 14), fetch=lambda day: good,
             sleep=_nap)
-    (tmp_path / "20261010_WX7V.calls").write_text("K1ABC\t1")      # cut off mid-line
+    (tmp_path / "20261010_WX7V_v2.calls").write_text("K1ABC\t1")      # cut off mid-line
     fetched: list[date] = []
 
     def offline(day: date) -> bytes:
@@ -87,3 +99,18 @@ def test_refresh_window_is_configurable_paced_and_kept(tmp_path: Path) -> None:
             sleep=pauses.append)
     assert len(list(tmp_path.glob("*.calls"))) == 40     # not pruned at KEEP_DAYS (30)
     assert len(pauses) == 39                             # between downloads, not before the first
+
+
+def test_refresh_stops_when_rbn_refuses_and_skips_a_truncated_day(tmp_path: Path) -> None:
+    import http.client
+    fetched: list[date] = []
+
+    def refusing(day: date) -> bytes:
+        fetched.append(day)
+        if day == date(2026, 10, 13):
+            raise http.client.IncompleteRead(b"PK")
+        raise urllib.error.HTTPError("u", 429, "Too Many Requests", Message(), None)
+
+    assert refresh(tmp_path, "WX7V", today=date(2026, 10, 14), fetch=refusing,
+                   sleep=_nap) == set()
+    assert fetched == [date(2026, 10, 13), date(2026, 10, 12)]   # stops at the refusal
