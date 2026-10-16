@@ -18,8 +18,8 @@ The feed is off unless the config has a `gui_feed` block:
 ```
 
 - `bind`: the address to listen on. `127.0.0.1` serves only the same machine. To
-  watch from other machines, bind the Tailscale address of the SparkGap host;
-  the feed is then reachable from your tailnet and nothing else.
+  watch from other machines, use the IP address of the machine SparkGap runs on.
+  For remote access, use a VPN that encrypts the link (such as Tailscale).
 - `port`: 7320 by default.
 - `join_code`: required whenever `bind` is not a loopback address. Six
   characters, minted without any pair easily confused by eye or over the air
@@ -27,15 +27,15 @@ The feed is off unless the config has a `gui_feed` block:
   with `python3 feed_server.py --new-code`. SparkGap logs the code at startup:
 
   ```text
-  GUI feed on ws://100.64.0.1:7320/feed, join code XXX-XXX
+  GUI feed on ws://192.168.1.50:7320/feed, join code XXX-XXX
   ```
 
 - Five wrong codes from one address lock that address out for 10 minutes. A
   missing code is refused but not counted.
 - At most 16 consoles at once; one that stops reading is disconnected.
 - `web`: `true` also serves SparkGap Web on the same port (see below).
-- `tls_cert` and `tls_key` (optional) serve `wss://`. Tailscale already encrypts
-  the link.
+- `tls_cert` and `tls_key` (optional) serve `wss://`; without them the feed is
+  not encrypted.
 
 What the feed sends is described in [GUI_FEED_PROTOCOL.md](GUI_FEED_PROTOCOL.md).
 
@@ -49,13 +49,14 @@ Nothing to install. Set `"web": true` in the `gui_feed` block and open the
 address SparkGap logs at startup:
 
 ```text
-GUI feed: browser console at http://100.64.0.1:7320/
+GUI feed: browser console at http://192.168.1.50:7320/
 ```
 
 In Settings, under CONNECTIONS, add the server with its join code (the address
-and port are filled in from the page). The list, theme and demo
-setting are kept in that browser, separately for each address the page is
-opened from.
+and port are filled in from the page). A server added without a port is
+searched for on ports 7320 to 7339, and every SparkGap found there is added.
+The list, theme and demo setting are kept in that browser, separately for each
+address the page is opened from.
 
 Demo mode shows made-up signals, so the page can be tried without a server; it
 is on until a server has been added. Turning it on only switches the view: the
@@ -70,8 +71,17 @@ when the page itself was opened from a loopback address on the feed's port.
 
 - Drag or two-finger drag pans the waterfall; Ctrl+scroll or a pinch zooms; the
   scroll bar beside it moves through the receiver's span.
-- The panel under the decoded text: Zoom sets the width shown (Full shows the
-  whole receiver), Span is the range on screen, and SNR is the waterfall's
-  colour scale.
-- Click a trace or a call to see its decoded windows. Ctrl+F searches calls,
-  decoded text and frequencies.
+- The panel under the decoded text: Zoom sets the width shown (its button steps
+  through Full, Half and Quarter of the receiver), Span is the range on screen,
+  and SNR is the waterfall's colour scale.
+- Click a trace or a call to see its decoded windows; for a spotted call the
+  frequency, speed and SNR are the ones in its spot. Ctrl+F searches calls,
+  decoded text and frequencies; a frequency is taken as typed. Decoded text can
+  be selected and copied.
+- A SparkGap running several bands, or several SparkGaps, give a band picker in
+  the header; a search for a call or frequency on another band switches to it.
+- Settings, DECODED: each window's readings (Both, Wide, Narrow, or the one
+  with the Lowest cost, the default).
+- The status page (ⓘ in the header) shows the radio, SparkGap's run (config
+  and log files, recording, clock), decoding counts, spot output, the connected
+  consoles, CPU and memory, and SparkGap's last warnings and errors.

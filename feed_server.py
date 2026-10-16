@@ -66,6 +66,11 @@ MAX_HEADER_BYTES = 8_192
 MAX_CLIENT_MESSAGE = 65_536
 CLIENT_QUEUE_MAX = 5_000  # text messages queued for one client before it is dropped
 MAX_CLIENTS = 16
+MAX_PENDING = 32  # connections still sending their request; more are closed at once
+TLS_HANDSHAKE = b"\x16"  # first byte of every TLS connection
+PROBLEMS_KEPT = 5  # last warnings and errors shown on the status page
+PROBLEM_CHARS = 200
+CLOCK_CHECK_S = 60.0
 SPECTRUM_QUEUE_MAX = 4  # spectrum rows queued per client; oldest dropped first
 DEFAULT_SPECTRUM_HZ = 20.0
 PING_INTERVAL_S = 20.0
@@ -174,6 +179,7 @@ class Client:
     spectrum_hz: float = DEFAULT_SPECTRUM_HZ
     spectrum_credit: float = 0.0
     last_heard: float = field(default_factory=time.monotonic)
+    since: float = field(default_factory=time.time)
     dropped_rows: int = 0
     closed: bool = False
 
@@ -192,8 +198,13 @@ def build_id() -> str | None:
 
 class FeedServer:
     def __init__(self, cfg: dict[str, Any], hello: dict[str, Any]) -> None:
+        if not isinstance(cfg, dict):
+            raise ValueError("gui_feed must be an object, e.g. {\"bind\": \"127.0.0.1\"}")
         self.bind = str(cfg.get("bind", "127.0.0.1"))
-        self.port = int(cfg.get("port", 7320))
+        port = cfg.get("port", 7320)
+        if isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65_535:
+            raise ValueError(f"gui_feed: port must be a whole number 0 to 65535, got {port!r}")
+        self.port = port
         code = cfg.get("join_code")
         if code is not None and not valid_code(str(code)):
             raise ValueError(
@@ -220,6 +231,13 @@ class FeedServer:
         self.started = threading.Event()
         self.thread: threading.Thread | None = None
         self.n_clients = 0  # read without the loop by the spectrum tap
+        self.pending = 0  # connections in _handshake; touched only on the loop
+        # status page counters, kept on the loop
+        self.n_windows = 0
+        self.calls: set[str] = set()
+        self.spot_times: collections.deque[float] = collections.deque()
+        self.bins_peak = 0
+        self.problems = ProblemLog()
         self.proc: ProcessStats | None = None
         self.tap_cpu_s = 0.0  # CPU spent in SpectrumTap, all instances, for the cost log
         self.tid = 0
@@ -227,6 +245,7 @@ class FeedServer:
     # ---- lifecycle ----
 
     def start(self) -> None:
+        logging.getLogger("sparkgap").addHandler(self.problems)  # all of SparkGap
         self.thread = threading.Thread(target=self._run, name="gui-feed", daemon=True)
         self.thread.start()
         self.started.wait(5)
@@ -263,6 +282,7 @@ class FeedServer:
         self.loop.close()
 
     def stop(self) -> None:
+        logging.getLogger("sparkgap").removeHandler(self.problems)
         if self.loop and self.loop.is_running():
             self.loop.call_soon_threadsafe(self._shutdown)
             if self.thread:
@@ -289,11 +309,11 @@ class FeedServer:
             self._on_window,
             {
                 "type": "window",
-                "khz": round(khz, 2),
+                "khz": round(float(khz), 2),  # float(): a numpy value would not serialise
                 "text": text,
-                "wpm": None if wpm is None else round(wpm, 1),
-                "snr": None if snr is None else round(snr, 1),
-                "cost": None if cost is None else round(cost, 2),
+                "wpm": None if wpm is None else round(float(wpm), 1),
+                "snr": None if snr is None else round(float(snr), 1),
+                "cost": None if cost is None else round(float(cost), 2),
                 "utc": time.time(),
             },
         )
@@ -303,10 +323,10 @@ class FeedServer:
             self._on_text,
             {
                 "type": "spot",
-                "khz": round(khz, 2),
+                "khz": round(float(khz), 2),
                 "call": call,
-                "snr": snr,
-                "wpm": wpm or None,  # SparkGap's spots carry 0 for an unknown speed
+                "snr": None if snr is None else float(snr),
+                "wpm": float(wpm) if wpm else None,  # SparkGap's spots carry 0 for an unknown speed
                 "utc": time.time(),
             },
             self.spots,
@@ -341,6 +361,7 @@ class FeedServer:
 
     def _on_window(self, msg: dict[str, Any]) -> None:
         now = msg["utc"]
+        self.n_windows += 1
         self.windows.append(msg)
         while self.windows and now - self.windows[0]["utc"] > SNAPSHOT_WINDOW_S:
             self.windows.popleft()
@@ -351,9 +372,26 @@ class FeedServer:
 
     def _on_text(self, msg: dict[str, Any], keep: collections.deque[dict[str, Any]]) -> None:
         keep.append(msg)
+        if msg["type"] == "spot":
+            self.calls.add(msg["call"])
+            self.spot_times.append(msg["utc"])
         self._broadcast(msg)
 
     def _on_status(self, msg: dict[str, Any]) -> None:
+        """Adds what the feed itself counts: the status page's decoding, consoles and problems."""
+        now = msg["utc"]
+        while self.spot_times and now - self.spot_times[0] > 3600:
+            self.spot_times.popleft()
+        self.bins_peak = max(self.bins_peak, msg.get("bins") or 0)
+        msg.update(
+            windows=self.n_windows,
+            calls=len(self.calls),
+            spots_hour=len(self.spot_times),
+            bins_peak=self.bins_peak,
+            clients=[{"peer": c.peer, "since": round(c.since), "dropped": c.dropped_rows}
+                     for c in self.clients],
+            problems=self.problems.summary(),
+        )
         self.status = msg
         self._broadcast(msg)
 
@@ -419,11 +457,22 @@ class FeedServer:
     async def _handshake(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> bool | None:
-        """True: a client to serve. False: refused. None: a page was served."""
+        """True: a client to serve. False: refused. None: a page served, or https turned away."""
+
+        async def request() -> bytes | None:
+            first = await reader.readexactly(1)
+            if first == TLS_HANDSHAKE and self.tls is None:
+                return None  # a browser trying https first: closing now lets it fall back to http
+            return first + await reader.readuntil(b"\r\n\r\n")
+
         try:
-            raw = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 10)
+            raw = await asyncio.wait_for(request(), 10)
         except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, asyncio.TimeoutError):
             return False
+        if raw is None:
+            log.info("GUI feed: %s tried https; this feed is http (tls_cert not set)",
+                     writer.get_extra_info("peername")[0])
+            return None
         if len(raw) > MAX_HEADER_BYTES:
             return self._reject(writer, 431, "Request Header Fields Too Large")
         lines = raw.decode("latin-1").split("\r\n")
@@ -522,7 +571,10 @@ class FeedServer:
             or not f.resolve().is_relative_to(base.resolve())  # no symlink out of the folder
         ):
             return FeedServer._reject(writer, 404, "Not Found")
-        body = f.read_bytes()
+        try:
+            body = f.read_bytes()
+        except OSError:
+            return FeedServer._reject(writer, 404, "Not Found")
         head = [
             "HTTP/1.1 200 OK",
             f"Content-Type: {WEB_TYPES[f.suffix]}",
@@ -546,7 +598,14 @@ class FeedServer:
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         host, port = writer.get_extra_info("peername")[:2]
         peer = f"{host}:{port}"
-        accepted = await self._handshake(reader, writer)
+        if self.pending >= MAX_PENDING:
+            writer.close()
+            return
+        self.pending += 1
+        try:
+            accepted = await self._handshake(reader, writer)
+        finally:
+            self.pending -= 1
         if not accepted:
             if accepted is False:
                 log.info("GUI feed: refused %s", peer)
@@ -750,11 +809,67 @@ class SpectrumTap:
         )
 
 
+class ProblemLog(logging.Handler):
+    """Counts SparkGap's warnings and errors and keeps the last few, for the status page."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.WARNING)
+        self.warnings = 0
+        self.errors = 0
+        self.last: collections.deque[dict[str, Any]] = collections.deque(maxlen=PROBLEMS_KEPT)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.levelno >= logging.ERROR:
+            self.errors += 1
+        else:
+            self.warnings += 1
+        try:
+            text = record.getMessage()[:PROBLEM_CHARS]
+        except Exception:  # a bad format string must not break logging
+            text = str(record.msg)[:PROBLEM_CHARS]
+        self.last.append({"utc": round(record.created), "level": record.levelname, "msg": text})
+
+    def summary(self) -> dict[str, Any]:
+        return {"warnings": self.warnings, "errors": self.errors, "last": list(self.last)}
+
+
+def log_file() -> str | None:
+    """Where SparkGap's log goes when that is a file (output redirected), else None."""
+    for fd in (2, 1):
+        try:
+            target = os.readlink(f"/proc/self/fd/{fd}")
+        except OSError:
+            continue
+        if target.startswith("/") and os.path.isfile(target):
+            return target
+    name = getattr(sys.stderr, "name", "")
+    return name if name and not name.startswith("<") and os.path.isfile(name) else None
+
+
+def clock_synced() -> bool | None:
+    """Whether the system clock is NTP-synchronised; None where that cannot be read."""
+    try:
+        out = subprocess.run(["timedatectl", "show", "-p", "NTPSynchronized", "--value"],
+                             capture_output=True, text=True, timeout=2).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return {"yes": True, "no": False}.get(out)
+
+
 class ProcessStats:
-    """CPU % since the previous call and resident memory of this process."""
+    """CPU % since the previous call, resident memory and clock sync of this process's machine.
+    The clock is read on a thread of its own: timedatectl may be slow, and sample() runs in
+    SparkGap's main loop."""
 
     def __init__(self) -> None:
         self.last = (time.monotonic(), sum(os.times()[:2]))
+        self.clock: bool | None = None
+        self.clock_thread: threading.Thread | None = None
+
+    def _watch_clock(self) -> None:
+        while True:
+            self.clock = clock_synced()
+            time.sleep(CLOCK_CHECK_S)
 
     def sample(self) -> dict[str, Any]:
         now, cpu = time.monotonic(), sum(os.times()[:2])
@@ -767,7 +882,11 @@ class ProcessStats:
                 rss_mb = int(fh.read().split()[1]) * os.sysconf("SC_PAGE_SIZE") // 1_048_576
         except (OSError, ValueError, AttributeError):
             pass
-        return {"cpu": pct, "rss_mb": rss_mb}
+        if self.clock_thread is None:
+            self.clock_thread = threading.Thread(target=self._watch_clock, name="gui-clock",
+                                                 daemon=True)
+            self.clock_thread.start()
+        return {"cpu": pct, "rss_mb": rss_mb, "clock_synced": self.clock}
 
 
 if __name__ == "__main__":

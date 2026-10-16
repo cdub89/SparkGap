@@ -10,6 +10,7 @@ import socket
 import struct
 import time
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -76,6 +77,14 @@ def test_non_loopback_needs_join_code() -> None:
     with pytest.raises(ValueError):
         FeedServer({"bind": "100.64.0.1", "join_code": "XXXXXO"}, HELLO)  # O is not in the alphabet
     assert FeedServer({"bind": "100.64.0.1", "join_code": "xxx-xxx"}, HELLO).code == "XXXXXX"
+
+
+@pytest.mark.parametrize("cfg", [True, "127.0.0.1", {"port": None}, {"port": "x"}, {"port": -1},
+                                 {"port": 65_536}, {"port": 1.5}, {"port": True}])
+def test_bad_block_is_a_value_error(cfg) -> None:
+    # startup logs a ValueError and keeps running; anything else would stop SparkGap
+    with pytest.raises(ValueError):
+        FeedServer(cfg, HELLO)
 
 
 def test_new_code_from_mint_alphabet() -> None:
@@ -189,6 +198,15 @@ def test_live_messages(feed: FeedServer) -> None:
     assert c.json("spot")["call"] == "AF4PX"
     feed.publish_status({"bins": 37, "cpu": 38})
     assert c.json("status")["bins"] == 37
+    # numpy values, as a decoder may hand them, still serialise
+    khz: Any = np.float32(7021.25)
+    snr: Any = np.float32(18.5)
+    wpm: Any = np.int64(22)
+    feed.publish_spot(khz, "AF4PX", snr, wpm)
+    assert c.json("spot")["snr"] == 18.5
+    cost: Any = np.float32(0.5)
+    feed.publish_window(khz, "CQ", wpm, snr, cost)
+    assert c.json("window")["cost"] == 0.5
 
 
 def test_ping_pong_and_close(feed: FeedServer) -> None:
@@ -487,3 +505,51 @@ def test_build_in_hello(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(feed_server.subprocess, "run", no_git)
     assert feed_server.build_id() is None
+
+
+def test_pending_connections_capped() -> None:
+    f = FeedServer({"bind": "127.0.0.1", "port": 0}, HELLO)
+    f.start()
+    try:
+        idle = [socket.create_connection(("127.0.0.1", f.port))
+                for _ in range(feed_server.MAX_PENDING)]
+        wait_for(lambda: f.pending == feed_server.MAX_PENDING)
+        extra = socket.create_connection(("127.0.0.1", f.port))
+        extra.settimeout(3)
+        assert extra.recv(1) == b""  # closed at once, before the 10 s handshake timeout
+        for s in idle + [extra]:
+            s.close()
+        wait_for(lambda: f.pending == 0)
+    finally:
+        f.stop()
+
+
+def test_unreadable_page_is_refused(monkeypatch) -> None:
+    f = FeedServer({"bind": "127.0.0.1", "port": 0, "web": True}, HELLO)
+    f.start()
+    try:
+        def fail(self):
+            raise PermissionError("denied")
+        monkeypatch.setattr(Path, "read_bytes", fail)
+        s = socket.create_connection(("127.0.0.1", f.port))
+        s.settimeout(3)
+        s.sendall(b"GET /index.html HTTP/1.1\r\nHost: x\r\n\r\n")
+        reply = b""
+        while chunk := s.recv(4096):
+            reply += chunk
+        assert reply.startswith(b"HTTP/1.1 404")  # answered and closed, not left open
+        s.close()
+    finally:
+        f.stop()
+
+
+def test_https_attempt_closed_at_once(feed: FeedServer) -> None:
+    # a browser trying https first must fail fast, or it never falls back to http
+    s = socket.create_connection(("127.0.0.1", feed.port))
+    s.settimeout(3)
+    t = time.monotonic()
+    s.sendall(b"\x16\x03\x01\x02\x00\x01\x00\x01\xfc\x03\x03")  # start of a TLS ClientHello
+    assert s.recv(1) == b""
+    assert time.monotonic() - t < 1.0
+    s.close()
+    assert WS(feed.port).status == 101  # plain clients still served
