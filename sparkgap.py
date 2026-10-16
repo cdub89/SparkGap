@@ -56,6 +56,7 @@ _mqtt_pub_init_failed = False
 
 # GUI feed (feed_server.FeedServer) when the gui_feed config block is set; None otherwise.
 _gui_feed = None
+_config_path = None   # the config file SparkGap runs with, for the GUI status page
 
 
 def _gui_settings(cfg, sample_rate):
@@ -100,7 +101,9 @@ def _start_gui_feed(cfg, bands, sample_rate, managers):
             **dict(zip(('config', 'config_defaults', 'config_built_in'),
                        _gui_settings(cfg, sample_rate))),
             'bands': [{'name': n, 'center_khz': c / 1000.0, 'span_khz': sample_rate / 1000.0}
-                      for n, c in bands]})
+                      for n, c in bands],
+            'run': {'config': _config_path, 'log': feed_server.log_file(),
+                    'started': round(time.time())}})
     except (ValueError, OSError) as e:
         log.error("GUI feed not started: %s", e)
         return
@@ -110,8 +113,8 @@ def _start_gui_feed(cfg, bands, sample_rate, managers):
     _gui_feed.proc = feed_server.ProcessStats()
 
 
-def _publish_gui_status(managers, spots, uptime_s):
-    """Status line for the GUI: bins across bands, spots, CPU and memory."""
+def _publish_gui_status(managers, spots, uptime_s, extra=None):
+    """Status for the GUI: bins across bands, spots, CPU and memory; extra: the station's health."""
     bins = 0
     for mgr in managers:
         w = getattr(mgr, '_itila_scanner', None)
@@ -119,7 +122,7 @@ def _publish_gui_status(managers, spots, uptime_s):
         if sc and sc._h:
             bins += sc._lib.itila_sc_bin_count(sc._h)
     _gui_feed.publish_status(dict(_gui_feed.proc.sample(), bins=bins, spots=spots,
-                                  uptime_s=round(uptime_s)))
+                                  uptime_s=round(uptime_s), **(extra or {})))
 _GRID_RE = re.compile(r'^[A-R]{2}[0-9]{2}([a-x]{2})?$')
 
 def _get_mqtt_publisher():
@@ -201,6 +204,15 @@ def _get_hpsdr_fast():
                     _ct.c_void_p, _ct.c_int, _ct.c_void_p, _ct.c_int]
             except AttributeError:
                 pass
+            # Spectrum tap for the GUI feed's waterfall; optional, older builds lack it.
+            try:
+                lib.hpsdr_tap_enable.restype = _ct.c_int
+                lib.hpsdr_tap_enable.argtypes = [_ct.c_void_p, _ct.c_int]
+                lib.hpsdr_tap_read.restype = _ct.c_int
+                lib.hpsdr_tap_read.argtypes = [_ct.c_void_p, _ct.c_int, _ct.POINTER(_ct.c_uint64),
+                                               _ct.c_void_p, _ct.c_void_p, _ct.c_int]
+            except AttributeError:
+                pass
             lib.hpsdr_start_worker.restype = None
             lib.hpsdr_start_worker.argtypes = [_ct.c_void_p]
             lib.hpsdr_stop_worker.restype = None
@@ -246,6 +258,8 @@ class _CReceiver:
 
     def __init__(self, ip, port, n_receivers, sample_rate, lna_gain=20):
         import ctypes as _ct
+        self.ip = ip
+        self._health_pkts = (0, time.time())
         self.lib = _get_hpsdr_fast()
         self.n_receivers = n_receivers
         self.sample_rate = sample_rate
@@ -291,6 +305,35 @@ class _CReceiver:
         if not self._h or not self.lib:
             return 0
         return self.lib.hpsdr_available(self._h, rx_index)
+
+    def health(self):
+        """Radio state for the GUI status page: packets, drops, and whether they still arrive."""
+        pkts = self.lib.hpsdr_pkt_count(self._h) if self._h and self.lib else 0
+        drops = self.lib.hpsdr_drop_count(self._h) if self._h and self.lib else 0
+        last, t = self._health_pkts
+        now = time.time()
+        rate = (pkts - last) / (now - t) if now > t else 0.0
+        self._health_pkts = (pkts, now)
+        return {'type': 'hpsdr', 'address': self.ip, 'state': 'live' if pkts > last else 'waiting',
+                'packets': pkts, 'lost': drops, 'pkt_per_s': round(rate)}
+
+    def tap_enable(self, on):
+        """GUI feed waterfall: have the C worker copy IQ into its spectrum taps. False when the
+        library has no tap or memory ran out."""
+        if not self._h or not self.lib or not hasattr(self.lib, 'hpsdr_tap_enable'):
+            return False
+        return self.lib.hpsdr_tap_enable(self._h, 1 if on else 0) == 0
+
+    def tap_read(self, rx_index, max_n=65536):
+        """Tap samples of rx_index since the last read, as float32 (I, Q)."""
+        import ctypes as _ct
+        if not hasattr(self, '_tap_pos'):
+            self._tap_pos = [_ct.c_uint64(0) for _ in range(self.n_receivers)]
+            self._tap_buf = (np.empty(max_n, dtype=np.float32), np.empty(max_n, dtype=np.float32))
+        i_buf, q_buf = self._tap_buf
+        n = self.lib.hpsdr_tap_read(self._h, rx_index, _ct.byref(self._tap_pos[rx_index]),
+                                    i_buf.ctypes.data, q_buf.ctypes.data, len(i_buf))
+        return i_buf[:n], q_buf[:n]
 
     def drain_to_scanner(self, rx_index, scanner_sc):
         """Drain IQ and feed directly to ITILA scanner in C — zero Python overhead."""
@@ -6889,6 +6932,7 @@ class SparkGap:
                                         bits=int(self.cfg.get('record_iq_bits', 24)))
 
         self._wav_record = None
+        self._wav_path = None
         record_wav = self.cfg.get('record_wav')
         if record_wav:
             import wave as _wave, datetime as _dt
@@ -6900,6 +6944,7 @@ class SparkGap:
             self._wav_record.setnchannels(2)
             self._wav_record.setsampwidth(2)
             self._wav_record.setframerate(self.cfg.get('sample_rate', 192000))
+            self._wav_path = rec_path
             log.info("Recording IQ to %s", rec_path)
         calls, blacklist, add_calls = load_callsign_db(
             self.cfg.get('master_scp', 'MASTER.SCP'),
@@ -7188,6 +7233,23 @@ class SparkGap:
         except Exception as e:
             log.error("SIGUSR1 snapshot failed: %s", e)
 
+    def _gui_health(self, rate):
+        """The radio, spot output, decoder lag and recording, for the GUI status page."""
+        rx = self.receiver
+        radio = (rx.health() if hasattr(rx, 'health') else
+                 {'type': self.cfg.get('sdr_type') or 'hpsdr', 'address': self.cfg.get('sdr_ip')})
+        rec = None
+        if self._wav_record and self._wav_path:
+            try:
+                rec = {'file': os.path.abspath(self._wav_path), 'bytes': os.path.getsize(self._wav_path)}
+            except OSError:
+                rec = {'file': os.path.abspath(self._wav_path), 'bytes': None}
+        return {'radio': radio,
+                'telnet': {'port': self.cfg.get('telnet_port', 7300),
+                           'clients': self.telnet.client_count if self.telnet else 0},
+                'iq_trimmed_s': round(self._iq_trimmed / rate, 1) if rate else 0.0,
+                'recording': rec}
+
     async def stop(self):
         self.running = False
         if self.receiver:
@@ -7260,6 +7322,10 @@ class SparkGap:
             # ----------------------------------------------------------------
             # Per-band: drain IQ and push to decoders
             # ----------------------------------------------------------------
+            if use_c and _gui_feed:   # the C worker copies IQ for the waterfall only while a console watches
+                watching = _gui_feed.n_clients > 0
+                if watching != getattr(self, '_tap_on', False):
+                    self._tap_on = self.receiver.tap_enable(watching) and watching
             for (band_name, center_hz, rx_idx), mgr in zip(self._band_meta, self.managers):
                 if use_c:
                     # C worker thread handles drain → scanner feed
@@ -7274,6 +7340,13 @@ class SparkGap:
                         self.receiver.lib.hpsdr_set_scanner(
                             self.receiver._h, rx_idx, scanner._sc._h,
                             feed_ptr, _ct.c_double(8388608.0))
+                    if getattr(self, '_tap_on', False) and mgr._spectrum_tap is not None:
+                        while True:
+                            i_t, q_t = self.receiver.tap_read(rx_idx)
+                            if len(i_t):
+                                mgr._spectrum_tap.feed_iq(i_t, q_t)
+                            if len(i_t) < 65536:
+                                break
             # Start worker thread once all scanners are registered
                 else:
                     # Python receiver path: drain from callback buffers
@@ -7596,7 +7669,8 @@ class SparkGap:
             # ----------------------------------------------------------------
             if _gui_feed and now - last_gui_status >= 2:
                 last_gui_status = now
-                _publish_gui_status(self.managers, self.spot_count, now - self.start_time)
+                _publish_gui_status(self.managers, self.spot_count, now - self.start_time,
+                                    self._gui_health(live_rate))
             if now - last_status >= status_interval:
                 last_status = now
                 elapsed = now - self.start_time
@@ -8243,7 +8317,7 @@ def run_file_mode(args, config):
     all_spots = []
     chunk_sec = 300  # 5-minute chunks
     _start_gui_feed(config, [(f"{center_khz:.0f} kHz", center_khz * 1000.0)], file_rate, [manager])
-    gui_t0, gui_audio0, last_gui_status = time.time(), None, 0
+    gui_pace, gui_audio0, last_gui_status = None, None, 0
 
     start_sec = args.start_min * 60
     if args.end_min > 0:
@@ -8401,15 +8475,24 @@ def run_file_mode(args, config):
                 next_pileup_pos += pileup_samples
             i_block = i_data[pos:pos+block_size]
             q_block = q_data[pos:pos+block_size]
-            if _gui_feed:   # replay at real time so the GUI shows it as live
+            if _gui_feed:
                 audio_t = t_start + pos / file_rate
                 gui_audio0 = audio_t if gui_audio0 is None else gui_audio0
-                lag = (audio_t - gui_audio0) - (time.time() - gui_t0)
-                if lag > 0:
-                    time.sleep(lag)
+                # replay at real time only while a console watches; one connecting restarts the clock
+                if _gui_feed.n_clients:
+                    if gui_pace is None:
+                        gui_pace = (audio_t, time.time())
+                    lag = (audio_t - gui_pace[0]) - (time.time() - gui_pace[1])
+                    if lag > 0:
+                        time.sleep(lag)
+                else:
+                    gui_pace = None
                 if time.time() - last_gui_status >= 2:
                     last_gui_status = time.time()
-                    _publish_gui_status([manager], len(all_spots), audio_t - gui_audio0)
+                    _publish_gui_status([manager], len(all_spots), audio_t - gui_audio0,
+                                        {'radio': {'type': 'file', 'address': os.path.abspath(args.file),
+                                                   'state': 'replaying',
+                                                   'position_s': round(audio_t)}})
             manager.feed_all_iq(i_block, q_block)
             if _spot_rule_on:
                 audio_now[0] = t_start + pos / file_rate
@@ -8555,6 +8638,8 @@ def main():
     if not os.path.exists(args.config):
         sys.exit(f"Config not found: {args.config}")
     config = load_config(args.config)
+    global _config_path
+    _config_path = os.path.abspath(args.config)
     if not config.get('callsign'):
         sys.exit(f"{args.config} sets no callsign")
     if args.ip:

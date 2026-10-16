@@ -147,6 +147,14 @@ class FlexIQReceiver:
         self._udp = None
         self._running = False
 
+        # for the GUI status page (health())
+        self.state = "connecting"
+        self.packets = 0
+        self.lost = 0
+        self.reconnects = 0
+        self.last_reconnect = None
+        self.others = []          # other stations on the radio at the last connect
+
     # -- TCP control channel -------------------------------------------------
 
     def _recv_line(self, timeout=3.0):
@@ -261,6 +269,7 @@ class FlexIQReceiver:
         # slice (on a 6600: 14.100 MHz, and a further slice on any pan it
         # creates).  Reuse that pan and slice instead of removing and creating.
         clients = self._cmd("sub client all", settle=0.5)
+        self.others = []
         for m in re.finditer(r'\|client (0x[0-9A-F]+) connected.*?program=(\S*).*?station=(\S*)',
                              '\n'.join(clients), re.I):
             name = m.group(3).replace('\x7f', ' ')
@@ -269,6 +278,7 @@ class FlexIQReceiver:
             else:
                 log.info("[Flex] Other station on the radio: '%s' (program %s, client %s)",
                          name, m.group(2), m.group(1))
+                self.others.append(f"{name} ({m.group(2)})")
         status = self._cmd("sub pan all", settle=0.5) + self._cmd("sub slice all", settle=0.5)
         slices, pans = owned_objects(status, handle)
         if not pans:
@@ -356,6 +366,7 @@ class FlexIQReceiver:
         self._running = True
         log.info("[Flex] DAX-IQ streaming at %d Hz on UDP port %d",
                  self.sample_rate, self.udp_port)
+        self.state = "live"
         log.info("[Flex] Ready: station %s (client 0x%s), pan 0x%08x at %.6f MHz x %.3f MHz, "
                  "slice %s CW, DAX-IQ channel %d stream 0x%08x at %d Hz to UDP %d",
                  self.station, handle, self._pan_id, self.freq_mhz, bw_mhz, self._slice_id,
@@ -396,6 +407,9 @@ class FlexIQReceiver:
     def _restart(self, why):
         """Drop the connection and set the radio up again, until it works or stop() is called."""
         log.error("[Flex] %s: connecting again", why)
+        self.state = "reconnecting"
+        self.reconnects += 1
+        self.last_reconnect = round(time.time())
         while self._running:
             self._close()
             self._buf = b''
@@ -407,6 +421,13 @@ class FlexIQReceiver:
             end = time.time() + RETRY_S
             while self._running and time.time() < end:
                 time.sleep(0.2)
+
+    def health(self):
+        """Radio state for the GUI status page."""
+        return {'type': 'flex', 'address': self.ip, 'state': self.state,
+                'packets': self.packets, 'lost': self.lost, 'reconnects': self.reconnects,
+                'last_reconnect': self.last_reconnect, 'station': self.station,
+                'daxiq_channel': self.channel, 'others': list(self.others)}
 
     def stop(self):
         self._running = False
@@ -506,6 +527,7 @@ class FlexIQReceiver:
                 gap = (counter - last_counter - 1) & 0x0F
                 if gap and pkt_count > 10:
                     lost += gap
+                    self.lost += gap
                     log.debug("[Flex] Packet gap: %d missed", gap)
             last_counter = counter
 
@@ -525,6 +547,7 @@ class FlexIQReceiver:
                 log.info("[Flex] OK first DAX-IQ packet after %.1f s (%d samples, stream 0x%08x)",
                          time.time() - start, n_samples, stream_id)
             pkt_count += 1
+            self.packets += 1
             now = last_pkt = time.time()
             if now - last_report >= 30:
                 elapsed = now - start

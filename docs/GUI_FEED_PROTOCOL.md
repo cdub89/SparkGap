@@ -86,7 +86,9 @@ Who this SparkGap is and the settings it runs with.
  "config_defaults": ["rbn_known_days"],
  "config_built_in": ["spot_rule_cq_groups", "spot_rule_lockon",
                      "spot_rule_cq_qualifiers"],
- "bands": [{"name": "40m", "center_khz": 7048.0, "span_khz": 96.0}]}
+ "bands": [{"name": "40m", "center_khz": 7048.0, "span_khz": 96.0}],
+ "run": {"config": "/srv/sparkgap/station.local.json",
+         "log": "/srv/sparkgap/logs/sparkgap.log", "started": 1792020000}}
 ```
 
 - `v`: feed version.
@@ -100,6 +102,8 @@ Who this SparkGap is and the settings it runs with.
 - `config_built_in`: keys that follow from another setting (the repeat rule)
   rather than being set on their own.
 - `bands`: one entry per receiver, in the order of the config's `bands`.
+- `run`: the config file SparkGap was started with, the file its log goes to
+  (`null` when the log goes to a terminal), and the start time (UTC seconds).
 
 ### snapshot
 
@@ -150,14 +154,53 @@ A spot, as sent to telnet.
 Every 2 seconds.
 
 ```json
-{"type": "status", "cpu": 38, "rss_mb": 331, "bins": 37, "spots": 412,
- "uptime_s": 27243, "utc": 1792020910.0}
+{"type": "status", "cpu": 38, "rss_mb": 331, "clock_synced": true,
+ "bins": 37, "spots": 412, "uptime_s": 27243, "utc": 1792020910.0,
+ "radio": {"type": "flex", "address": "192.168.1.20", "state": "live",
+           "packets": 5023532, "lost": 0, "reconnects": 1,
+           "last_reconnect": 1792019016, "station": "SparkGap-2",
+           "daxiq_channel": 2, "others": ["Shack (SmartSDR-Win)"]},
+ "telnet": {"port": 7300, "clients": 1}, "iq_trimmed_s": 0.0,
+ "recording": {"file": "/srv/sparkgap/rec/40m.wav", "bytes": 2473963564},
+ "windows": 72823, "calls": 97, "spots_hour": 41, "bins_peak": 52,
+ "clients": [{"peer": "192.168.1.31:61718", "since": 1792018739,
+              "dropped": 12}],
+ "problems": {"warnings": 2, "errors": 8,
+              "last": [{"utc": 1792019013, "level": "ERROR",
+                        "msg": "[Flex] The radio closed the control connection"}]}}
 ```
+
+Process and decoding:
 
 - `cpu`: percent of one core since the last status.
 - `rss_mb`: resident memory; `null` where the OS does not report it.
-- `bins`: decoder bins open across all bands.
-- `spots`: spots since start.
+- `clock_synced`: whether the system clock is NTP-synchronised; `null` where
+  that cannot be read.
+- `bins`: decoder bins open across all bands; `bins_peak`: the most since start.
+- `spots`: spots since start; `spots_hour`: in the last hour; `calls`: distinct
+  calls spotted since start.
+- `windows`: decoded windows since start.
+- `iq_trimmed_s`: seconds of IQ dropped before the decoder because it fell
+  behind; above zero means the machine is short of CPU.
+
+The station (absent in file mode except `radio`):
+
+- `radio`: `type` (`flex`, `hpsdr` or `file`), `address` (the radio's address,
+  or the file being replayed) and `state` (`connecting`, `live`, `reconnecting`,
+  `waiting` or `replaying`). A Flex adds `packets`, `lost`, `reconnects`,
+  `last_reconnect` (UTC seconds or `null`), its `station` name, its
+  `daxiq_channel` and the `others` stations on the radio at the last connect.
+  The HPSDR C receiver adds `packets`, `lost` and `pkt_per_s`; file mode adds
+  `position_s`.
+- `telnet`: the spot port and how many telnet clients are connected.
+- `recording`: the IQ file being written and its size, or `null`.
+
+The feed itself:
+
+- `clients`: each connected console: address, connected since (UTC seconds),
+  spectrum rows dropped because it fell behind.
+- `problems`: SparkGap's warnings and errors since start, with the last five
+  (UTC seconds, level, message).
 
 ### Spectrum rows (binary)
 

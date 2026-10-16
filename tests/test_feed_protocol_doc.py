@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+import socket
 import time
 from pathlib import Path
 from typing import Any
@@ -66,10 +68,38 @@ def test_snapshot_fields(feed: FeedServer) -> None:
     assert set(doc["spots"][0]) == set(snap["spots"][0])
 
 
-def test_status_fields() -> None:
-    # the status dict is built in sparkgap._publish_gui_status from ProcessStats
-    keys = set(feed_server.ProcessStats().sample()) | {"bins", "spots", "uptime_s", "type", "utc"}
-    assert set(EXAMPLES["status"]) == keys
+def test_status_fields(feed: FeedServer) -> None:
+    # as sparkgap._publish_gui_status builds it on a Flex; the feed adds its own counters
+    import sparkgap
+    from flex_iq import FlexIQReceiver
+
+    radio = FlexIQReceiver("192.0.2.1", sample_rate=96_000).health()
+    c = socket.create_connection(("127.0.0.1", feed.port))  # a console, for the clients list
+    c.sendall(b"GET /feed HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+              b"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")
+    t = time.monotonic()
+    while not feed.clients:
+        assert time.monotonic() - t < 3
+        time.sleep(0.01)
+    feed.proc = feed_server.ProcessStats()
+    logging.getLogger("sparkgap").error("an error for the problems list")
+    prev, sparkgap._gui_feed = sparkgap._gui_feed, feed
+    try:
+        sparkgap._publish_gui_status([], 3, 120.0, {
+            "radio": radio, "telnet": {"port": 7300, "clients": 0}, "iq_trimmed_s": 0.0,
+            "recording": {"file": "/tmp/x.wav", "bytes": 44}})
+    finally:
+        sparkgap._gui_feed = prev
+    while feed.status is None:
+        assert time.monotonic() - t < 3
+        time.sleep(0.01)
+    status, doc = feed.status, EXAMPLES["status"]
+    assert set(doc) == set(status)
+    assert set(doc["radio"]) == set(status["radio"])
+    assert set(doc["clients"][0]) == set(status["clients"][0])
+    assert set(doc["problems"]) == set(status["problems"])
+    assert set(doc["problems"]["last"][0]) == set(status["problems"]["last"][0])
+    c.close()
 
 
 def test_hello_fields() -> None:
@@ -82,6 +112,7 @@ def test_hello_fields() -> None:
         assert set(doc) == set(hello)
         assert set(doc["config"]) == set(hello["config"])
         assert set(doc["bands"][0]) == set(hello["bands"][0])
+        assert set(doc["run"]) == set(hello["run"])
         assert doc["v"] == FEED_VERSION
     finally:
         sparkgap._gui_feed.stop()
