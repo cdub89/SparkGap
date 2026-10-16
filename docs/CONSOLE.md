@@ -21,8 +21,8 @@ The feed is off unless the config has a `gui_feed` block:
 ```
 
 - `bind`: the address to listen on. `127.0.0.1` serves only the same machine. To
-  watch from other machines, bind the Tailscale address of the SparkGap host;
-  the feed is then reachable from your tailnet and nothing else.
+  watch from other machines, use the IP address of the machine SparkGap runs on.
+  For remote access, use a VPN that encrypts the link (such as Tailscale).
 - `port`: 7320 by default.
 - `join_code`: required whenever `bind` is not a loopback address. Six
   characters, minted without any pair easily confused by eye or over the air
@@ -30,16 +30,16 @@ The feed is off unless the config has a `gui_feed` block:
   with `python3 feed_server.py --new-code`. SparkGap logs the code at startup:
 
   ```text
-  GUI feed on ws://100.64.0.1:7320/feed, join code XXX-XXX
+  GUI feed on ws://192.168.1.50:7320/feed, join code XXX-XXX
   ```
 
 - Five wrong codes from one address lock that address out for 10 minutes. A
   missing code is refused but not counted.
 - At most 16 consoles at once; one that stops reading is disconnected.
 - `web`: `true` also serves SparkGap Web on the same port (see below).
-- `tls_cert` and `tls_key` (optional) serve `wss://`. Tailscale already encrypts
-  the link. Settings adds servers as `ws://`, so give a `wss://` server on the
-  command line.
+- `tls_cert` and `tls_key` (optional) serve `wss://`; without them the feed is
+  not encrypted. Settings adds servers as `ws://`, so give a `wss://` server on
+  the command line.
 
 What the feed sends is described in [GUI_FEED_PROTOCOL.md](GUI_FEED_PROTOCOL.md).
 
@@ -63,7 +63,7 @@ Add servers in Settings, under CONNECTIONS: address, port and join code. The
 list is kept between runs. Servers given on the command line are added to it:
 
 ```sh
-.venv/bin/python sparkgap_console.py ws://100.64.0.1:7320/feed#XXX-XXX
+.venv/bin/python sparkgap_console.py ws://192.168.1.50:7320/feed#XXX-XXX
 ```
 
 The console draws with Qt's software renderer, which costs far less CPU over
@@ -89,7 +89,7 @@ The same console in a browser, with nothing to install. Set `"web": true` in
 the `gui_feed` block and open the address SparkGap logs at startup:
 
 ```text
-GUI feed: browser console at http://100.64.0.1:7320/
+GUI feed: browser console at http://192.168.1.50:7320/
 ```
 
 Settings works as in the desktop console: add the server with its join code

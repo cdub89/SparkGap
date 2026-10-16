@@ -783,7 +783,7 @@ function urlParts(url) {
 function normalizeCode(code) { return code.toUpperCase().replace(/[ -]/g, ""); }
 function checkFeed(address, port, code) {
   const a = address.trim();
-  if (!a || /[\s/:#?@]/.test(a)) return "address: a tailnet name or IP, nothing else";
+  if (!a || /[\s/:#?@]/.test(a)) return "address: a VPN or local IP address, nothing else";
   if (!(port > 0 && port < 65_536)) return "port: 1 to 65535";
   const c = normalizeCode(code);
   if (c && (c.length !== CODE_LENGTH || [...c].some(ch => !CODE_ALPHABET.includes(ch)))) {

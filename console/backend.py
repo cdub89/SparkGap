@@ -1083,7 +1083,7 @@ def check_feed(address: str, port: int, code: str = "") -> str:
     """Why a server entry cannot be used, or "" when it can. An empty code suits a local server."""
     a = address.strip()
     if not a or any(ch.isspace() or ch in "/:#?@" for ch in a):
-        return "address: a tailnet name or IP, nothing else"
+        return "address: a VPN or local IP address, nothing else"
     if not 0 < port < 65_536:
         return "port: 1 to 65535"
     c = normalize_code(code)

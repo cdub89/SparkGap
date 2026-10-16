@@ -783,7 +783,7 @@ ApplicationWindow {
                             ColumnLayout {
                                 visible: conns.editing > -2
                                 Layout.fillWidth: true; Layout.topMargin: 6; spacing: 6
-                                Field { id: addr; placeholderText: "Address: tailnet name or IP"; onAccepted: conns.save() }
+                                Field { id: addr; placeholderText: "Address: VPN or local IP address"; onAccepted: conns.save() }
                                 Field {
                                     id: port; placeholderText: "Port: blank finds every SparkGap on 7320 to 7339"; onAccepted: conns.save()
                                     validator: IntValidator { bottom: 1; top: 65535 }
