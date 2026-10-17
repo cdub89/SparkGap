@@ -52,6 +52,13 @@
 #define SC_CAND_AVG_HZ         25.0    /* hits averaged into the new bin's frequency */
 
 #include "itila_fir_coeffs.h"
+/* Hot loops built twice, AVX2/FMA and baseline, chosen at load time: portable builds keep
+ * running on older CPUs and get the native speed on newer ones (cdub89/SparkGap#19 A4). */
+#if defined(__GNUC__) && !defined(__clang__) && defined(__x86_64__)
+#define HOT_CLONES __attribute__((target_clones("arch=x86-64-v3", "default")))
+#else
+#define HOT_CLONES
+#endif
 
 #define SC_HANN_MS     40.0  /* Hann window on the 100 Hz path, at 2 kHz */
 #define SC_HANN_LEN    80    /* SC_HANN_MS x 2 taps */
@@ -304,7 +311,7 @@ static int cmp_peak_desc(const void *a, const void *b)
 }
 
 /* ---- energy scan ---- */
-static void run_scan(ItilaSc *sc, const double *seg_i, const double *seg_q)
+HOT_CLONES static void run_scan(ItilaSc *sc, const double *seg_i, const double *seg_q)
 {
     int N = sc->energy_win;
     double *re = (double *)malloc(N * sizeof(double));
@@ -554,7 +561,7 @@ static double fir_dot(const double *dl, int pos, const double *h, int len)
 }
 
 /* ---- per-bin DSP: all-FIR linear-phase chain ---- */
-static int process_bin(ItilaSc *sc, ScBin *b, const double *i_full, const double *q_full, int n)
+HOT_CLONES static int process_bin(ItilaSc *sc, ScBin *b, const double *i_full, const double *q_full, int n)
 {
     int drops = 0;
     {
