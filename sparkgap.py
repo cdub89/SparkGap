@@ -451,6 +451,7 @@ CW_TONE = 700       # Hz — matches natural tone placement from channelizer
 DECODER_RATE = 12000  # UHSDR decoder sample rate
 BMORSE_RATE = 4000    # bmorse input sample rate
 PEAK_SCAN_SAMPLES = 8192    # live peak scan FFT; the Python receive path keeps only this much IQ
+RECORD_WAV_MAX_BYTES = 4_000_000_000    # under the WAV format's 2**32 - 1 byte limit
 
 
 class DecoderInstance:
@@ -6926,6 +6927,7 @@ class SparkGap:
             ts = _dt.datetime.utcnow().strftime('%Y%m%d_%H%M%SZ')
             band_khz = self._resolve_band(self.cfg.get('bands', [0])[0])[1] // 1000
             rec_path = record_wav.format(ts=ts, band=band_khz)
+            self._wav_base, self._wav_part, self._wav_bytes = rec_path, 1, 0
             self._wav_record = _wave.open(rec_path, 'wb')
             self._wav_record.setnchannels(2)
             self._wav_record.setsampwidth(2)
@@ -7277,9 +7279,26 @@ class SparkGap:
             if self._wav_record and rx_index == 0:
                 iq = np.asarray(iq_samples, dtype=np.float64) * 32767
                 pcm = np.clip(np.trunc(iq), -32768, 32767).astype('<i2')
-                self._wav_record.writeframes(pcm.tobytes())
+                self._wav_write(pcm.tobytes())
         except Exception:
             pass  # Don't let errors kill the receiver thread
+
+    def _wav_write(self, data):
+        if self._wav_bytes + len(data) > RECORD_WAV_MAX_BYTES:
+            import wave as _wave
+            old = self._wav_record
+            nch, width, rate = old.getnchannels(), old.getsampwidth(), old.getframerate()
+            old.close()
+            self._wav_part += 1
+            path = f"{os.path.splitext(self._wav_base)[0]}_p{self._wav_part}.wav"
+            self._wav_record = _wave.open(path, 'wb')
+            self._wav_record.setnchannels(nch)
+            self._wav_record.setsampwidth(width)
+            self._wav_record.setframerate(rate)
+            self._wav_bytes = 0
+            log.info("Recording IQ: continuing in %s", path)
+        self._wav_record.writeframes(data)
+        self._wav_bytes += len(data)
 
     async def run(self):
         use_c = getattr(self, '_use_c_receiver', False)
