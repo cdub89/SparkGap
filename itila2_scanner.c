@@ -121,12 +121,13 @@ static const double FIR1W_48K[9] = {
 typedef struct {
     double f_hz;
     int    active;
-    double c_phase, s_phase;           /* oscillator state */
+    double c_phase, s_phase;           /* mixer phase at the next stage-1 output */
+    double r1_c, r1_s;                 /* mixer step per stage-1 output (dec1 samples) */
 
-    /* FIR stage 1: to 12k (up to SC_FIR1_MAX taps, complex I/Q) */
-    double dl1_i[2*SC_FIR1_MAX];
-    double dl1_q[2*SC_FIR1_MAX];
-    int    dl1_count;                  /* samples fed since last output */
+    /* FIR stage 1: to 12k, the mixer folded into the taps: g1[k] = fir1[k] * e^(-j step k) (cdub89/SparkGap#19 A2) */
+    double g1_r[SC_FIR1_MAX];
+    double g1_i[SC_FIR1_MAX];
+    int    dl1_count;                  /* samples fed since the last stage-1 output (mod dec1) */
 
     /* FIR stage 2: 12k→2k (96 taps, complex I/Q, two paths) */
     double dl2_100i[2*FIR_S2_100_LEN];
@@ -190,8 +191,11 @@ struct ItilaSc {
     int     pre_n;             /* samples in the ring (<= pre_len) */
     int     pre_w;             /* next write position */
     double *lin_i;             /* the ring in time order, built when a bin needs it */
-    double *lin_q;
+    double *lin_q;             /* both start SC_FIR1_MAX zeros into lin_bi/lin_bq: stage-1 history */
+    double *lin_bi, *lin_bq;
     int     lin_n;
+    double  h1_i[SC_FIR1_MAX - 1];   /* raw IQ just before the next feed: stage-1 history */
+    double  h1_q[SC_FIR1_MAX - 1];
     int     preroll_pending;   /* a bin was spawned since lin_* was built */
     /* IIR SOS removed - replaced by per-bin FIR delay lines */
 
@@ -520,8 +524,15 @@ static void run_scan(ItilaSc *sc, const double *seg_i, const double *seg_q)
         bin->f_hz           = sc->cand[cand_idx].f_sum / sc->cand[cand_idx].n_avg;
         bin->created_sample = sc->total_samples;
         bin->active  = 1;
-        bin->c_phase = 1.0;
-        bin->s_phase = 0.0;
+        double step = -2.0 * M_PI * (bin->f_hz - sc->center_hz) / sc->sample_rate;
+        for (int k = 0; k < sc->fir1_len; k++) {
+            bin->g1_r[k] =  sc->fir1[k] * cos(step * k);
+            bin->g1_i[k] = -sc->fir1[k] * sin(step * k);
+        }
+        bin->c_phase = cos(step * (sc->dec1 - 1));   /* first output: sample dec1 - 1 */
+        bin->s_phase = sin(step * (sc->dec1 - 1));
+        bin->r1_c    = cos(step * sc->dec1);
+        bin->r1_s    = sin(step * sc->dec1);
         bin->snr_db  = peaks[i].snr;
         bin->need_preroll = 1;
         sc->preroll_pending = 1;
@@ -548,30 +559,25 @@ static int process_bin(ItilaSc *sc, ScBin *b, const double *i_full, const double
     int drops = 0;
     {
 
-        /* Oscillator for mixing to baseband */
-        double step   = -2.0 * M_PI * (b->f_hz - sc->center_hz) / sc->sample_rate;
-        double c_step = cos(step);
-        double s_step = sin(step);
+        /* Stage 1 at the 12k output instants only: FIR1 with the mixer folded into the taps,
+         * then the mixer phase at that instant.  i_full[t - k] reaches back into the history
+         * kept before the buffer (h1_* or the zeros before lin_*). */
+        const int L = sc->fir1_len, D = sc->dec1;
+        const double rc = b->r1_c, rs = b->r1_s;
         double cp = b->c_phase, sp = b->s_phase;
 
-        for (int t = 0; t < n; t++) {
-            double ii = i_full[t], qi = q_full[t];
-            double mixed_i = ii*cp - qi*sp;
-            double mixed_q = ii*sp + qi*cp;
-            double cn = cp*c_step - sp*s_step;
-            double sn = sp*c_step + cp*s_step;
-            cp = cn; sp = sn;
-
-            /* Stage 1: push into FIR1 delay line, decimate 16:1 */
-            int pos1 = b->dl1_count % sc->fir1_len;
-            b->dl1_i[pos1] = b->dl1_i[pos1 + sc->fir1_len] = mixed_i;
-            b->dl1_q[pos1] = b->dl1_q[pos1 + sc->fir1_len] = mixed_q;
-            if (++b->dl1_count == sc->fir1_len * sc->dec1) b->dl1_count = 0;  /* wrap: keeps both moduli */
-
-            if (b->dl1_count % sc->dec1 != 0) continue;
-            /* Output one 12k sample */
-            double s1_i = fir_dot(b->dl1_i, pos1, sc->fir1, sc->fir1_len);
-            double s1_q = fir_dot(b->dl1_q, pos1, sc->fir1, sc->fir1_len);
+        for (int t = D - 1 - b->dl1_count; t < n; t += D) {
+            double re = 0.0, im = 0.0;
+            for (int k = 0; k < L; k++) {
+                double xi = i_full[t - k], xq = q_full[t - k];
+                re += b->g1_r[k] * xi - b->g1_i[k] * xq;
+                im += b->g1_r[k] * xq + b->g1_i[k] * xi;
+            }
+            double s1_i = re * cp - im * sp;
+            double s1_q = re * sp + im * cp;
+            double cn = cp * rc - sp * rs;
+            sp = sp * rc + cp * rs;
+            cp = cn;
 
             /* Stage 2: push into FIR2 delay lines (100 Hz + 200 Hz paths), decimate 6:1 */
             int pos2_100 = b->dl2_count % FIR_S2_100_LEN;
@@ -628,6 +634,7 @@ static int process_bin(ItilaSc *sc, ScBin *b, const double *i_full, const double
             }
         }
 
+        b->dl1_count = (b->dl1_count + n) % D;
         /* Renormalize oscillator */
         double norm = 1.0 / sqrt(cp*cp + sp*sp);
         b->c_phase = cp * norm;
@@ -827,8 +834,10 @@ ItilaSc *itila_sc_create(int sample_rate, double center_hz,
     sc->pre_len = (int)(SC_PREROLL_SEC * sample_rate) / sc->dec1 * sc->dec1;
     sc->pre_i = (double *)calloc(sc->pre_len, sizeof(double));
     sc->pre_q = (double *)calloc(sc->pre_len, sizeof(double));
-    sc->lin_i = (double *)calloc(sc->pre_len, sizeof(double));
-    sc->lin_q = (double *)calloc(sc->pre_len, sizeof(double));
+    sc->lin_bi = (double *)calloc(sc->pre_len + SC_FIR1_MAX, sizeof(double));
+    sc->lin_bq = (double *)calloc(sc->pre_len + SC_FIR1_MAX, sizeof(double));
+    sc->lin_i = sc->lin_bi ? sc->lin_bi + SC_FIR1_MAX : NULL;
+    sc->lin_q = sc->lin_bq ? sc->lin_bq + SC_FIR1_MAX : NULL;
     if (!sc->scan_i || !sc->scan_q || !sc->pre_i || !sc->pre_q || !sc->lin_i || !sc->lin_q) {
         itila_sc_free(sc); return NULL;
     }
@@ -852,8 +861,8 @@ void itila_sc_free(ItilaSc *sc)
     free(sc->scan_q);
     free(sc->pre_i);
     free(sc->pre_q);
-    free(sc->lin_i);
-    free(sc->lin_q);
+    free(sc->lin_bi);
+    free(sc->lin_bq);
     free(sc);
 }
 
@@ -902,9 +911,13 @@ void itila_sc_feed_iq(ItilaSc *sc,
     int n_dec1  = (total / sc->dec1) * sc->dec1;
     int new_res = total - n_dec1;
 
-    double *i_full = (double *)malloc(total * sizeof(double));
-    double *q_full = (double *)malloc(total * sizeof(double));
-    if (!i_full || !q_full) { free(i_full); free(q_full); pthread_mutex_unlock(&sc->lock); return; }
+    const int pad = SC_FIR1_MAX - 1;   /* stage-1 history in front of the buffer */
+    double *i_buf = (double *)malloc((pad + total) * sizeof(double));
+    double *q_buf = (double *)malloc((pad + total) * sizeof(double));
+    if (!i_buf || !q_buf) { free(i_buf); free(q_buf); pthread_mutex_unlock(&sc->lock); return; }
+    memcpy(i_buf, sc->h1_i, pad * sizeof(double));
+    memcpy(q_buf, sc->h1_q, pad * sizeof(double));
+    double *i_full = i_buf + pad, *q_full = q_buf + pad;
 
     memcpy(i_full,                  sc->iq_res_i, sc->iq_res_n * sizeof(double));
     memcpy(q_full,                  sc->iq_res_q, sc->iq_res_n * sizeof(double));
@@ -917,11 +930,14 @@ void itila_sc_feed_iq(ItilaSc *sc,
 
     if (n_dec1 > 0 && sc->n_bins > 0)
         process_bins(sc, i_full, q_full, n_dec1);
-    if (n_dec1 > 0)
+    if (n_dec1 > 0) {
         preroll_push(sc, i_full, q_full, n_dec1);
+        memcpy(sc->h1_i, i_buf + n_dec1, pad * sizeof(double));   /* the pad samples before i_full[n_dec1] */
+        memcpy(sc->h1_q, q_buf + n_dec1, pad * sizeof(double));
+    }
 
-    free(i_full);
-    free(q_full);
+    free(i_buf);
+    free(q_buf);
     pthread_mutex_unlock(&sc->lock);
 }
 
