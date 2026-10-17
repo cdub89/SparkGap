@@ -280,7 +280,10 @@ static void transition_probs(double wpm, double *p01, double *p10) {
 }
 
 /* -------------------------------------------------------------------------
- * forward_backward_fast: builds log_B then calls fb_core
+ * forward_backward_fast: scaled forward-backward in the linear domain, the same model
+ * as fb_core without exp/log1p in the recursions (cdub89/SparkGap#19 A1).
+ * B_t = exp(log_B_t - m_t), m_t the row max; log_Z = sum log c_t + sum m_t.
+ * log_alpha holds the normalized alpha and log_beta the scale c_t.
  * ---------------------------------------------------------------------- */
 static double forward_backward_fast(
     itila_state_t *st,
@@ -290,30 +293,44 @@ static double forward_backward_fast(
 {
     double p01, p10;
     transition_probs(wpm, &p01, &p10);
-    double log_T[4] = {
-        log(1.0 - p01 + 1e-300), log(p01 + 1e-300),
-        log(p10 + 1e-300),       log(1.0 - p10 + 1e-300)
-    };
+    const double a00 = 1.0 - p01 + 1e-300, a01 = p01 + 1e-300;
+    const double a10 = p10 + 1e-300,       a11 = 1.0 - p10 + 1e-300;
 
     double log_norm = -0.5 * log(2.0 * M_PI * sigma2_obs);
+    double inv2s = 0.5 / sigma2_obs;
+    double *B = st->log_B, *al = st->log_alpha, *c = st->log_beta;
+    double sum_m = 0.0;
     for (int t = 0; t < T; t++) {
-        st->log_B[t*2+0] = log_norm - 0.5*(env[t]-noise_mean)*(env[t]-noise_mean)/sigma2_obs;
-        st->log_B[t*2+1] = log_norm - 0.5*(env[t]-A)*(env[t]-A)/sigma2_obs;
+        double d0 = env[t] - noise_mean, d1 = env[t] - A;
+        double lb0 = log_norm - d0 * d0 * inv2s, lb1 = log_norm - d1 * d1 * inv2s;
+        double m = lb0 > lb1 ? lb0 : lb1;
+        sum_m += m;
+        B[t*2+0] = exp(lb0 - m);
+        B[t*2+1] = exp(lb1 - m);
     }
 
-    double log_Z;
-    fb_core(st->log_B, log_T, T, st->log_alpha, st->log_beta, &log_Z);
-
-    /* Compute gamma = softmax(log_alpha + log_beta) */
-    for (int t = 0; t < T; t++) {
-        double la0 = st->log_alpha[t*2+0], la1 = st->log_alpha[t*2+1];
-        double lb0 = st->log_beta[t*2+0],  lb1 = st->log_beta[t*2+1];
-        double lg0 = la0 + lb0, lg1 = la1 + lb1;
-        double lZ  = logaddexp(lg0, lg1);
-        gamma_out[t*2+0] = exp(lg0 - lZ);
-        gamma_out[t*2+1] = exp(lg1 - lZ);
+    double x0 = 0.5 * B[0], x1 = 0.5 * B[1], s0 = x0 + x1;
+    double log_c = log(s0);
+    al[0] = x0 / s0; al[1] = x1 / s0; c[0] = s0;
+    for (int t = 1; t < T; t++) {
+        double p0 = al[(t-1)*2], p1 = al[(t-1)*2+1];
+        x0 = (p0 * a00 + p1 * a10) * B[t*2];
+        x1 = (p0 * a01 + p1 * a11) * B[t*2+1];
+        s0 = x0 + x1;
+        al[t*2] = x0 / s0; al[t*2+1] = x1 / s0; c[t] = s0;
+        log_c += log(s0);
     }
-    return log_Z;
+
+    double b0 = 1.0, b1 = 1.0;
+    gamma_out[(T-1)*2] = al[(T-1)*2]; gamma_out[(T-1)*2+1] = al[(T-1)*2+1];
+    for (int t = T - 2; t >= 0; t--) {
+        double e0 = B[(t+1)*2] * b0, e1 = B[(t+1)*2+1] * b1;
+        b0 = (a00 * e0 + a01 * e1) / c[t+1];
+        b1 = (a10 * e0 + a11 * e1) / c[t+1];
+        double g0 = al[t*2] * b0, g1 = al[t*2+1] * b1, gs = g0 + g1;
+        gamma_out[t*2] = g0 / gs; gamma_out[t*2+1] = g1 / gs;
+    }
+    return log_c + sum_m;
 }
 
 /* -------------------------------------------------------------------------
