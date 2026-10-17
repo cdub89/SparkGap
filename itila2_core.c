@@ -21,6 +21,13 @@
 #include <ctype.h>
 #include <assert.h>
 #include <stdio.h>
+/* Hot loops built twice, AVX2/FMA and baseline, chosen at load time: portable builds keep
+ * running on older CPUs and get the native speed on newer ones (cdub89/SparkGap#19 A4). */
+#if defined(__GNUC__) && !defined(__clang__) && defined(__x86_64__)
+#define HOT_CLONES __attribute__((target_clones("arch=x86-64-v3", "default")))
+#else
+#define HOT_CLONES
+#endif
 
 /* -------------------------------------------------------------------------
  * Constants: must match itila_cw.py exactly
@@ -285,7 +292,7 @@ static void transition_probs(double wpm, double *p01, double *p10) {
  * B_t = exp(log_B_t - m_t), m_t the row max; log_Z = sum log c_t + sum m_t.
  * log_alpha holds the normalized alpha and log_beta the scale c_t.
  * ---------------------------------------------------------------------- */
-static double forward_backward_fast(
+HOT_CLONES static double forward_backward_fast(
     itila_state_t *st,
     const double *env, int T,
     double wpm, double A, double noise_mean, double sigma2_obs,
@@ -420,7 +427,7 @@ static double estimate_wpm_from_gamma(const double *gamma, int T) {
 /* -------------------------------------------------------------------------
  * em_estimate: two-phase EM for A, noise_mean, sigma2_obs, wpm
  * ---------------------------------------------------------------------- */
-static void em_estimate(
+HOT_CLONES static void em_estimate(
     itila_state_t *st,
     const double *env_raw, int T,
     double wpm_seed,   /* initial WPM; 0 = use default 25 */
