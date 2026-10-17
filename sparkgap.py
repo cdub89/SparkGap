@@ -1737,6 +1737,7 @@ def _select_cw_decoder(name):
     return _itila_lib_path
 
 _itila_decode_threads = 1   # config itila_decode_threads: bins decoded in parallel (Python path)
+_scanner_pool = True        # itila2 scanner DSP on the decode threads too; off on the live Python receiver path (cdub89/SparkGap#19 A5)
 
 def _select_decode_threads(n):
     """Config key itila_decode_threads: decode ready ITILA bins on n threads.
@@ -2431,7 +2432,7 @@ def _get_itila_scanner(sample_rate, center_hz, max_bins, min_snr,
         log.info("Loaded %s (sr=%d center=%.0f Hz bins=%d)", _scanner_lib_path,
                  sample_rate, center_hz, max_bins)
         # itila2 scanner only: split its per-bin DSP over the decode threads too
-        if _itila_decode_threads > 1 and hasattr(lib, 'itila_sc_set_threads'):
+        if _itila_decode_threads > 1 and _scanner_pool and hasattr(lib, 'itila_sc_set_threads'):
             lib.itila_sc_set_threads.restype = _ct.c_int
             lib.itila_sc_set_threads.argtypes = [_ct.c_void_p, _ct.c_int]
             n = lib.itila_sc_set_threads(_ct.c_void_p(h), _itila_decode_threads)
@@ -7080,6 +7081,10 @@ class SparkGap:
                 self.receiver.lna_gain = lna_gain
             for _name, center_hz, rx_idx in self._band_meta:
                 self.receiver.set_frequency(rx_idx, center_hz)
+        if not getattr(self, '_use_c_receiver', False):
+            # One thread feeds one band here: the pool's wake-ups cost more CPU than they save (cdub89/SparkGap#19 A5)
+            global _scanner_pool
+            _scanner_pool = False
 
         # ----------------------------------------------------------------
         # One InstanceManager per band
