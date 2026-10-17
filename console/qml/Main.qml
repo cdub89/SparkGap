@@ -70,7 +70,7 @@ ApplicationWindow {
             const costs = rs.length > 1 || w.alt_html ? rs.map(x => n(x.rate) + " " + c(x.cost)).join("  ·  ") : "cost " + c(w.cost)
             return "<tr><td valign='top' style='padding-right:10px; padding-bottom:8px; color:" + t.faint + "'>" + w.utc + "</td>"
                 + "<td valign='top' style='padding-bottom:8px'>"
-                + rs.map((x, i) => i ? "<br><span style='color:" + t.muted + "'>" + x.html + "</span>" : x.html).join("")
+                + rs.map((x, i) => i ? "<br><span style='color:" + Qt.alpha(t.muted, 0.75) + "'>" + x.html + "</span>" : x.html).join("")
                 + "<br><span style='font-size:10px; color:" + t.faint + "'>" + costs + "</span></td></tr>"
         }).join("") + "</table>"
     }
@@ -224,6 +224,7 @@ ApplicationWindow {
                     return out
                 }
                 visible: !!inst && !inst.demo && choices.length > 1
+                ToolTip.visible: hovered && !popup.visible; ToolTip.delay: 600; ToolTip.text: "Server and band"
                 implicitWidth: 190; implicitHeight: 30
                 model: choices.map(c => c.label)
                 currentIndex: choices.findIndex(c => c.n === console_.currentIndex && c.band === (inst ? inst.band : 0))
@@ -252,11 +253,7 @@ ApplicationWindow {
             Text {
                 readonly property var c: inst && inst.info.config ? inst.info.config : ({})
                 visible: !!c.callsign && !inst.demo  // demo: the status says DEMO MODE
-                text: [c.callsign,
-                       c.flex_daxiq_channel ? "DAX IQ " + c.flex_daxiq_channel : "",
-                       c.sample_rate ? (c.sample_rate / 1000) + " kHz" : "",
-                       c.telnet_port ? "telnet " + c.telnet_port : "",
-                       c.enable_ft8 ? "FT8 on" : ""].filter(x => x).join("  ·  ")
+                text: [c.callsign, c.enable_ft8 ? "FT8 on" : ""].filter(x => x).join("  ·  ")
                 color: t.muted; font.family: t.mono; font.features: t.zero; font.pixelSize: 12
             }
             Row {
@@ -278,7 +275,8 @@ ApplicationWindow {
                 width: 32; height: 32; radius: 8; color: settings.visible ? t.sunken : t.surface; border.color: t.line
                 Text { anchors.centerIn: parent; text: "⚙"; color: t.fg; font.pixelSize: 23 }
                 MouseArea {
-                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor; hoverEnabled: true
+                    ToolTip.visible: containsMouse; ToolTip.delay: 600; ToolTip.text: "Settings"
                     onClicked: settings.visible ? settings.close() : settings.open()
                 }
             }
@@ -292,7 +290,8 @@ ApplicationWindow {
                     }
                 }
                 MouseArea {
-                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor; hoverEnabled: true
+                    ToolTip.visible: containsMouse; ToolTip.delay: 600; ToolTip.text: "Light or dark"
                     onClicked: win.themeOverride = win.dark ? "light" : "dark"
                 }
             }
@@ -300,7 +299,8 @@ ApplicationWindow {
                 width: 32; height: 32; radius: 8; color: statusPop.visible ? t.sunken : t.surface; border.color: t.line
                 Text { anchors.centerIn: parent; text: "ⓘ"; color: t.fg; font.pixelSize: 19 }
                 MouseArea {
-                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor; hoverEnabled: true
+                    ToolTip.visible: containsMouse; ToolTip.delay: 600; ToolTip.text: "Status"
                     onClicked: statusPop.visible ? statusPop.close() : statusPop.open()
                 }
             }
@@ -326,12 +326,15 @@ ApplicationWindow {
 
                         function yOf(khz) { return (wf.highKhz - khz) / Math.max(0.001, wf.highKhz - wf.lowKhz) * height }
 
-                        // frequency ticks, one per kHz, labels every 5
+                        // frequency ticks, one per kHz (every 5 on spans over 200 kHz), labels every 5 or 10
                         Repeater {
-                            model: wf.highKhz > wf.lowKhz ? Math.floor(wf.highKhz) - Math.ceil(wf.lowKhz) + 1 : 0
+                            id: ticks
+                            readonly property int step: wf.highKhz - wf.lowKhz > 200 ? 5 : 1
+                            readonly property int first: Math.ceil(wf.lowKhz / step) * step
+                            model: wf.highKhz > wf.lowKhz ? Math.floor((wf.highKhz - first) / step) + 1 : 0
                             delegate: Item {
                                 required property int index
-                                readonly property int khz: Math.ceil(wf.lowKhz) + index
+                                readonly property int khz: ticks.first + index * ticks.step
                                 readonly property bool major: (wf.highKhz - wf.lowKhz) > 40 ? khz % 10 === 0 : khz % 5 === 0
                                 y: ladder.yOf(khz); width: ladder.width
                                 Rectangle { width: major ? 10 : 6; height: 1; color: major ? t.muted : t.line }
@@ -444,8 +447,10 @@ ApplicationWindow {
                                 if (near > 0) win.pick(near, "")
                             }
                         }
+                        HoverHandler { cursorShape: Qt.OpenHandCursor }
                         DragHandler {
                             target: null
+                            cursorShape: Qt.ClosedHandCursor
                             property real startLo: 0
                             onActiveChanged: if (active) startLo = wf.lowKhz
                             onTranslationChanged: {
@@ -465,8 +470,21 @@ ApplicationWindow {
                             acceptedModifiers: Qt.ControlModifier
                             onWheel: (ev) => {
                                 const khz = wf.highKhz - ev.y / wf.height * (wf.highKhz - wf.lowKhz)
-                                wf.zoom(Math.pow(0.8, ev.angleDelta.y / 120), khz)
+                                const px = ev.pixelDelta.y !== 0 ? ev.pixelDelta.y : ev.angleDelta.y / 120 * 100  // a notch is 100 px
+                                wf.zoom(Math.pow(0.8, px / 100), khz)
                             }
+                        }
+                        // pinch on a touch screen or touchpad zooms about the fingers
+                        PinchHandler {
+                            target: null
+                            property real lo: 0
+                            property real hi: 0
+                            property real at: 0
+                            onActiveChanged: if (active) {
+                                lo = wf.lowKhz; hi = wf.highKhz
+                                at = wf.highKhz - centroid.position.y / wf.height * (wf.highKhz - wf.lowKhz)
+                            }
+                            onActiveScaleChanged: if (active) wf.setView(at - (at - lo) / activeScale, at + (hi - at) / activeScale)
                         }
                         Text {
                             anchors.centerIn: parent
@@ -679,14 +697,13 @@ ApplicationWindow {
             Repeater {
                 model: {
                     const s = inst ? inst.status : {}
-                    const d = inst && win.selectedKhz > 0 ? inst.detail : {}
                     const up = s.uptime_s || 0
                     return [["Load", s.cpu !== undefined && s.cpu !== null ? s.cpu + "%" : "-"],
                             ["Memory", s.rss_mb ? s.rss_mb + " MB" : "-"],
                             ["Bins", s.bins !== undefined ? s.bins : "-"],
-                            ["Selected", d.wpm ? Math.round(d.wpm) + " WPM" : "-"],
-                            ["Spots", s.spots !== undefined ? s.spots : "-"],
+                            ["Consoles", s.clients ? s.clients.length : "-"],
                             ["Decoder", inst && inst.info.decoder ? inst.info.decoder : "-"],
+                            ["Build", inst && inst.info.build ? inst.info.build : "-"],
                             ["Up", Math.floor(up / 3600) + "h " + Math.floor(up % 3600 / 60) + "m"]]
                 }
                 delegate: Row {
@@ -712,11 +729,11 @@ ApplicationWindow {
         const gb = x => x === null || x === undefined ? "-" : x >= 1073741824 ? (x / 1073741824).toFixed(2) + " GiB" : (x / 1048576).toFixed(0) + " MiB"
         const near = 3.5 * 1073741824  // record_wav files break past 4 GiB
         // key: a value that signals trouble (full weight); ref: reference detail (muted); bad: red
-        const row = (k, v, o) => Object.assign({ k: k, v: dash(v), sub: "", mono: false, bad: false, key: false, ref: false, level: "" }, o || {})
+        const row = (k, v, o) => Object.assign({ k: k, v: dash(v), sub: "", title: "", mono: false, bad: false, key: false, ref: false, level: "" }, o || {})
         const fileRow = (k, p, none, o) => {
             if (!p) return row(k, none, o)
             const n = String(p).lastIndexOf("/")
-            return row(k, n < 0 ? p : p.slice(n + 1), Object.assign({ sub: n < 0 ? "" : p.slice(0, n) }, o || {}))
+            return row(k, n < 0 ? p : p.slice(n + 1), Object.assign({ sub: n < 0 ? "" : p.slice(0, n), title: String(p) }, o || {}))
         }
         const tiles = [
             { k: "UPTIME", v: dur(s.uptime_s), sub: "", bad: false },
@@ -738,7 +755,7 @@ ApplicationWindow {
         if ("position_s" in r) radio.push(row("Position", dur(r.position_s), { mono: true }))
         const rec = s.recording, nearLimit = !!rec && rec.bytes > near
         const sg = [row("Host", h.host, { ref: true }), row("Build", h.build, { mono: true, ref: true }), row("Decoder", h.decoder, { ref: true }),
-            row("Bands", (h.bands || []).map(b => /^\d+$/.test(String(b.name)) ? b.center_khz + " kHz" : b.name).join(", "), { key: true }),
+            row("Bands", (h.bands || []).map((b, n) => (i.bandNames[n] || b.name) + " (" + b.center_khz + " kHz)").join(", "), { key: true }),
             row("Started", utc(run.started), { mono: true, ref: true }),
             fileRow("Config", run.config, "-", { ref: true }), fileRow("Log", run.log, "terminal", { ref: true }),
             rec ? fileRow("Recording", rec.file, "off", { bad: nearLimit, ref: !nearLimit }) : row("Recording", "off", { ref: true })]
@@ -902,6 +919,8 @@ ApplicationWindow {
                                                 }
                                                 Column {
                                                     Layout.fillWidth: true; Layout.alignment: Qt.AlignTop
+                                                    HoverHandler { id: rowHover }
+                                                    ToolTip.visible: rowHover.hovered && !!modelData.title; ToolTip.delay: 600; ToolTip.text: modelData.title
                                                     Text {
                                                         width: parent.width; wrapMode: Text.WrapAnywhere
                                                         horizontalAlignment: modelData.level ? Text.AlignLeft : Text.AlignRight
@@ -1149,8 +1168,9 @@ ApplicationWindow {
                 model: search.matches
                 delegate: Rectangle {
                     required property var modelData
+                    required property int index
                     width: matchCol.width; height: 28; radius: 6
-                    color: mh.hovered ? t.sunken : "transparent"
+                    color: mh.hovered || index === 0 ? t.sunken : "transparent"
                     HoverHandler { id: mh; cursorShape: Qt.PointingHandCursor }
                     TapHandler { onTapped: win.goTo(modelData) }
                     Row {

@@ -154,6 +154,7 @@ class Instance(QObject):
         self.ws.errorOccurred.connect(self._on_error)
         self.retry = 0
         self.closed = False
+        self._opened = False  # this attempt reached the feed
         self.refused = ""  # "code": wrong code, not retried; "lockout": retried after LOCKOUT_S
         self.retry_timer = QTimer(self, singleShot=True)
         self.retry_timer.timeout.connect(self.open)
@@ -171,6 +172,7 @@ class Instance(QObject):
             self._set_state("live")
             return
         self._set_state("connecting")
+        self._opened = False
         self.ws.open(open_request(self._url, self._token))
 
     @property
@@ -191,6 +193,7 @@ class Instance(QObject):
         self._since = time.time()
         self.retry = 0
         self._error = ""
+        self._opened = True
         self.ws.sendTextMessage(json.dumps({"type": "subscribe", "spectrum_hz": SPECTRUM_HZ}))
         self._set_state("live")
 
@@ -200,6 +203,8 @@ class Instance(QObject):
         code = self.ws.closeCode()
         if code == QWebSocketProtocol.CloseCode.CloseCodePolicyViolated:
             self._error = "dropped by the server (too slow)"
+        elif self._opened:
+            self._error = ""
         delay = RECONNECT_S[min(self.retry, len(RECONNECT_S) - 1)]
         self.retry += 1
         self._set_state("dropped")
@@ -212,6 +217,11 @@ class Instance(QObject):
             err = "wrong join code"
         elif self.refused == "lockout":
             err = "locked out after wrong join codes; retrying in 10 min"
+        elif "503" in err:
+            err = "too many clients"
+        else:
+            # plain words as in SparkGap Web; a drop from a live feed shows none
+            err = "" if self._opened else "no answer"
         self._error = err
         if self.refused:
             # a retry with the same code would only count towards a lockout
@@ -552,10 +562,7 @@ class Instance(QObject):
         q = query.strip().upper()
         if not q:
             return []
-        try:
-            v = float(q)
-        except ValueError:
-            v = None
+        v = float(q) if re.fullmatch(r"\d+\.?\d*|\.\d+", q) else None
         if v is not None:
             khz = v * 1000 if v < 100 else v
             return [{"call": "", "khz": khz, "ago": "", "spot": False, "label": f"{khz:.1f} kHz"}]

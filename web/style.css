@@ -134,6 +134,8 @@ footer .v { font-family: "IBM Plex Mono", ui-monospace, monospace; font-feature-
 .err { color: var(--bad); font-size: 12px; }
 .row { display: flex; gap: 8px; } .row.end { justify-content: flex-end; }
 .row.foot { justify-content: space-between; align-items: center; }
+/* Close stays in view while the settings scroll */
+.dialog > .row.foot { position: sticky; bottom: -18px; margin-bottom: -18px; padding: 10px 0 18px; background: var(--surface); }
 .seg { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--sunken); border: 1px solid var(--line); }
 .seg span { padding: 4px 12px; border-radius: 6px; color: var(--muted); cursor: pointer; }
 .seg span.on { background: var(--surface); color: var(--fg); }

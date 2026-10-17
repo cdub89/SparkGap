@@ -1106,9 +1106,7 @@ function setBand(n) {
 
 function renderStation() {
   const i = inst(), c = (i && !i.demo && i.hello.config) || {};  // demo: the status says DEMO MODE
-  $("station").textContent = [c.callsign, c.flex_daxiq_channel ? "DAX IQ " + c.flex_daxiq_channel : "",
-    c.sample_rate ? c.sample_rate / 1000 + " kHz" : "", c.telnet_port ? "telnet " + c.telnet_port : "",
-    c.enable_ft8 ? "FT8 on" : ""].filter(x => x).join("  ·  ");
+  $("station").textContent = [c.callsign, c.enable_ft8 ? "FT8 on" : ""].filter(x => x).join("  ·  ");
 }
 
 function yOf(khz, h) { return (wf.hi - khz) / Math.max(0.001, wf.hi - wf.lo) * h; }
@@ -1211,10 +1209,10 @@ function renderDetail() {
 }
 
 function renderStatus() {
-  const i = inst(), s = i ? i.status : {}, d = i && app.selectedKhz > 0 ? i.detail : null, up = s.uptime_s || 0;
+  const i = inst(), s = i ? i.status : {}, up = s.uptime_s || 0;
   const items = [["Load", s.cpu !== undefined && s.cpu !== null ? s.cpu + "%" : "-"], ["Memory", s.rss_mb ? s.rss_mb + " MB" : "-"],
-    ["Bins", s.bins !== undefined ? s.bins : "-"], ["Selected", d && d.wpm ? Math.round(d.wpm) + " WPM" : "-"],
-    ["Spots", s.spots !== undefined ? s.spots : "-"], ["Decoder", i && i.hello.decoder ? i.hello.decoder : "-"],
+    ["Bins", s.bins !== undefined ? s.bins : "-"], ["Consoles", s.clients ? s.clients.length : "-"],
+    ["Decoder", i && i.hello.decoder ? i.hello.decoder : "-"], ["Build", i && i.hello.build ? i.hello.build : "-"],
     ["Up", `${Math.floor(up / 3600)}h ${Math.floor(up % 3600 / 60)}m`]];
   $("statusbar").innerHTML = items.map(([k, v]) => `<span><span class="k">${k}</span><span class="v">${esc(String(v))}</span></span>`).join("");
 }

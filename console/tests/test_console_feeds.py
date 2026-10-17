@@ -326,3 +326,31 @@ def test_spot_detail_uses_the_spot_not_later_noise() -> None:
     del inst.spots["WX7V"]  # heard, not spotted: the newest window that copied the call
     d = inst.property("detail")
     assert (d["spot_khz"], d["wpm"], d["snr"]) == (None, 18.5, 32.6)
+
+
+@pytest.mark.parametrize(
+    ("query", "khz"),
+    [("7030", 7030.0), ("7.030", 7030.0), ("14025.5", 14025.5), ("INF", None), ("NAN", None),
+     ("1E3", None), ("7_030", None), ("7.0.3", None), (".", None)],
+)
+def test_search_takes_only_digits_as_a_frequency(query: str, khz: float | None) -> None:
+    # as in SparkGap Web: INF, NAN or 1E3 are not frequencies
+    from backend import Instance
+    from PySide6.QtCore import QCoreApplication
+
+    app = QCoreApplication.instance() or QCoreApplication([])  # noqa: F841
+    m = Instance("ws://127.0.0.1:9/feed").search(query)
+    assert (m[0]["khz"] if m and not m[0]["call"] else None) == khz
+
+
+def test_no_answer_is_said_plainly() -> None:
+    from backend import Instance
+    from PySide6.QtCore import QCoreApplication, QTimer
+
+    app = QCoreApplication.instance() or QCoreApplication([])
+    inst = Instance("ws://127.0.0.1:9/feed")
+    inst.open()
+    QTimer.singleShot(1500, app.quit)
+    app.exec()
+    assert inst.error == "no answer"
+    inst.close()
