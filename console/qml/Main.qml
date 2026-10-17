@@ -741,7 +741,6 @@ ApplicationWindow {
             { k: "CALLS", v: num(s.calls), sub: "", bad: false, primary: true },
             { k: "WINDOWS", v: num(s.windows), sub: "", bad: false, primary: true },
             { k: "BINS", v: num(s.bins), sub: s.bins_peak !== undefined ? "peak " + s.bins_peak : "", bad: false },
-            { k: "IQ TRIMMED", v: s.iq_trimmed_s !== undefined ? s.iq_trimmed_s + " s" : "-", sub: s.iq_trimmed_s > 0 ? "decoder behind" : "", bad: s.iq_trimmed_s > 0 },
             { k: "CPU", v: s.cpu !== undefined && s.cpu !== null ? s.cpu + "%" : "-", sub: "of a core" + (s.rss_mb ? " · " + s.rss_mb + " MB" : ""), bad: false }]
         const lossy = r.packets > 0 && r.lost / r.packets > 0.001  // more than 0.1% of packets lost is worth a look
         const radio = [row("Type", r.type === "flex" ? "FlexRadio" : r.type === "hpsdr" ? "HPSDR" : r.type === "file" ? "File replay" : r.type, { ref: true }),
@@ -761,7 +760,9 @@ ApplicationWindow {
             rec ? fileRow("Recording", rec.file, "off", { bad: nearLimit, ref: !nearLimit }) : row("Recording", "off", { ref: true })]
         if (rec) sg.push(row("Recording size", gb(rec.bytes) + (nearLimit ? "  (near the 4 GiB limit)" : ""), { mono: true, key: true, bad: nearLimit }))
         sg.push(row("Clock", s.clock_synced === true ? "NTP synchronised" : s.clock_synced === false ? "not synchronised" : "unknown",
-                    { key: true, bad: s.clock_synced === false }))
+                    { key: true, bad: s.clock_synced === false }),
+                row("IQ trimmed", s.iq_trimmed_s !== undefined ? s.iq_trimmed_s + " s" + (s.iq_trimmed_s > 0 ? "  (decoder behind)" : "") : null,
+                    { mono: true, key: true, bad: s.iq_trimmed_s > 0 }))
         const out = s.telnet ? [row("Telnet port", s.telnet.port, { mono: true, ref: true }), row("Telnet clients", s.telnet.clients, { mono: true, key: true })]
                              : [row("Telnet", "not reported")]
         const cons = [row("This console", "since " + utc(i.since) + (i.reconnects ? ", " + i.reconnects + " reconnects" : ""), { mono: true, ref: true }),
