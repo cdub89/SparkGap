@@ -19,7 +19,8 @@ sparkgap.sh: run the SparkGap instances on this machine.
   sparkgap.sh band <name> <band>   set the band in its config; restarts it if it was running
   sparkgap.sh rec <name> on|off    record IQ to rec/ or stop recording; restarts it if it was running
   sparkgap.sh update               pull each code folder in instances, rebuild the native libraries
-                                   where C code changed, and restart what was running from it
+                                   where C code changed, restart what was running from it, and
+                                   refresh this script in the root from tools/sparkgap.sh
   sparkgap.sh help                 this list; -h or --help after any command shows that command
 
 With no name, start, stop, restart and status act on every instance.
@@ -148,6 +149,10 @@ update() {
     echo "$d: $(git -C "$d" log --oneline -1)"
     was[$d]=$old; changed="$changed $d"
   done
+  d=$(awk '!/^#/ && NF {print $2; exit}' "$R/instances")  # the root's copy of this script follows the code
+  if [ -f "$d/tools/sparkgap.sh" ] && ! cmp -s "$d/tools/sparkgap.sh" "$R/sparkgap.sh"; then
+    cp "$d/tools/sparkgap.sh" "$R/sparkgap.sh" && echo "$R/sparkgap.sh: updated from $d"
+  fi
   [ -n "$changed" ] || return 0
   local running=""
   for i in $ALL; do
