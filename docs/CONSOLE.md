@@ -7,8 +7,6 @@ and the decoded text of the signal you pick. SparkGap stays an independent
 service next to the radio; the consoles connect to it over the network, come and
 go without disturbing decoding, and each can watch several SparkGaps.
 
-![SparkGap Console on Linux, 20m from a FLEX-6400M](console.png)
-
 ![SparkGap Web, 40m from a FLEX-6600](web.png)
 
 Status: experimental. The consoles only watch: each SparkGap keeps its own
@@ -77,14 +75,12 @@ open decoder bins, connected consoles, decoder, build and uptime.
 
 ⓘ opens it; it updates every 2 seconds.
 
-![The status page](web-status.png)
-
 - **Health line**, on top: green when the radio is live, decoding keeps up and
   there are no errors; otherwise the problems, worst first.
 - **Tiles**: uptime, spots (and in the last hour), calls, decoded windows, bins
   (and the peak), CPU and memory.
-- **RADIO**: type, address and state; for a Flex also the station name, DAX-IQ
-  channel, packets lost, reconnects and the other stations on the radio.
+- **RADIO**: type, address and state, plus what the receiver reports, such as
+  packets and packets lost.
 - **SPARKGAP**: host and the port this console is connected on, the join code
   (masked; click to show and copy it), decoder, bands, config and log files,
   recording, and IQ trimmed (above zero means the machine is short of CPU).
@@ -98,8 +94,6 @@ Selecting text holds the page still until the selection is cleared, so it can
 be copied.
 
 ## Settings
-
-![Settings](web-settings.png)
 
 - **DEMO**: made-up signals instead of your servers. Demo only switches the
   view: the servers stay connected and keep their waterfall, spots and text.
