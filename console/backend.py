@@ -1096,7 +1096,10 @@ def refusal(err: str) -> str:
 
 
 def open_request(url: str, token: str) -> QNetworkRequest:
-    req = QNetworkRequest(QUrl(url))
+    u = QUrl(url)
+    if u.host().lower() == "localhost":  # may resolve to ::1 first; the feed listens on IPv4
+        u.setHost("127.0.0.1")
+    req = QNetworkRequest(u)
     req.setRawHeader(b"Sec-WebSocket-Protocol", PROTOCOL.encode())
     if token:
         req.setRawHeader(b"Authorization", f"Bearer {token}".encode())

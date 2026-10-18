@@ -9,17 +9,26 @@ import pytest
 pytest.importorskip("PySide6.QtWebSockets")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from backend import (  # noqa: E402
+from backend import (
     SPECTRUM_HEADER,
     check_feed,
     feed_url,
     load_feeds,
     merge_feeds,
+    open_request,
     save_feeds,
     url_parts,
 )
-from PySide6.QtCore import QSettings  # noqa: E402
-from sparkgap_console import parse  # noqa: E402
+from PySide6.QtCore import QSettings
+from sparkgap_console import parse
+
+
+def test_localhost_opens_ipv4_loopback() -> None:
+    # saved and shown as typed; only the connection goes to 127.0.0.1
+    assert feed_url("localhost", 7320) == "ws://localhost:7320/feed"
+    assert open_request("ws://localhost:7320/feed", "").url().toString() == "ws://127.0.0.1:7320/feed"
+    assert open_request("ws://LocalHost:7321/feed", "").url().toString() == "ws://127.0.0.1:7321/feed"
+    assert open_request("ws://beelink:7320/feed", "").url().toString() == "ws://beelink:7320/feed"
 
 
 def test_url_round_trip() -> None:
