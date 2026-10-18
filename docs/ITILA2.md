@@ -9,8 +9,8 @@ Status: the decoder, scanner and spot rule (`spot_rule: repeat`, the default wit
 
 | Config key | Value | Effect |
 | --- | --- | --- |
-| `cw_decoder` | `itila` (default) | `itila_core.c` + `itila_scanner.c`, Fred's chain, unchanged |
-| | `itila2` | `itila2_core.c` + `itila2_scanner.c` (`libitila2.so`, `libitila2_scanner.so`) |
+| `cw_decoder` | `itila2` (default) | `itila2_core.c` + `itila2_scanner.c` (`libitila2.so`, `libitila2_scanner.so`) |
+| | `itila` | `itila_core.c` + `itila_scanner.c`, Fred's chain, unchanged |
 | `spot_rule` | `off` (default with `itila`) | the original spot path (`_itila_extract_cq_call`, `SpotTracker.process`) |
 | | `repeat` (default with `itila2`) | `spot_rule.py`: whole decode windows go to `RepeatSpotRule` |
 | `spot_rule_split_runs` | `false` (default) | with `spot_rule: repeat`, words run together with no gap are split before rule 1 (`CQCQDE` -> `CQ CQ DE`) |

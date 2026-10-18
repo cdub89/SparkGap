@@ -66,7 +66,7 @@ def _gui_settings(cfg, sample_rate):
     repeat = rule == 'repeat'
     eff = {
         'callsign': cfg.get('callsign', ''),
-        'cw_decoder': cfg.get('cw_decoder', 'itila'),
+        'cw_decoder': cfg.get('cw_decoder', 'itila2'),
         'sample_rate': sample_rate,
         'flex_daxiq_channel': cfg.get('flex_daxiq_channel', 1) if cfg.get('sdr_type') == 'flex' else None,
         'telnet_port': cfg.get('telnet_port', 7300),
@@ -90,7 +90,7 @@ def _start_gui_feed(cfg, bands, sample_rate, managers):
     import feed_server
     try:
         _gui_feed = feed_server.FeedServer(cfg['gui_feed'], {
-            'call': cfg.get('callsign', ''), 'decoder': cfg.get('cw_decoder', 'itila'),
+            'call': cfg.get('callsign', ''), 'decoder': cfg.get('cw_decoder', 'itila2'),
             **dict(zip(('config', 'config_defaults', 'config_built_in'),
                        _gui_settings(cfg, sample_rate))),
             'bands': [{'name': n, 'center_khz': c / 1000.0, 'span_khz': sample_rate / 1000.0}
@@ -1755,7 +1755,7 @@ def _select_spot_rule(name):
 def _spot_rule_name(config):
     """spot_rule from the config. Not set: "repeat" with cw_decoder itila2 (measured as one
     chain), "off" with itila."""
-    return config.get('spot_rule') or ('repeat' if config.get('cw_decoder', 'itila') == 'itila2' else 'off')
+    return config.get('spot_rule') or ('repeat' if config.get('cw_decoder', 'itila2') == 'itila2' else 'off')
 
 def _make_spot_rule(config, tracker):
     """The RepeatSpotRule SparkGap runs with spot_rule "repeat": tiers from patt3ch, lock-on,
@@ -7009,7 +7009,7 @@ class SparkGap:
             log.error("use_itila needs sample_rate in %s, got %d", rates, rx_sample_rate)
             return False
         try:
-            _select_cw_decoder(self.cfg.get('cw_decoder', 'itila'))
+            _select_cw_decoder(self.cfg.get('cw_decoder', 'itila2'))
         except (ValueError, RuntimeError) as e:
             log.error("%s", e)
             return False
@@ -8236,7 +8236,7 @@ def run_file_mode(args, config):
     if config.get('use_itila') and file_rate not in rates:
         sys.exit(f"use_itila needs a recording at {rates} Hz, got {file_rate}")
     try:
-        _select_cw_decoder(config.get('cw_decoder', 'itila'))
+        _select_cw_decoder(config.get('cw_decoder', 'itila2'))
     except (ValueError, RuntimeError) as e:
         sys.exit(str(e))
 

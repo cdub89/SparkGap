@@ -17,8 +17,8 @@
         14050000
     ],
     "use_itila": true,
-    "_comment_cw_decoder": "itila is the default chain. cw_decoder itila2 selects the itila2 decoder and scanner together (hotairfred/SparkGap#18, with itila_decode_threads); see docs/ITILA2.md.",
-    "cw_decoder": "itila",
+    "_comment_cw_decoder": "itila2 is the default chain: the itila2 decoder and scanner together, with the repeat spot rule (hotairfred/SparkGap#18, with itila_decode_threads); cw_decoder itila selects the original one. See docs/ITILA2.md.",
+    "cw_decoder": "itila2",
     "itila_window_sec": 60,
     "itila_ev_thresh": 1.5,
     "itila_max_bins": 400,
