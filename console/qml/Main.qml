@@ -989,14 +989,6 @@ ApplicationWindow {
                     width: setFlick.width - (setFlick.contentHeight > setFlick.height ? 14 : 0)
                     spacing: 14
                     Text { text: "Settings"; color: t.fg; font.family: t.display; font.pixelSize: 15; font.weight: Font.DemiBold }
-                    Rectangle {
-                        visible: console_.demo
-                        Layout.fillWidth: true; Layout.topMargin: -6; implicitHeight: hintTxt.implicitHeight + 16; radius: 8; color: t.sunken
-                        Text {
-                            id: hintTxt; x: 10; width: parent.width - 20; anchors.verticalCenter: parent.verticalCenter; wrapMode: Text.WordWrap
-                            text: "Demo mode is on. Turn it off to add or connect to a SparkGap server."; color: t.muted; font.pixelSize: 12
-                        }
-                    }
                     RowLayout {
                         spacing: 10
                         Text { Layout.preferredWidth: 92; text: "DEMO"; color: t.muted; font.pixelSize: 11; font.letterSpacing: 1 }
@@ -1037,7 +1029,6 @@ ApplicationWindow {
                         background: Rectangle { radius: 8; color: t.sunken; border.color: parent.activeFocus ? t.accent : t.line }
                     }
                     Setting {
-                        visible: !console_.demo
                         label: "CONNECTIONS"
                         // the SparkGap servers this console watches, kept between runs; a click on a row shows that one
                         ColumnLayout {
@@ -1049,6 +1040,7 @@ ApplicationWindow {
                             property bool searching: false
                             property int scanFor: -2  // the form a search was started from
                             function edit(i) {
+                                if (console_.demo) console_.setDemo(false)  // demo goes off when a server is added or edited
                                 const f = i >= 0 ? console_.feedAt(i) : { address: "", port: "", token: "" }  // no port: find them all
                                 addr.text = f.address; port.text = String(f.port); tok.text = f.token
                                 err = ""; note = ""; editing = i; addr.forceActiveFocus()
@@ -1081,7 +1073,7 @@ ApplicationWindow {
                                     color: cur ? t.sunken : rowHov.hovered ? Qt.alpha(t.sunken, 0.5) : "transparent"
                                     border.color: cur ? t.line : "transparent"
                                     HoverHandler { id: rowHov; cursorShape: Qt.PointingHandCursor }
-                                    TapHandler { onTapped: console_.setCurrent(index) }
+                                    TapHandler { onTapped: { if (console_.demo) console_.setDemo(false); console_.setCurrent(index) } }
                                     RowLayout {
                                         anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 4; spacing: 8
                                         Rectangle {
@@ -1099,7 +1091,7 @@ ApplicationWindow {
                                             Layout.maximumWidth: 170; elide: Text.ElideRight
                                         }
                                         Btn { text: "Edit"; onClicked: conns.edit(index) }
-                                        Btn { text: "✕"; onClicked: { console_.removeFeed(index); conns.editing = -2 } }
+                                        Btn { text: "✕"; onClicked: { if (console_.demo) console_.setDemo(false); console_.removeFeed(index); conns.editing = -2 } }
                                     }
                                 }
                             }

@@ -888,6 +888,11 @@ function changed(i, what) {
   else if (what === "detail") { renderDetail(); renderStatus(); }
 }
 
+// a server picked, added, edited or removed while demo shows: demo goes off first
+function leaveDemo() {
+  if (app.instances.some(i => i.demo)) setDemo(false);
+}
+
 function setCurrent(n) {
   app.current = Math.max(0, Math.min(n, app.instances.length - 1));
   app.selectedKhz = -1;
@@ -1243,8 +1248,6 @@ function renderSettings() {
   seg($("decSeg"), ["Both", "Wide", "Narrow", "Lowest cost"], DECODED.indexOf(app.decoded), n => {
     app.decoded = DECODED[n]; save("decoded", app.decoded); renderSettings(); renderDetail();
   });
-  $("connSection").hidden = demo;
-  $("demoHint").hidden = !demo;
   const c = (inst() && inst().hello.config) || {}, v = ["off", "permissive", "normal", "aggressive"];
   seg($("sRule"), ["off", "on"], c.spot_rule === "repeat" ? 1 : c.spot_rule ? 0 : -1);
   seg($("sValid"), v, v.indexOf(c.spot_validation || (c.spot_rule ? "off" : "")));
@@ -1274,7 +1277,7 @@ function renderConns() {
     const del = document.createElement("button"); del.className = "btn small"; del.textContent = "✕";
     del.onclick = e => { e.stopPropagation(); removeConn(n); };
     row.append(edit, del);
-    row.onclick = () => setCurrent(n);
+    row.onclick = () => { leaveDemo(); setCurrent(n); };
     box.appendChild(row);
   });
   if (!app.instances.some(i => !i.demo) && app.editing === -2) {
@@ -1289,6 +1292,7 @@ function renderConns() {
 }
 
 function editConn(n) {
+  leaveDemo();
   const i = app.instances[n];
   // a new server defaults to the SparkGap that served this page, if one did
   const served = /^https?:$/.test(location.protocol);
@@ -1347,6 +1351,7 @@ function saveConn() {
 }
 
 function removeConn(n) {
+  leaveDemo();
   app.instances.splice(n, 1)[0].close();
   if (app.current >= app.instances.length || app.current > n) app.current = Math.max(0, app.current - 1);
   app.editing = -2;
