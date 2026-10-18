@@ -215,6 +215,20 @@ def test_station_name_has_no_address() -> None:
     assert inst.station == "shack-pc · 20m" and inst.title == "shack-pc · 20m"
 
 
+def test_instance_config_names_the_server() -> None:
+    from backend import Instance
+    from PySide6.QtCore import QCoreApplication
+
+    app = QCoreApplication.instance() or QCoreApplication([])  # noqa: F841
+    hello = ('{"type": "hello", "v": 1, "host": "shack-pc", "run": {"config": "%s"},'
+             ' "bands": [{"name": "20m", "center_khz": 14048.0, "span_khz": 96.0}]}')
+    inst: Any = Instance("ws://100.64.0.1:7320/feed")
+    inst._on_text(hello % "/srv/sparkgap/lakehouse1.local.json")
+    assert inst.title == "lakehouse1 · 20m"
+    inst._on_text(hello % "sk_5band.json")
+    assert inst.title == "shack-pc · 20m"  # not named after an instance: the host
+
+
 def test_scan_report() -> None:
     from backend import SCAN_PORTS, scan_report
 

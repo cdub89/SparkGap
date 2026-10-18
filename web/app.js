@@ -304,7 +304,9 @@ class Instance {
   get station() {
     const b = this.bands[this.band] || this.bands[0];
     const band = b ? bandLabel(b) : "";
-    return [this.hello.host, band].filter(x => x).join(" · ");
+    // a config named after its instance (lakehouse1.local.json) names the server, else the host
+    const cfg = String((this.hello.run || {}).config || "").split("/").pop().match(/^(.+)\.local\.json$/);
+    return [cfg ? cfg[1] : this.hello.host, band].filter(x => x).join(" · ");
   }
 
   get title() { return this.demo ? "Demo" : this.station || this.url.split("//").pop().split("/")[0]; }
