@@ -64,8 +64,7 @@ pick that signal.
 
 **Decoded windows**, on the right: the picked signal's frequency, speed and SNR,
 whether it was SPOTTED or only HEARD, and its decoded windows, newest first.
-Text can be selected and copied; the desktop console also has a **Copy**
-button.
+Text can be selected, and **Copy** copies all of the signal's decoded windows.
 
 **Zoom panel**, under the decoded text: **Zoom** sets the width shown (the
 button steps through Full, Half and Quarter of the span), **Span** is the range
@@ -245,9 +244,8 @@ Shared, and kept the same:
 
 Different on purpose:
 
-- Desktop only: window size and position kept between runs; a Copy button for
-  the decoded text (a browser selects across windows by itself); Settings
-  scrolls inside its window (the browser page scrolls).
+- Desktop only: window size and position kept between runs; Settings scrolls
+  inside its window (the browser page scrolls).
 - Web only: the layout for narrow (phone) and short screens, where the page
   scrolls, and touch pan and pinch; the page fills in its own server's address
   when one is added.

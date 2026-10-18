@@ -94,6 +94,7 @@ main { flex: 1; display: flex; gap: 12px; min-height: 0; }
 .stat { flex: 1; height: 48px; border-radius: 8px; background: var(--sunken); padding: 8px 10px; }
 .stat .mono { font-size: 15px; font-weight: 500; }
 .dlabel { padding: 10px 16px 0; }
+.dcopy { display: flex; align-items: center; justify-content: space-between; }
 .note { padding: 6px 16px; color: var(--muted); font-size: 12px; }
 .wins { flex: 1; overflow-y: auto; scrollbar-width: thin; padding: 6px 16px 16px; display: flex; flex-direction: column; gap: 8px; font-size: 11px; }
 .win { display: flex; gap: 10px; }
