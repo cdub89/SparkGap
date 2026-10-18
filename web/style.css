@@ -57,6 +57,10 @@ header { display: flex; align-items: center; gap: 16px; min-width: 0; }
 .state { flex-shrink: 0; }  /* the station details give way first, never Live */
 .station { flex-shrink: 1; min-width: 0; }
 .sdot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+.rec { display: flex; align-items: center; gap: 6px; flex-shrink: 0; color: var(--bad); font: 600 12px "IBM Plex Mono", ui-monospace, monospace; }
+.rec .rdot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); animation: blink 1s steps(2, jump-none) infinite; }
+@keyframes blink { 50% { opacity: 0.15; } }
+@media (prefers-reduced-motion: reduce) { .rec .rdot { animation: none; } }
 
 main { flex: 1; display: flex; gap: 12px; min-height: 0; }
 .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }

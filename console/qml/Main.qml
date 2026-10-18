@@ -273,6 +273,22 @@ ApplicationWindow {
                           + (inst && inst.state !== "live" && inst.error ? "  ·  " + inst.error : "")
                 }
             }
+            Row {  // the server is writing IQ: REC beside the state
+                spacing: 6
+                visible: !!inst && !inst.demo && !!inst.status && !!inst.status.recording
+                HoverHandler { id: recHover }
+                ToolTip.visible: recHover.hovered; ToolTip.delay: 600
+                ToolTip.text: visible ? "Recording IQ to " + inst.status.recording.file : ""
+                Rectangle {
+                    width: 8; height: 8; radius: 4; anchors.verticalCenter: parent.verticalCenter; color: t.bad
+                    SequentialAnimation on opacity {
+                        running: parent.visible; loops: Animation.Infinite
+                        PropertyAction { value: 1.0 } PauseAnimation { duration: 500 }
+                        PropertyAction { value: 0.15 } PauseAnimation { duration: 500 }
+                    }
+                }
+                Text { text: "REC"; color: t.bad; font.family: t.mono; font.features: t.zero; font.pixelSize: 12; font.weight: Font.DemiBold }
+            }
             Rectangle {
                 id: gear
                 width: 32; height: 32; radius: 8; color: settings.visible ? t.sunken : t.surface; border.color: t.line
