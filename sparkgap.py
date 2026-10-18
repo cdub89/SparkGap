@@ -397,15 +397,17 @@ CW_BAND_PLAN_R2 = [
     (28000,  28070,     28070,        28074),   # 10m   — FT4=28180 above FT8 (unreachable)
 ]
 
-# Band names for the config's bands[]: each is centred so the IQ span starts at the band's
-# lower CW edge above, whatever the sample rate (cdub89/SparkGap#15)
+# Band names for the config's bands[]: each is centred so the band's lower CW edge above sits
+# BAND_EDGE_MARGIN of the sample rate inside the IQ span, past the receiver's roll-off: a
+# FLEX-6400 is flat from 8.3% in at 48 and 96 kHz, a Red Pitaya from ~3% at 192 kHz (#63)
 BANDS = dict(zip(('160m', '80m', '40m', '30m', '20m', '17m', '15m', '12m', '10m'),
                  (row[0] for row in CW_BAND_PLAN_R2)))
+BAND_EDGE_MARGIN = 0.10
 
 
 def band_center_hz(name, sample_rate):
-    """Centre for a named band: its lower CW edge plus half the IQ span."""
-    return BANDS[name] * 1000 + sample_rate // 2
+    """Centre for a named band: its lower CW edge plus 0.4 of the IQ span."""
+    return BANDS[name] * 1000 + round(sample_rate * (0.5 - BAND_EDGE_MARGIN))
 
 def _derive_cw_window(center_khz, exclude_ft8=True, exclude_ft4=False):
     """Look up the CW window for the IARU R2 band containing center_khz.
