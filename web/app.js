@@ -1034,6 +1034,12 @@ function renderStatusPage() {
   const radio = [row("Type", r.type === "flex" ? "FlexRadio" : r.type === "hpsdr" ? "HPSDR" : r.type === "file" ? "File replay" : r.type, { ref: true }),
     r.type === "file" ? fileRow("File", r.address, "-", { ref: true }) : row("Address", r.address, { mono: true, ref: true })];
   if ("station" in r) radio.push(row("Station", r.station, { ref: true }), row("DAX-IQ channel", r.daxiq_channel, { mono: true, ref: true }));
+  const mhz = khz => (khz / 1000).toFixed(3);
+  (h.bands || []).forEach((b, n) => {
+    const tag = h.bands.length > 1 ? ` ${bandLabel(b)}` : "", d = (s.decode_khz || [])[n];
+    radio.push(row("IQ" + tag, `${mhz(b.center_khz)} MHz, ${b.span_khz} kHz`, { mono: true, ref: true }));
+    if (d) radio.push(row("Decoding" + tag, `${mhz(d[0])} to ${mhz(d[1])} MHz`, { mono: true, ref: true }));
+  });
   if ("packets" in r) radio.push(row("Packets", num(r.packets), { mono: true, ref: true }), row("Lost", num(r.lost), { mono: true, key: true, bad: lossy }));
   if ("pkt_per_s" in r) radio.push(row("Packets a second", num(r.pkt_per_s), { mono: true, key: true }));
   if ("reconnects" in r) radio.push(row("Reconnects", r.reconnects ? `${r.reconnects}, last ${utcTime(r.last_reconnect)}` : "none", { mono: !!r.reconnects, key: true, bad: r.reconnects > 0 }));
@@ -1044,7 +1050,7 @@ function renderStatusPage() {
   const sg = [row("Host", `${h.host}, port ${urlParts(i.url)[1]}`, { ref: true }),
     i.token ? row("Join code", app.codeShown ? i.token : "•••-•••", { mono: true, ref: true, act: "code", title: app.codeShown ? "Click to hide" : "Click to show and copy" })
       : row("Join code", "none (local only)", { ref: true }), row("Decoder", h.decoder, { ref: true }),
-    row("Bands", (h.bands || []).map(b => `${bandLabel(b)} (${b.center_khz} kHz)`).join(", "), { key: true }),
+    row("Bands", (h.bands || []).map(bandLabel).join(", "), { key: true }),
     fileRow("Config", run.config, "-", { ref: true }), fileRow("Log", run.log, "terminal", { ref: true }),
     rec ? fileRow("Recording", rec.file, "off", { bad: near, ref: !near }) : row("Recording", "off", { ref: true }),
     ...(rec ? [row("Recording size", gb(rec.bytes) + (near ? "  (near the 4 GiB limit)" : ""), { mono: true, key: true, bad: near })] : []),

@@ -156,6 +156,7 @@ Every 2 seconds.
 ```json
 {"type": "status", "cpu": 38, "rss_mb": 331, "clock_synced": true,
  "bins": 37, "spots": 412, "uptime_s": 27243, "utc": 1792020910.0,
+ "decode_khz": [[7000.0, 7070.0]],
  "radio": {"type": "flex", "address": "192.168.1.20", "state": "live",
            "packets": 5023532, "lost": 0, "reconnects": 1,
            "last_reconnect": 1792019016, "station": "SparkGap-2",
@@ -177,6 +178,8 @@ Process and decoding:
 - `clock_synced`: whether the system clock is NTP-synchronised; `null` where
   that cannot be read.
 - `bins`: decoder bins open across all bands; `bins_peak`: the most since start.
+- `decode_khz`: each band's decode window `[low, high]` in kHz, in `bands` order;
+  `null` until the band's first IQ arrives.
 - `spots`: spots since start; `spots_hour`: in the last hour; `calls`: distinct
   calls spotted since start.
 - `windows`: decoded windows since start.
