@@ -821,12 +821,15 @@ ApplicationWindow {
                 if (dt > 0.5) rate = ((inst.rowsTotal - lastTotal) / dt).toFixed(0)
             }
             lastTotal = inst ? inst.rowsTotal : -1; lastAt = Date.now() / 1000
-            sections = win.statusSections()
+            if (!held) sections = win.statusSections()
         }
-        onOpened: { lastTotal = -1; rate = "-"; refresh() }
+        property bool held: false  // text selected: hold the page still until it is cleared
+        onOpened: { held = false; lastTotal = -1; rate = "-"; refresh() }
         Connections { target: inst; enabled: statusPop.visible; function onStatusChanged() { statusPop.refresh() } }
         contentItem: ColumnLayout {
             spacing: 12
+            id: statusBody
+            TapHandler { onTapped: statusBody.forceActiveFocus() }  // a click off the text clears its selection
             RowLayout {
                 Layout.fillWidth: true; spacing: 10
                 Text { text: "Status"; color: t.fg; font.family: t.display; font.pixelSize: 15; font.weight: Font.DemiBold }
@@ -935,17 +938,21 @@ ApplicationWindow {
                                                         }
                                                     }
                                                     ToolTip.visible: rowHover.hovered && !!modelData.title; ToolTip.delay: 600; ToolTip.text: modelData.title
-                                                    Text {
-                                                        width: parent.width; wrapMode: Text.WrapAnywhere
-                                                        horizontalAlignment: modelData.level ? Text.AlignLeft : Text.AlignRight
+                                                    TextEdit {  // selectable; a selection holds the page still (statusPop.held)
+                                                        width: parent.width; wrapMode: TextEdit.WrapAnywhere; readOnly: true
+                                                        selectByMouse: true; enabled: !modelData.act; selectionColor: Qt.alpha(t.accent, 0.4)
+                                                        horizontalAlignment: modelData.level ? TextEdit.AlignLeft : TextEdit.AlignRight
                                                         text: modelData.v; font.pixelSize: 12; font.weight: modelData.key ? Font.DemiBold : Font.Normal
                                                         color: modelData.bad ? t.bad : modelData.ref ? t.muted : t.fg
                                                         font.family: modelData.mono ? t.mono : t.sans; font.features: t.zero
+                                                        onSelectedTextChanged: statusPop.held = selectedText !== ""
                                                     }
-                                                    Text {
-                                                        visible: !!modelData.sub; width: parent.width; horizontalAlignment: Text.AlignRight
-                                                        wrapMode: Text.WrapAnywhere; text: modelData.sub; color: t.faint
+                                                    TextEdit {
+                                                        visible: !!modelData.sub; width: parent.width; horizontalAlignment: TextEdit.AlignRight
+                                                        wrapMode: TextEdit.WrapAnywhere; readOnly: true; selectByMouse: true; selectionColor: Qt.alpha(t.accent, 0.4)
+                                                        text: modelData.sub; color: t.faint
                                                         font.family: t.mono; font.features: t.zero; font.pixelSize: 10
+                                                        onSelectedTextChanged: statusPop.held = selectedText !== ""
                                                     }
                                                 }
                                             }
