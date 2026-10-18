@@ -800,6 +800,7 @@ const app = {
   note: "",  // what the last search for servers found
   decoded: "lowest",
   matches: [],
+  codeShown: false,  // Status shows this console's join code in clear
 };
 const wf = new Waterfall($("wf"));
 
@@ -981,8 +982,8 @@ function renderStatusPage() {
   const num = v => (v === null || v === undefined ? "-" : Number(v).toLocaleString("en-US"));
   // one row: label left, value right; mono for numbers; sub is a muted second line (a file's folder)
   // o.key: a value that signals trouble (full weight); o.ref: reference detail (muted); o.bad: red
-  const row = (k, v, o = {}) => `<div class="srow"><span class="k">${esc(k)}</span><span class="v${o.mono ? " mono" : ""}${o.bad ? " bad" : ""}${o.key ? " key" : ""}${o.ref ? " ref" : ""}"`
-    + `${o.title ? ` title="${esc(o.title)}"` : ""}>${esc(dash(v))}${o.sub ? `<span class="sub">${esc(o.sub)}</span>` : ""}</span></div>`;
+  const row = (k, v, o = {}) => `<div class="srow"><span class="k">${esc(k)}</span><span class="v${o.mono ? " mono" : ""}${o.bad ? " bad" : ""}${o.key ? " key" : ""}${o.ref ? " ref" : ""}${o.act ? " act" : ""}"`
+    + `${o.title ? ` title="${esc(o.title)}"` : ""}${o.act ? ` data-act="${o.act}"` : ""}>${esc(dash(v))}${o.sub ? `<span class="sub">${esc(o.sub)}</span>` : ""}</span></div>`;
   const file = p => { const n = String(p).lastIndexOf("/"); return n < 0 ? [p, ""] : [p.slice(n + 1), p.slice(0, n)]; };
   const fileRow = (k, p, none, o = {}) => {
     if (!p) return row(k, none, o);
@@ -1014,7 +1015,9 @@ function renderStatusPage() {
   if ("position_s" in r) radio.push(row("Position", duration(r.position_s), { mono: true }));
 
   const rec = s.recording, near = rec && rec.bytes > NEAR_WAV_LIMIT;
-  const sg = [row("Host", `${h.host}, port ${urlParts(i.url)[1]}`, { ref: true }), row("Build", h.build, { mono: true, ref: true }), row("Decoder", h.decoder, { ref: true }),
+  const sg = [row("Host", `${h.host}, port ${urlParts(i.url)[1]}`, { ref: true }),
+    i.token ? row("Join code", app.codeShown ? i.token : "•••-•••", { mono: true, ref: true, act: "code", title: app.codeShown ? "Click to hide" : "Click to show and copy" })
+      : row("Join code", "none (local only)", { ref: true }), row("Build", h.build, { mono: true, ref: true }), row("Decoder", h.decoder, { ref: true }),
     row("Bands", (h.bands || []).map(b => `${bandLabel(b)} (${b.center_khz} kHz)`).join(", "), { key: true }),
     row("Started", utcTime(run.started), { mono: true, ref: true }),
     fileRow("Config", run.config, "-", { ref: true }), fileRow("Log", run.log, "terminal", { ref: true }),
@@ -1354,6 +1357,12 @@ function bindInput() {
   $("gear").onclick = () => ($("modal").hidden ? openSettings() : closeSettings());
   $("statusBtn").onclick = () => { renderStatusPage(); $("statusModal").hidden = !$("statusModal").hidden; };
   $("statusClose").onclick = () => { $("statusModal").hidden = true; };
+  $("statusBody").onclick = e => {
+    if (!e.target.closest('[data-act="code"]')) return;
+    app.codeShown = !app.codeShown;
+    if (app.codeShown && navigator.clipboard) navigator.clipboard.writeText(inst().token).catch(() => {});  // http pages have no clipboard API
+    renderStatusPage();
+  };
   $("statusModal").onmousedown = e => { if (e.target === $("statusModal")) $("statusModal").hidden = true; };
   $("close").onclick = closeSettings;
   $("modal").onmousedown = e => { if (e.target === $("modal")) closeSettings(); };

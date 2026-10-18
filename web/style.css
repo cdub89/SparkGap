@@ -182,6 +182,7 @@ footer .v { font-family: "IBM Plex Mono", ui-monospace, monospace; font-feature-
 .srow .v { text-align: right; min-width: 0; overflow-wrap: anywhere; }
 .srow .v.mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-feature-settings: "zero" 1; }
 .srow .v.bad { color: var(--bad); }
+.srow .v.act { cursor: pointer; }
 .srow .sub { display: block; color: var(--faint); font-size: 10px; font-family: "IBM Plex Mono", ui-monospace, monospace; }
 .prob { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; font-size: 12px; }
 .prob .t { color: var(--faint); font-size: 11px; white-space: nowrap; }

@@ -37,6 +37,8 @@ ApplicationWindow {
     color: t.bg
 
     property var inst: console_.current
+    property bool codeShown: false  // Status shows this console's join code in clear
+    TextEdit { id: codeClip; visible: false }  // clipboard for the join code
     property string themeOverride: "dark"  // dark by default; the toggle switches it
     // the zoom step the view is at (0 Full, 1 Half, 2 Quarter), or -1 between steps (a view within 5% of a step is at it)
     function zoomStep() {
@@ -721,6 +723,7 @@ ApplicationWindow {
         // { head, live, tiles: [{k, v, sub, bad}], cards: [{title, wide, rows: [{k, v, sub, mono, bad, level}]}] }; empty in demo
         const i = inst, s = (i && i.status) || {}, h = (i && i.info) || {}, run = h.run || {}, r = s.radio || {}
         if (!i || i.demo) return { head: "", live: false, health: "ok", issues: [], tiles: [], cards: [] }
+        const code = console_.feedAt(console_.currentIndex).token || ""
         const dash = v => v === null || v === undefined || v === "" ? "-" : String(v)
         const num = v => v === null || v === undefined ? "-" : Number(v).toLocaleString(Qt.locale("en_US"), "f", 0)
         const utc = x => x ? new Date(x * 1000).toISOString().slice(11, 19) + "Z" : "-"
@@ -729,7 +732,7 @@ ApplicationWindow {
         const gb = x => x === null || x === undefined ? "-" : x >= 1073741824 ? (x / 1073741824).toFixed(2) + " GiB" : (x / 1048576).toFixed(0) + " MiB"
         const near = 3.5 * 1073741824  // record_wav files break past 4 GiB
         // key: a value that signals trouble (full weight); ref: reference detail (muted); bad: red
-        const row = (k, v, o) => Object.assign({ k: k, v: dash(v), sub: "", title: "", mono: false, bad: false, key: false, ref: false, level: "" }, o || {})
+        const row = (k, v, o) => Object.assign({ k: k, v: dash(v), sub: "", title: "", mono: false, bad: false, key: false, ref: false, level: "", act: "" }, o || {})
         const fileRow = (k, p, none, o) => {
             if (!p) return row(k, none, o)
             const n = String(p).lastIndexOf("/")
@@ -753,7 +756,9 @@ ApplicationWindow {
         if ("station" in r) radio.push(row("Other stations", (r.others || []).join(", ") || "none", { key: true }))
         if ("position_s" in r) radio.push(row("Position", dur(r.position_s), { mono: true }))
         const rec = s.recording, nearLimit = !!rec && rec.bytes > near
-        const sg = [row("Host", h.host + ", port " + i.url.split(":").pop().split("/")[0], { ref: true }), row("Build", h.build, { mono: true, ref: true }), row("Decoder", h.decoder, { ref: true }),
+        const sg = [row("Host", h.host + ", port " + i.url.split(":").pop().split("/")[0], { ref: true }),
+                    code ? row("Join code", win.codeShown ? code : "•••-•••", { mono: true, ref: true, act: "code", title: win.codeShown ? "Click to hide" : "Click to show and copy" })
+                         : row("Join code", "none (local only)", { ref: true }), row("Build", h.build, { mono: true, ref: true }), row("Decoder", h.decoder, { ref: true }),
             row("Bands", (h.bands || []).map((b, n) => (i.bandNames[n] || b.name) + " (" + b.center_khz + " kHz)").join(", "), { key: true }),
             row("Started", utc(run.started), { mono: true, ref: true }),
             fileRow("Config", run.config, "-", { ref: true }), fileRow("Log", run.log, "terminal", { ref: true }),
@@ -920,7 +925,15 @@ ApplicationWindow {
                                                 }
                                                 Column {
                                                     Layout.fillWidth: true; Layout.alignment: Qt.AlignTop
-                                                    HoverHandler { id: rowHover }
+                                                    HoverHandler { id: rowHover; cursorShape: modelData.act ? Qt.PointingHandCursor : Qt.ArrowCursor }
+                                                    TapHandler {
+                                                        enabled: modelData.act === "code"
+                                                        onTapped: {
+                                                            win.codeShown = !win.codeShown
+                                                            if (win.codeShown) { codeClip.text = console_.feedAt(console_.currentIndex).token; codeClip.selectAll(); codeClip.copy() }
+                                                            statusPop.sections = win.statusSections()
+                                                        }
+                                                    }
                                                     ToolTip.visible: rowHover.hovered && !!modelData.title; ToolTip.delay: 600; ToolTip.text: modelData.title
                                                     Text {
                                                         width: parent.width; wrapMode: Text.WrapAnywhere
