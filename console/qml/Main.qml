@@ -758,15 +758,12 @@ ApplicationWindow {
         const rec = s.recording, nearLimit = !!rec && rec.bytes > near
         const sg = [row("Host", h.host + ", port " + i.url.split(":").pop().split("/")[0], { ref: true }),
                     code ? row("Join code", win.codeShown ? code : "•••-•••", { mono: true, ref: true, act: "code", title: win.codeShown ? "Click to hide" : "Click to show and copy" })
-                         : row("Join code", "none (local only)", { ref: true }), row("Build", h.build, { mono: true, ref: true }), row("Decoder", h.decoder, { ref: true }),
+                         : row("Join code", "none (local only)", { ref: true }), row("Decoder", h.decoder, { ref: true }),
             row("Bands", (h.bands || []).map((b, n) => (i.bandNames[n] || b.name) + " (" + b.center_khz + " kHz)").join(", "), { key: true }),
-            row("Started", utc(run.started), { mono: true, ref: true }),
             fileRow("Config", run.config, "-", { ref: true }), fileRow("Log", run.log, "terminal", { ref: true }),
             rec ? fileRow("Recording", rec.file, "off", { bad: nearLimit, ref: !nearLimit }) : row("Recording", "off", { ref: true })]
         if (rec) sg.push(row("Recording size", gb(rec.bytes) + (nearLimit ? "  (near the 4 GiB limit)" : ""), { mono: true, key: true, bad: nearLimit }))
-        sg.push(row("Clock", s.clock_synced === true ? "NTP synchronised" : s.clock_synced === false ? "not synchronised" : "unknown",
-                    { key: true, bad: s.clock_synced === false }),
-                row("IQ trimmed", s.iq_trimmed_s !== undefined ? s.iq_trimmed_s + " s" + (s.iq_trimmed_s > 0 ? "  (decoder behind)" : "") : null,
+        sg.push(row("IQ trimmed", s.iq_trimmed_s !== undefined ? s.iq_trimmed_s + " s" + (s.iq_trimmed_s > 0 ? "  (decoder behind)" : "") : null,
                     { mono: true, key: true, bad: s.iq_trimmed_s > 0 }))
         const out = s.telnet ? [row("Telnet port", s.telnet.port, { mono: true, ref: true }), row("Telnet clients", s.telnet.clients, { mono: true, key: true })]
                              : [row("Telnet", "not reported")]
@@ -790,7 +787,9 @@ ApplicationWindow {
         if (p.warnings > 0) issues.push({ lv: "warn", t: num(p.warnings) + " warnings since start" })
         const worst = issues.some(x => x.lv === "bad") ? "bad" : issues.length ? "warn" : "ok"
         const tag = (text, lv) => ({ text: text, lv: lv })
+        const clock = s.clock_synced === true ? "NTP synchronised" : s.clock_synced === false ? "not synchronised" : "unknown"
         return { head: i.station || "", state: r.state ? String(r.state).toUpperCase() : "", live: live,
+                 foot: "Build <b>" + (h.build || "-") + "</b>.  Clock <b>" + clock + "</b>.",
                  health: worst, issues: issues.length ? issues : [{ lv: "ok", t: "Healthy: radio live, decoding keeping up, no errors" }],
                  tiles: tiles,
                  cards: [{ title: "RADIO", wide: false, rows: radio,
@@ -959,7 +958,7 @@ ApplicationWindow {
             }
             RowLayout {
                 Layout.fillWidth: true
-                Text { text: "Refreshed every 2 s."; color: t.faint; font.pixelSize: 11 }
+                Text { text: statusPop.sections.foot || ""; textFormat: Text.StyledText; color: t.faint; font.pixelSize: 11 }
                 Item { Layout.fillWidth: true }
                 Btn { text: "Close"; onClicked: statusPop.close() }
             }

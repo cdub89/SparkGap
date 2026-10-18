@@ -974,6 +974,8 @@ const gb = b => (b === null || b === undefined ? "-" : b >= 2 ** 30 ? (b / 2 ** 
 
 function renderStatusPage() {
   const i = inst(), s = (i && i.status) || {}, h = (i && i.hello) || {}, run = h.run || {}, r = s.radio || {};
+  const clock = s.clock_synced === true ? "NTP synchronised" : s.clock_synced === false ? "not synchronised" : "unknown";
+  $("statusFoot").innerHTML = !i || i.demo ? "" : `Build <b>${esc(h.build || "-")}</b>.  Clock <b>${clock}</b>.`;
   if (!i || i.demo) {
     $("statusHead").innerHTML = "";
     $("statusBody").innerHTML = '<div class="small muted">Status is shown for a connected SparkGap, not demo mode.</div>';
@@ -1017,13 +1019,11 @@ function renderStatusPage() {
   const rec = s.recording, near = rec && rec.bytes > NEAR_WAV_LIMIT;
   const sg = [row("Host", `${h.host}, port ${urlParts(i.url)[1]}`, { ref: true }),
     i.token ? row("Join code", app.codeShown ? i.token : "•••-•••", { mono: true, ref: true, act: "code", title: app.codeShown ? "Click to hide" : "Click to show and copy" })
-      : row("Join code", "none (local only)", { ref: true }), row("Build", h.build, { mono: true, ref: true }), row("Decoder", h.decoder, { ref: true }),
+      : row("Join code", "none (local only)", { ref: true }), row("Decoder", h.decoder, { ref: true }),
     row("Bands", (h.bands || []).map(b => `${bandLabel(b)} (${b.center_khz} kHz)`).join(", "), { key: true }),
-    row("Started", utcTime(run.started), { mono: true, ref: true }),
     fileRow("Config", run.config, "-", { ref: true }), fileRow("Log", run.log, "terminal", { ref: true }),
     rec ? fileRow("Recording", rec.file, "off", { bad: near, ref: !near }) : row("Recording", "off", { ref: true }),
     ...(rec ? [row("Recording size", gb(rec.bytes) + (near ? "  (near the 4 GiB limit)" : ""), { mono: true, key: true, bad: near })] : []),
-    row("Clock", s.clock_synced === true ? "NTP synchronised" : s.clock_synced === false ? "not synchronised" : "unknown", { key: true, bad: s.clock_synced === false }),
     row("IQ trimmed", s.iq_trimmed_s !== undefined ? s.iq_trimmed_s + " s" + (s.iq_trimmed_s > 0 ? "  (decoder behind)" : "") : null, { mono: true, key: true, bad: s.iq_trimmed_s > 0 })];
 
   const out = s.telnet ? [row("Telnet port", s.telnet.port, { mono: true, ref: true }), row("Telnet clients", s.telnet.clients, { mono: true, key: true })]
