@@ -984,6 +984,18 @@ function selecting(el) {
   return !!sel && !sel.isCollapsed && el.contains(sel.anchorNode);
 }
 
+// clipboard: the API needs a secure page; plain http falls back to the browser's copy command
+function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text).then(() => true, () => false);
+  const ta = document.createElement("textarea");
+  ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+  document.body.append(ta); ta.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch { ok = false; }
+  ta.remove();
+  return Promise.resolve(ok);
+}
+
 function renderStatusPage() {
   const i = inst(), s = (i && i.status) || {}, h = (i && i.hello) || {}, run = h.run || {}, r = s.radio || {};
   const clock = s.clock_synced === true ? "NTP synchronised" : s.clock_synced === false ? "not synchronised" : "unknown";
@@ -1214,6 +1226,7 @@ function renderDetail() {
   $("dNote").hidden = !(d && d.note);
   $("dNote").textContent = d ? d.note : "";
   // both decodes of each window: wide filter on top, narrow dimmed
+  $("dCopy").hidden = !(d && d.windows.length);
   $("dWins").innerHTML = (d ? d.windows : []).map(r => {
     const rs = readings(r, app.decoded);
     return `<div class="win"><span class="t">${r.utc}</span><div class="x">`
@@ -1372,11 +1385,15 @@ function bindInput() {
   $("gear").onclick = () => ($("modal").hidden ? openSettings() : closeSettings());
   $("statusBtn").onclick = () => { renderStatusPage(); $("statusModal").hidden = !$("statusModal").hidden; };
   $("statusClose").onclick = () => { $("statusModal").hidden = true; };
+  $("dCopy").onclick = () => copyText($("dWins").innerText).then(ok => {
+    $("dCopy").textContent = ok ? "Copied" : "Copy failed";
+    setTimeout(() => { $("dCopy").textContent = "Copy"; }, 1500);
+  });
   $("help").href = HELP_URL;
   $("statusBody").onclick = e => {
     if (!e.target.closest('[data-act="code"]')) return;
     app.codeShown = !app.codeShown;
-    if (app.codeShown && navigator.clipboard) navigator.clipboard.writeText(inst().token).catch(() => {});  // http pages have no clipboard API
+    if (app.codeShown) copyText(inst().token);
     renderStatusPage();
   };
   $("statusModal").onmousedown = e => { if (e.target === $("statusModal")) $("statusModal").hidden = true; };
