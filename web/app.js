@@ -883,7 +883,7 @@ function changed(i, what) {
   if (what === "state") { renderConns(); if (i === inst()) renderState(); return; }
   if (i !== inst()) { if (what === "hello") { renderConns(); renderBands(); } return; }
   if (what === "hello") { wf.fit(); renderBands(); renderState(); renderStation(); renderSettings(); renderConns(); renderLadder(); }
-  else if (what === "status") { renderStatus(); if (!$("statusModal").hidden) renderStatusPage(); }
+  else if (what === "status") { renderStatus(); if (!$("statusModal").hidden && !selecting($("statusModal"))) renderStatusPage(); }
   else if (what === "ladder") renderLadder();
   else if (what === "detail") { renderDetail(); renderStatus(); }
 }
@@ -971,6 +971,12 @@ function duration(s) {
   return h ? `${h}h ${m}m` : `${m}m ${Math.floor(s % 60)}s`;
 }
 const gb = b => (b === null || b === undefined ? "-" : b >= 2 ** 30 ? (b / 2 ** 30).toFixed(2) + " GiB" : (b / 2 ** 20).toFixed(0) + " MiB");
+
+// text selected inside el: a redraw would drop it, so Status holds still until it is cleared
+function selecting(el) {
+  const sel = getSelection();
+  return !!sel && !sel.isCollapsed && el.contains(sel.anchorNode);
+}
 
 function renderStatusPage() {
   const i = inst(), s = (i && i.status) || {}, h = (i && i.hello) || {}, run = h.run || {}, r = s.radio || {};
