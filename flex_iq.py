@@ -123,7 +123,7 @@ class FlexIQReceiver:
     """
 
     def __init__(self, ip, freq_hz=7040000, sample_rate=192000,
-                 daxiq_channel=1, udp_port=7791, control_port=4992):
+                 daxiq_channel=1, udp_port=7791, control_port=4992, station=None):
         if sample_rate not in VALID_RATES:
             raise ValueError(f"sample_rate must be one of {VALID_RATES}")
         self.ip = ip
@@ -132,7 +132,7 @@ class FlexIQReceiver:
         self.sample_rate = sample_rate
         self.channel = daxiq_channel
         # one name per copy: the radio refuses a station name already in use (R|500000AA)
-        self.station = f"{STATION_NAME}-{daxiq_channel}"
+        self.station = station or f"{STATION_NAME}-{daxiq_channel}"
         self.udp_port = udp_port
         self.control_port = control_port
         self.frequencies = [freq_hz]  # match HPSDRReceiver interface

@@ -7074,7 +7074,8 @@ class SparkGap:
                                            sample_rate=rx_sample_rate,
                                            daxiq_channel=self.cfg.get('flex_daxiq_channel', 1),
                                            udp_port=flex_port,
-                                           control_port=sdr_port)
+                                           control_port=sdr_port,
+                                           station=self.cfg.get('flex_station'))
             log.info("Using FlexRadio DAX-IQ receiver at %s", device_ip)
         else:
             # HPSDR Protocol 1 path (Red Pitaya) — supports n_receivers for multi-band

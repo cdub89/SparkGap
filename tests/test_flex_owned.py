@@ -1,6 +1,6 @@
 """flex_iq.owned_objects: which radio slices and pans belong to SparkGap's own client handle."""
 
-from flex_iq import gui_stations, owned_objects, pan_slices
+from flex_iq import FlexIQReceiver, gui_stations, owned_objects, pan_slices
 
 STATUS = [
     # SparkGap's default objects (the radio's Slice A on the 40m phone default)
@@ -117,3 +117,8 @@ def test_read_status_empties_the_connection_and_sees_it_close() -> None:
     assert not rx._read_status()
     rx._close()
     assert rx._tcp is None
+
+
+def test_station_name_follows_the_channel_unless_set() -> None:
+    assert FlexIQReceiver("0.0.0.0", daxiq_channel=2).station == "SparkGap-2"
+    assert FlexIQReceiver("0.0.0.0", daxiq_channel=2, station="SparkGap-1").station == "SparkGap-1"
