@@ -14,6 +14,12 @@ def test_empty_config_reports_defaults() -> None:
     assert set(built_in) == {"spot_rule_cq_groups", "spot_rule_lockon", "spot_rule_cq_qualifiers"}
 
 
+def test_itila2_runs_the_repeat_rule_by_default() -> None:
+    eff, defaults, _ = _gui_settings({"cw_decoder": "itila2"}, 96_000)
+    assert eff["spot_rule"] == "repeat" and "spot_rule" in defaults
+    assert eff["spot_rule_lockon"] is True and eff["spot_rule_split_runs"] is False
+
+
 def test_repeat_rule_with_rbn_validation() -> None:
     cfg = {"spot_rule": "repeat", "spot_validation": "normal", "spot_validation_calls": "rbn",
            "sdr_type": "flex", "spot_rule_split_runs": True}
