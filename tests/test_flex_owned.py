@@ -122,3 +122,37 @@ def test_read_status_empties_the_connection_and_sees_it_close() -> None:
 def test_station_name_follows_the_channel_unless_set() -> None:
     assert FlexIQReceiver("0.0.0.0", daxiq_channel=2).station == "SparkGap-2"
     assert FlexIQReceiver("0.0.0.0", daxiq_channel=2, station="SparkGap-1").station == "SparkGap-1"
+
+
+def test_failed_start_removes_what_it_made() -> None:
+    rx = FlexIQReceiver("0.0.0.0", daxiq_channel=3)
+    sent: list[str] = []
+
+    def setup() -> None:
+        rx._pan_id, rx._slice_id = 0x40000001, 1
+        raise RuntimeError("[Flex] Failed to create DAX-IQ stream")
+
+    rx._setup = setup  # type: ignore[method-assign]
+    rx._cmd = lambda cmd, timeout=2.0, settle=0.0: sent.append(cmd) or ["R1|0|"]  # type: ignore[method-assign]
+    try:
+        rx.start()
+    except RuntimeError:
+        pass
+    assert sent == ["slice remove 1", "display pan remove 0x40000001"]
+
+
+def test_start_forgets_objects_from_a_dropped_connection() -> None:
+    rx = FlexIQReceiver("0.0.0.0", daxiq_channel=2)
+    rx._stream_id, rx._pan_id, rx._slice_id = 0x20000000, 0x40000000, 0
+    sent: list[str] = []
+
+    def setup() -> None:
+        raise OSError("radio unreachable")
+
+    rx._setup = setup  # type: ignore[method-assign]
+    rx._cmd = lambda cmd, timeout=2.0, settle=0.0: sent.append(cmd) or ["R1|0|"]  # type: ignore[method-assign]
+    try:
+        rx.start()
+    except OSError:
+        pass
+    assert sent == []

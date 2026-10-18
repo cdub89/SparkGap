@@ -226,6 +226,17 @@ class FlexIQReceiver:
 
     def start(self):
         """Connect to the radio, register as GUI, set up DAX-IQ stream."""
+        self._stream_id = self._pan_id = self._slice_id = None
+        try:
+            self._setup()
+        except Exception:
+            # a copy that joined another station leaves its pan to that station,
+            # which the radio keeps after we disconnect (2026-10-18)
+            self._remove_objects()
+            self._close()
+            raise
+
+    def _setup(self):
         log.info("[Flex] Connecting to %s:%d", self.ip, self.control_port)
         self._tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._tcp.settimeout(10)
@@ -432,6 +443,12 @@ class FlexIQReceiver:
     def stop(self):
         self._running = False
         time.sleep(0.25)               # receive() leaves its loop; it reads the same connection
+        self._remove_objects()
+        self._close()
+        log.info("[Flex] Stopped")
+
+    def _remove_objects(self):
+        """Remove our DAX-IQ stream, slice and pan from the radio."""
         try:
             if self._stream_id:
                 self._report(f"DAX-IQ stream 0x{self._stream_id:08x} removed",
@@ -443,9 +460,7 @@ class FlexIQReceiver:
                 self._report(f"pan 0x{self._pan_id:08x} removed",
                              self._cmd(f"display pan remove 0x{self._pan_id:08x}", timeout=1))
         except Exception:
-            log.exception("[Flex] Cleanup on stop failed")
-        self._close()
-        log.info("[Flex] Stopped")
+            log.exception("[Flex] Cleanup failed")
 
     # -- receive loop --------------------------------------------------------
 
