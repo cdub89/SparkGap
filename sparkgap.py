@@ -63,7 +63,7 @@ def _gui_settings(cfg, sample_rate):
     """Settings in effect for the GUI's config tab: values, keys left at their default, and
     behaviour built into the repeat rule. Defaults mirror where each key is read."""
     import rbn_known
-    rule = cfg.get('spot_rule') or None
+    rule = _spot_rule_name(cfg)
     validation = cfg.get('spot_validation') or None
     validation = None if validation == 'off' else validation
     calls = cfg.get('spot_validation_calls') if validation else None
@@ -75,7 +75,7 @@ def _gui_settings(cfg, sample_rate):
         'flex_daxiq_channel': cfg.get('flex_daxiq_channel', 1) if cfg.get('sdr_type') == 'flex' else None,
         'telnet_port': cfg.get('telnet_port', 7300),
         'enable_ft8': bool(cfg.get('enable_ft8', True)),
-        'spot_rule': rule or 'off',
+        'spot_rule': rule,
         'spot_rule_cq_groups': repeat,         # _make_spot_rule: always on with the repeat rule
         'spot_rule_lockon': repeat,
         'spot_rule_cq_qualifiers': repeat,
