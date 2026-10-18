@@ -195,21 +195,6 @@ ApplicationWindow {
                     onTriggered: utcClock.now = new Date().toISOString().substr(11, 8)
                 }
             }
-            // search: a call (or part of one) or a frequency; Enter takes the top match
-            TextField {
-                id: search
-                Layout.preferredWidth: 110; implicitHeight: 26
-                placeholderText: "Call or kHz"
-                placeholderTextColor: t.faint; color: t.fg
-                font.family: t.mono; font.features: t.zero; font.pixelSize: 12
-                leftPadding: 8; topPadding: 0; bottomPadding: 0; verticalAlignment: TextInput.AlignVCenter
-                background: Rectangle { radius: 8; color: t.sunken; border.color: search.activeFocus ? t.accent : t.line }
-                property var matches: []
-                onTextChanged: matches = inst ? inst.search(text) : []
-                onAccepted: if (matches.length) win.goTo(matches[0])
-                Keys.onEscapePressed: { text = ""; focus = false }
-            }
-            Item { Layout.fillWidth: true }
             // server and band picker: every band of every connected server ("Beelink 40m"), when there is a choice
             ComboBox {
                 id: bandSeg
@@ -252,6 +237,21 @@ ApplicationWindow {
                 }
                 popup.background: Rectangle { radius: 8; color: t.surface; border.color: t.line }
             }
+            // search: a call (or part of one) or a frequency; Enter takes the top match
+            TextField {
+                id: search
+                Layout.preferredWidth: 110; implicitHeight: 26
+                placeholderText: "Call or kHz"
+                placeholderTextColor: t.faint; color: t.fg
+                font.family: t.mono; font.features: t.zero; font.pixelSize: 12
+                leftPadding: 8; topPadding: 0; bottomPadding: 0; verticalAlignment: TextInput.AlignVCenter
+                background: Rectangle { radius: 8; color: t.sunken; border.color: search.activeFocus ? t.accent : t.line }
+                property var matches: []
+                onTextChanged: matches = inst ? inst.search(text) : []
+                onAccepted: if (matches.length) win.goTo(matches[0])
+                Keys.onEscapePressed: { text = ""; focus = false }
+            }
+            Item { Layout.fillWidth: true }
             // station line: set once per station, informative only
             Text {
                 readonly property var c: inst && inst.info.config ? inst.info.config : ({})
