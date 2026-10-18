@@ -283,7 +283,7 @@ def test_itila2_defaults_to_the_repeat_rule() -> None:
 
     assert sparkgap._spot_rule_name({"cw_decoder": "itila2"}) == "repeat"
     assert sparkgap._spot_rule_name({"cw_decoder": "itila"}) == "off"
-    assert sparkgap._spot_rule_name({}) == "off"
+    assert sparkgap._spot_rule_name({}) == "repeat"  # itila2 is the default decoder
     # an explicit setting wins either way, for comparing the two rules on one decoder
     assert sparkgap._spot_rule_name({"cw_decoder": "itila2", "spot_rule": "off"}) == "off"
     assert sparkgap._spot_rule_name({"cw_decoder": "itila", "spot_rule": "repeat"}) == "repeat"
