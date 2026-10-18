@@ -1225,6 +1225,9 @@ function renderDetail() {
 
 function renderStatus() {
   const i = inst(), s = i ? i.status : {}, up = s.uptime_s || 0;
+  const rec = i && !i.demo && s && s.recording;  // the server is writing IQ: REC beside the state
+  $("rec").hidden = !rec;
+  $("rec").title = rec ? `Recording IQ to ${rec.file}` : "";
   const items = [["Load", s.cpu !== undefined && s.cpu !== null ? s.cpu + "%" : "-"], ["Memory", s.rss_mb ? s.rss_mb + " MB" : "-"],
     ["Bins", s.bins !== undefined ? s.bins : "-"], ["Consoles", s.clients ? s.clients.length : "-"],
     ["Decoder", i && i.hello.decoder ? i.hello.decoder : "-"], ["Build", i && i.hello.build ? i.hello.build : "-"],
