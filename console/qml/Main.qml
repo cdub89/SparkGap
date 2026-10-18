@@ -753,7 +753,7 @@ ApplicationWindow {
         if ("station" in r) radio.push(row("Other stations", (r.others || []).join(", ") || "none", { key: true }))
         if ("position_s" in r) radio.push(row("Position", dur(r.position_s), { mono: true }))
         const rec = s.recording, nearLimit = !!rec && rec.bytes > near
-        const sg = [row("Host", h.host, { ref: true }), row("Build", h.build, { mono: true, ref: true }), row("Decoder", h.decoder, { ref: true }),
+        const sg = [row("Host", h.host + ", port " + i.url.split(":").pop().split("/")[0], { ref: true }), row("Build", h.build, { mono: true, ref: true }), row("Decoder", h.decoder, { ref: true }),
             row("Bands", (h.bands || []).map((b, n) => (i.bandNames[n] || b.name) + " (" + b.center_khz + " kHz)").join(", "), { key: true }),
             row("Started", utc(run.started), { mono: true, ref: true }),
             fileRow("Config", run.config, "-", { ref: true }), fileRow("Log", run.log, "terminal", { ref: true }),

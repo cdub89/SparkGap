@@ -1014,7 +1014,7 @@ function renderStatusPage() {
   if ("position_s" in r) radio.push(row("Position", duration(r.position_s), { mono: true }));
 
   const rec = s.recording, near = rec && rec.bytes > NEAR_WAV_LIMIT;
-  const sg = [row("Host", h.host, { ref: true }), row("Build", h.build, { mono: true, ref: true }), row("Decoder", h.decoder, { ref: true }),
+  const sg = [row("Host", `${h.host}, port ${urlParts(i.url)[1]}`, { ref: true }), row("Build", h.build, { mono: true, ref: true }), row("Decoder", h.decoder, { ref: true }),
     row("Bands", (h.bands || []).map(b => `${bandLabel(b)} (${b.center_khz} kHz)`).join(", "), { key: true }),
     row("Started", utcTime(run.started), { mono: true, ref: true }),
     fileRow("Config", run.config, "-", { ref: true }), fileRow("Log", run.log, "terminal", { ref: true }),
