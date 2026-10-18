@@ -370,12 +370,6 @@ FALSE_POSITIVES = {
 }
 CQ_PATTERNS = re.compile(r'\b(CQ|TEST|QRZ|QRL|CWT|SST|MST|FD|SS|NA|UP)\b', re.IGNORECASE)
 
-BANDS = {
-    '160m': 1891000, '80m': 3591000, '40m': 7100000, '30m': 10191000,
-    '20m': 14091000, '17m': 18159000, '15m': 21091000, '12m': 24981000,
-    '10m': 28040000,
-}
-
 # IARU Region 2 CW skimmer windows (kHz).  Each entry:
 #   (cw_lo, cw_hi_excluding_ft4, cw_hi_including_ft4_zone, ft8_freq_khz)
 #
@@ -400,6 +394,18 @@ CW_BAND_PLAN_R2 = [
     (24890,  24913,     24913,        24915),   # 12m   — no FT4
     (28000,  28070,     28070,        28074),   # 10m   — FT4=28180 above FT8 (unreachable)
 ]
+
+# Band names for the config's bands[]: each is centred so the band's lower CW edge above sits
+# BAND_EDGE_MARGIN of the sample rate inside the IQ span, past the receiver's roll-off: a
+# FLEX-6400 is flat from 8.3% in at 48 and 96 kHz, a Red Pitaya from ~3% at 192 kHz (#63)
+BANDS = dict(zip(('160m', '80m', '40m', '30m', '20m', '17m', '15m', '12m', '10m'),
+                 (row[0] for row in CW_BAND_PLAN_R2)))
+BAND_EDGE_MARGIN = 0.10
+
+
+def band_center_hz(name, sample_rate):
+    """Centre for a named band: its lower CW edge plus 0.4 of the IQ span."""
+    return BANDS[name] * 1000 + round(sample_rate * (0.5 - BAND_EDGE_MARGIN))
 
 def _derive_cw_window(center_khz, exclude_ft8=True, exclude_ft4=False):
     """Look up the CW window for the IARU R2 band containing center_khz.
@@ -6890,11 +6896,11 @@ class SparkGap:
     # Helpers
     # ------------------------------------------------------------------
     @staticmethod
-    def _resolve_band(band_entry):
+    def _resolve_band(band_entry, sample_rate):
         """Return (name, center_hz) from a bands[] config entry.
 
         Accepts:
-          '40m'             → ('40m', 7100000)
+          '40m'             → ('40m', 7048000) at 96 kHz: the span starts at the band's CW edge
           7090000           → ('7090', 7090000)
           {'center_khz': 7090, 'rx_index': 0}  → ('7090', 7090000)
           {'center_hz': 7090000}                → ('7090000', 7090000)
@@ -6909,7 +6915,7 @@ class SparkGap:
             name = band_entry.get('name', str(int(hz // 1000)))
             return name, hz
         if isinstance(band_entry, str) and band_entry in BANDS:
-            return band_entry, BANDS[band_entry]
+            return band_entry, band_center_hz(band_entry, sample_rate)
         return str(band_entry), int(band_entry)
 
     async def start(self):
@@ -6933,7 +6939,8 @@ class SparkGap:
         if record_wav:
             import wave as _wave, datetime as _dt
             ts = _dt.datetime.utcnow().strftime('%Y%m%d_%H%M%SZ')
-            band_khz = self._resolve_band(self.cfg.get('bands', [0])[0])[1] // 1000
+            band_khz = self._resolve_band(self.cfg.get('bands', [0])[0],
+                                          self.cfg.get('sample_rate', 48000))[1] // 1000
             rec_path = record_wav.format(ts=ts, band=band_khz)
             self._wav_base, self._wav_part, self._wav_bytes = rec_path, 1, 0
             self._wav_record = _wave.open(rec_path, 'wb')
@@ -6993,7 +7000,7 @@ class SparkGap:
         bands_cfg = self.cfg.get('bands', ['20m'])
         self._band_meta = []
         for idx, entry in enumerate(bands_cfg):
-            name, center_hz = self._resolve_band(entry)
+            name, center_hz = self._resolve_band(entry, self.cfg.get('sample_rate', 48000))
             # rx_index: explicit in dict, else sequential (0, 1, 2, …)
             rx_idx = entry.get('rx_index', idx) if isinstance(entry, dict) else idx
             self._band_meta.append((name, center_hz, rx_idx))
