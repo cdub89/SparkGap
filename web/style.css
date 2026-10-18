@@ -57,6 +57,10 @@ header { display: flex; align-items: center; gap: 16px; min-width: 0; }
 .state { flex-shrink: 0; }  /* the station details give way first, never Live */
 .station { flex-shrink: 1; min-width: 0; }
 .sdot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+.rec { display: flex; align-items: center; gap: 6px; flex-shrink: 0; color: var(--bad); font: 600 12px "IBM Plex Mono", ui-monospace, monospace; }
+.rec .rdot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); animation: blink 1s steps(2, jump-none) infinite; }
+@keyframes blink { 50% { opacity: 0.15; } }
+@media (prefers-reduced-motion: reduce) { .rec .rdot { animation: none; } }
 
 main { flex: 1; display: flex; gap: 12px; min-height: 0; }
 .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
@@ -90,6 +94,7 @@ main { flex: 1; display: flex; gap: 12px; min-height: 0; }
 .stat { flex: 1; height: 48px; border-radius: 8px; background: var(--sunken); padding: 8px 10px; }
 .stat .mono { font-size: 15px; font-weight: 500; }
 .dlabel { padding: 10px 16px 0; }
+.dcopy { display: flex; align-items: center; justify-content: space-between; }
 .note { padding: 6px 16px; color: var(--muted); font-size: 12px; }
 .wins { flex: 1; overflow-y: auto; scrollbar-width: thin; padding: 6px 16px 16px; display: flex; flex-direction: column; gap: 8px; font-size: 11px; }
 .win { display: flex; gap: 10px; }
@@ -134,6 +139,9 @@ footer .v { font-family: "IBM Plex Mono", ui-monospace, monospace; font-feature-
 .err { color: var(--bad); font-size: 12px; }
 .row { display: flex; gap: 8px; } .row.end { justify-content: flex-end; }
 .row.foot { justify-content: space-between; align-items: center; }
+.row.foot a { color: var(--muted); }
+/* Close stays in view while the settings scroll */
+.dialog > .row.foot { position: sticky; bottom: -18px; margin-bottom: -18px; padding: 10px 0 18px; background: var(--surface); }
 .seg { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--sunken); border: 1px solid var(--line); }
 .seg span { padding: 4px 12px; border-radius: 6px; color: var(--muted); cursor: pointer; }
 .seg span.on { background: var(--surface); color: var(--fg); }
@@ -180,6 +188,7 @@ footer .v { font-family: "IBM Plex Mono", ui-monospace, monospace; font-feature-
 .srow .v { text-align: right; min-width: 0; overflow-wrap: anywhere; }
 .srow .v.mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-feature-settings: "zero" 1; }
 .srow .v.bad { color: var(--bad); }
+.srow .v.act { cursor: pointer; }
 .srow .sub { display: block; color: var(--faint); font-size: 10px; font-family: "IBM Plex Mono", ui-monospace, monospace; }
 .prob { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; font-size: 12px; }
 .prob .t { color: var(--faint); font-size: 11px; white-space: nowrap; }

@@ -62,7 +62,11 @@ _config_path = None   # the config file SparkGap runs with, for the GUI status p
 def _gui_settings(cfg, sample_rate):
     """Settings in effect for the GUI's config tab: values, keys left at their default, and
     behaviour built into the repeat rule. Defaults mirror where each key is read."""
+    import rbn_known
     rule = _spot_rule_name(cfg)
+    validation = cfg.get('spot_validation') or None
+    validation = None if validation == 'off' else validation
+    calls = cfg.get('spot_validation_calls') if validation else None
     repeat = rule == 'repeat'
     eff = {
         'callsign': cfg.get('callsign', ''),
@@ -76,6 +80,10 @@ def _gui_settings(cfg, sample_rate):
         'spot_rule_lockon': repeat,
         'spot_rule_cq_qualifiers': repeat,
         'spot_rule_split_runs': repeat and bool(cfg.get('spot_rule_split_runs', False)),
+        'spot_validation': validation or 'off',
+        'spot_validation_calls': calls or ('none' if validation else 'off'),
+        'rbn_known_days': int(cfg.get('rbn_known_days', rbn_known.DAYS))
+                          if calls in ('rbn', 'rbn+skcc') else None,
     }
     built_in = ['spot_rule_cq_groups', 'spot_rule_lockon', 'spot_rule_cq_qualifiers']
     defaults = [k for k in eff if k not in cfg and k not in built_in and k != 'sample_rate']

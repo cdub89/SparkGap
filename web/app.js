@@ -6,6 +6,7 @@ const CODE_PROTOCOL = "sparkgap.code.";  // the join code, offered as a subproto
 const FEED_VERSION = 1;
 const MAX_BINS = 16_384;
 const DEFAULT_PORT = 7320;
+const HELP_URL = "https://github.com/hotairfred/SparkGap/blob/main/docs/CONSOLE.md";  // the guide, from Settings
 const SCAN_PORTS = Array.from({ length: 20 }, (_, k) => DEFAULT_PORT + k);  // tried when a server is added without a port
 const SCAN_TIMEOUT_S = 3;
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
@@ -800,6 +801,7 @@ const app = {
   note: "",  // what the last search for servers found
   decoded: "lowest",
   matches: [],
+  codeShown: false,  // Status shows this console's join code in clear
 };
 const wf = new Waterfall($("wf"));
 
@@ -852,17 +854,20 @@ function probeFeed(url, token) {
 }
 
 // what a scan found: the ports to add and a line for the operator
-function scanReport(found, listed) {
+// stale: listed ports saved with another code; one that answers to this code gets it
+function scanReport(found, listed, stale = []) {
   const ports = r => found.filter(f => f[1] === r).map(f => f[0]);
-  const add = ports("ok").filter(p => !listed.includes(p)), have = ports("ok").filter(p => listed.includes(p));
+  const add = ports("ok").filter(p => !listed.includes(p)), update = ports("ok").filter(p => stale.includes(p));
+  const have = ports("ok").filter(p => listed.includes(p) && !stale.includes(p));
   const parts = [];
   if (add.length) parts.push(`Added ${add.join(", ")}.`);
+  if (update.length) parts.push(`Join code updated on ${update.join(", ")}.`);
   if (have.length) parts.push(`Already in the list: ${have.join(", ")}.`);
   if (ports("code").length) parts.push(`Different join code on ${ports("code").join(", ")}.`);
   if (ports("lockout").length) parts.push(`Locked out for ${LOCKOUT_S / 60} min on ${ports("lockout").join(", ")}.`);
   if (ports("full").length) parts.push(`Too many clients on ${ports("full").join(", ")}.`);
   if (!parts.length) parts.push(`No SparkGap answered on ports ${SCAN_PORTS[0]} to ${SCAN_PORTS[SCAN_PORTS.length - 1]}.`);
-  return { add, text: parts.join(" ") };
+  return { add, update, text: parts.join(" ") };
 }
 
 function saveFeeds() { save("connections", app.instances.filter(i => !i.demo).map(i => ({ url: i.url, token: i.token }))); }
@@ -879,9 +884,14 @@ function changed(i, what) {
   if (what === "state") { renderConns(); if (i === inst()) renderState(); return; }
   if (i !== inst()) { if (what === "hello") { renderConns(); renderBands(); } return; }
   if (what === "hello") { wf.fit(); renderBands(); renderState(); renderStation(); renderSettings(); renderConns(); renderLadder(); }
-  else if (what === "status") { renderStatus(); if (!$("statusModal").hidden) renderStatusPage(); }
+  else if (what === "status") { renderStatus(); if (!$("statusModal").hidden && !selecting($("statusModal"))) renderStatusPage(); }
   else if (what === "ladder") renderLadder();
   else if (what === "detail") { renderDetail(); renderStatus(); }
+}
+
+// a server picked, added, edited or removed while demo shows: demo goes off first
+function leaveDemo() {
+  if (app.instances.some(i => i.demo)) setDemo(false);
 }
 
 function setCurrent(n) {
@@ -968,8 +978,28 @@ function duration(s) {
 }
 const gb = b => (b === null || b === undefined ? "-" : b >= 2 ** 30 ? (b / 2 ** 30).toFixed(2) + " GiB" : (b / 2 ** 20).toFixed(0) + " MiB");
 
+// text selected inside el: a redraw would drop it, so Status holds still until it is cleared
+function selecting(el) {
+  const sel = getSelection();
+  return !!sel && !sel.isCollapsed && el.contains(sel.anchorNode);
+}
+
+// clipboard: the API needs a secure page; plain http falls back to the browser's copy command
+function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text).then(() => true, () => false);
+  const ta = document.createElement("textarea");
+  ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+  document.body.append(ta); ta.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch { ok = false; }
+  ta.remove();
+  return Promise.resolve(ok);
+}
+
 function renderStatusPage() {
   const i = inst(), s = (i && i.status) || {}, h = (i && i.hello) || {}, run = h.run || {}, r = s.radio || {};
+  const clock = s.clock_synced === true ? "NTP synchronised" : s.clock_synced === false ? "not synchronised" : "unknown";
+  $("statusFoot").innerHTML = !i || i.demo ? "" : `Build <b>${esc(h.build || "-")}</b>.  Clock <b>${clock}</b>.`;
   if (!i || i.demo) {
     $("statusHead").innerHTML = "";
     $("statusBody").innerHTML = '<div class="small muted">Status is shown for a connected SparkGap, not demo mode.</div>';
@@ -978,8 +1008,8 @@ function renderStatusPage() {
   const num = v => (v === null || v === undefined ? "-" : Number(v).toLocaleString("en-US"));
   // one row: label left, value right; mono for numbers; sub is a muted second line (a file's folder)
   // o.key: a value that signals trouble (full weight); o.ref: reference detail (muted); o.bad: red
-  const row = (k, v, o = {}) => `<div class="srow"><span class="k">${esc(k)}</span><span class="v${o.mono ? " mono" : ""}${o.bad ? " bad" : ""}${o.key ? " key" : ""}${o.ref ? " ref" : ""}"`
-    + `${o.title ? ` title="${esc(o.title)}"` : ""}>${esc(dash(v))}${o.sub ? `<span class="sub">${esc(o.sub)}</span>` : ""}</span></div>`;
+  const row = (k, v, o = {}) => `<div class="srow"><span class="k">${esc(k)}</span><span class="v${o.mono ? " mono" : ""}${o.bad ? " bad" : ""}${o.key ? " key" : ""}${o.ref ? " ref" : ""}${o.act ? " act" : ""}"`
+    + `${o.title ? ` title="${esc(o.title)}"` : ""}${o.act ? ` data-act="${o.act}"` : ""}>${esc(dash(v))}${o.sub ? `<span class="sub">${esc(o.sub)}</span>` : ""}</span></div>`;
   const file = p => { const n = String(p).lastIndexOf("/"); return n < 0 ? [p, ""] : [p.slice(n + 1), p.slice(0, n)]; };
   const fileRow = (k, p, none, o = {}) => {
     if (!p) return row(k, none, o);
@@ -998,7 +1028,6 @@ function renderStatusPage() {
     tile("SPOTS", num(s.spots), s.spots_hour !== undefined ? `${s.spots_hour} last hour` : "", false, true),
     tile("CALLS", num(s.calls), "", false, true), tile("WINDOWS", num(s.windows), "", false, true),
     tile("BINS", num(s.bins), s.bins_peak !== undefined ? `peak ${s.bins_peak}` : ""),
-    tile("IQ TRIMMED", s.iq_trimmed_s !== undefined ? s.iq_trimmed_s + " s" : "-", s.iq_trimmed_s > 0 ? "decoder behind" : "", s.iq_trimmed_s > 0),
     tile("CPU", s.cpu !== undefined && s.cpu !== null ? s.cpu + "%" : "-", "of a core" + (s.rss_mb ? ` · ${s.rss_mb} MB` : ""))];
 
   const lossy = r.packets > 0 && r.lost / r.packets > LOST_WARN;
@@ -1012,13 +1041,14 @@ function renderStatusPage() {
   if ("position_s" in r) radio.push(row("Position", duration(r.position_s), { mono: true }));
 
   const rec = s.recording, near = rec && rec.bytes > NEAR_WAV_LIMIT;
-  const sg = [row("Host", h.host, { ref: true }), row("Build", h.build, { mono: true, ref: true }), row("Decoder", h.decoder, { ref: true }),
+  const sg = [row("Host", `${h.host}, port ${urlParts(i.url)[1]}`, { ref: true }),
+    i.token ? row("Join code", app.codeShown ? i.token : "•••-•••", { mono: true, ref: true, act: "code", title: app.codeShown ? "Click to hide" : "Click to show and copy" })
+      : row("Join code", "none (local only)", { ref: true }), row("Decoder", h.decoder, { ref: true }),
     row("Bands", (h.bands || []).map(b => `${bandLabel(b)} (${b.center_khz} kHz)`).join(", "), { key: true }),
-    row("Started", utcTime(run.started), { mono: true, ref: true }),
     fileRow("Config", run.config, "-", { ref: true }), fileRow("Log", run.log, "terminal", { ref: true }),
     rec ? fileRow("Recording", rec.file, "off", { bad: near, ref: !near }) : row("Recording", "off", { ref: true }),
     ...(rec ? [row("Recording size", gb(rec.bytes) + (near ? "  (near the 4 GiB limit)" : ""), { mono: true, key: true, bad: near })] : []),
-    row("Clock", s.clock_synced === true ? "NTP synchronised" : s.clock_synced === false ? "not synchronised" : "unknown", { key: true, bad: s.clock_synced === false })];
+    row("IQ trimmed", s.iq_trimmed_s !== undefined ? s.iq_trimmed_s + " s" + (s.iq_trimmed_s > 0 ? "  (decoder behind)" : "") : null, { mono: true, key: true, bad: s.iq_trimmed_s > 0 })];
 
   const out = s.telnet ? [row("Telnet port", s.telnet.port, { mono: true, ref: true }), row("Telnet clients", s.telnet.clients, { mono: true, key: true })]
     : [row("Telnet", "not reported")];
@@ -1027,7 +1057,7 @@ function renderStatusPage() {
   i.statTotal = i.total; i.statAt = now();
   const cons = [row("This console", `since ${utcTime(i.since)}${i.reconnects ? `, ${i.reconnects} reconnects` : ""}`, { mono: true, ref: true }),
     row("Rows a second", rate === null ? null : rate.toFixed(0), { mono: true, key: true }),
-    ...(s.clients || []).map(c => row(c.peer, `${num(c.dropped)} dropped`, { mono: true, sub: `since ${utcTime(c.since)}`, key: true, bad: c.dropped > 600 }))];
+    ...(s.clients || []).map(c => row(c.name || c.peer, `${num(c.dropped)} dropped`, { mono: true, sub: `${c.name ? `${c.peer}, ` : ""}since ${utcTime(c.since)}`, key: true, bad: c.dropped > 600 }))];
 
   const p = s.problems || {};
   const probs = [`<div class="srow"><span class="k">Since start</span><span class="v"><span class="mono${p.errors ? " bad" : ""}">${num(p.errors)}</span> errors, `
@@ -1044,7 +1074,7 @@ function renderStatusPage() {
   if (r.reconnects > 0) issues.push(["warn", `Radio reconnected ${r.reconnects}x, last ${utcTime(r.last_reconnect)}`]);
   if (lossy) issues.push(["warn", `${num(r.lost)} packets lost (${(100 * r.lost / r.packets).toFixed(2)}%)`]);
   if (near) issues.push(["warn", "Recording near the 4 GiB limit"]);
-  for (const c of s.clients || []) if (c.dropped > 600) issues.push(["warn", `Console ${c.peer} falling behind`]);
+  for (const c of s.clients || []) if (c.dropped > 600) issues.push(["warn", `Console ${c.name || c.peer} falling behind`]);
   if (p.warnings > 0) issues.push(["warn", `${num(p.warnings)} warnings since start`]);
   const worst = issues.some(x => x[0] === "bad") ? "bad" : issues.length ? "warn" : "ok";
   const banner = `<div class="health ${worst}">${issues.length ? issues.map(([lv, t]) => `<span class="${lv}">${esc(t)}</span>`).join("")
@@ -1103,9 +1133,7 @@ function setBand(n) {
 
 function renderStation() {
   const i = inst(), c = (i && !i.demo && i.hello.config) || {};  // demo: the status says DEMO MODE
-  $("station").textContent = [c.callsign, c.flex_daxiq_channel ? "DAX IQ " + c.flex_daxiq_channel : "",
-    c.sample_rate ? c.sample_rate / 1000 + " kHz" : "", c.telnet_port ? "telnet " + c.telnet_port : "",
-    c.enable_ft8 ? "FT8 on" : ""].filter(x => x).join("  ·  ");
+  $("station").textContent = [c.callsign, c.enable_ft8 ? "FT8 on" : ""].filter(x => x).join("  ·  ");
 }
 
 function yOf(khz, h) { return (wf.hi - khz) / Math.max(0.001, wf.hi - wf.lo) * h; }
@@ -1198,6 +1226,7 @@ function renderDetail() {
   $("dNote").hidden = !(d && d.note);
   $("dNote").textContent = d ? d.note : "";
   // both decodes of each window: wide filter on top, narrow dimmed
+  $("dCopy").hidden = !(d && d.windows.length);
   $("dWins").innerHTML = (d ? d.windows : []).map(r => {
     const rs = readings(r, app.decoded);
     return `<div class="win"><span class="t">${r.utc}</span><div class="x">`
@@ -1208,10 +1237,13 @@ function renderDetail() {
 }
 
 function renderStatus() {
-  const i = inst(), s = i ? i.status : {}, d = i && app.selectedKhz > 0 ? i.detail : null, up = s.uptime_s || 0;
+  const i = inst(), s = i ? i.status : {}, up = s.uptime_s || 0;
+  const rec = i && !i.demo && s && s.recording;  // the server is writing IQ: REC beside the state
+  $("rec").hidden = !rec;
+  $("rec").title = rec ? `Recording IQ to ${rec.file}` : "";
   const items = [["Load", s.cpu !== undefined && s.cpu !== null ? s.cpu + "%" : "-"], ["Memory", s.rss_mb ? s.rss_mb + " MB" : "-"],
-    ["Bins", s.bins !== undefined ? s.bins : "-"], ["Selected", d && d.wpm ? Math.round(d.wpm) + " WPM" : "-"],
-    ["Spots", s.spots !== undefined ? s.spots : "-"], ["Decoder", i && i.hello.decoder ? i.hello.decoder : "-"],
+    ["Bins", s.bins !== undefined ? s.bins : "-"], ["Consoles", s.clients ? s.clients.length : "-"],
+    ["Decoder", i && i.hello.decoder ? i.hello.decoder : "-"], ["Build", i && i.hello.build ? i.hello.build : "-"],
     ["Up", `${Math.floor(up / 3600)}h ${Math.floor(up % 3600 / 60)}m`]];
   $("statusbar").innerHTML = items.map(([k, v]) => `<span><span class="k">${k}</span><span class="v">${esc(String(v))}</span></span>`).join("");
 }
@@ -1233,8 +1265,6 @@ function renderSettings() {
   seg($("decSeg"), ["Both", "Wide", "Narrow", "Lowest cost"], DECODED.indexOf(app.decoded), n => {
     app.decoded = DECODED[n]; save("decoded", app.decoded); renderSettings(); renderDetail();
   });
-  $("connSection").hidden = demo;
-  $("demoHint").hidden = !demo;
   const c = (inst() && inst().hello.config) || {}, v = ["off", "permissive", "normal", "aggressive"];
   seg($("sRule"), ["off", "on"], c.spot_rule === "repeat" ? 1 : c.spot_rule ? 0 : -1);
   seg($("sValid"), v, v.indexOf(c.spot_validation || (c.spot_rule ? "off" : "")));
@@ -1264,7 +1294,7 @@ function renderConns() {
     const del = document.createElement("button"); del.className = "btn small"; del.textContent = "✕";
     del.onclick = e => { e.stopPropagation(); removeConn(n); };
     row.append(edit, del);
-    row.onclick = () => setCurrent(n);
+    row.onclick = () => { leaveDemo(); setCurrent(n); };
     box.appendChild(row);
   });
   if (!app.instances.some(i => !i.demo) && app.editing === -2) {
@@ -1279,6 +1309,7 @@ function renderConns() {
 }
 
 function editConn(n) {
+  leaveDemo();
   const i = app.instances[n];
   // a new server defaults to the SparkGap that served this page, if one did
   const served = /^https?:$/.test(location.protocol);
@@ -1291,7 +1322,9 @@ function editConn(n) {
   $("fAddr").focus();
 }
 
+// a server added or edited without a port: every SparkGap on the address that takes the code
 async function findConns() {
+  const n = app.editing;  // -1 adding, else the row being edited, which the search replaces
   const address = $("fAddr").value.trim(), code = normalizeCode($("fCode").value);
   const err = checkFeed(address, DEFAULT_PORT, code);
   if (err) { $("fErr").textContent = err; $("fErr").hidden = false; return; }
@@ -1300,19 +1333,27 @@ async function findConns() {
   $("fSave").textContent = "Searching...";
   const found = await Promise.all(SCAN_PORTS.map(p => probeFeed(feedUrl(address, p), code).then(r => [p, r])));
   $("fSave").disabled = false;
-  if (app.editing !== -1) return;  // cancelled meanwhile
-  const listed = app.instances.filter(i => urlParts(i.url)[0] === address).map(i => urlParts(i.url)[1]);
-  const r = scanReport(found, listed);
-  if (!r.add.length) { $("fErr").textContent = r.text; $("fErr").hidden = false; renderConns(); return; }
-  for (const p of r.add) addInstance(feedUrl(address, p), code);
+  if (app.editing !== n) return;  // cancelled meanwhile
+  const others = app.instances.filter((i, k) => k !== n && urlParts(i.url)[0] === address);
+  const listed = others.map(i => urlParts(i.url)[1]);
+  const r = scanReport(found, listed, others.filter(i => i.token !== code).map(i => urlParts(i.url)[1]));
+  if (!r.add.length && !r.update.length) { $("fErr").textContent = r.text; $("fErr").hidden = false; renderConns(); return; }
+  let at = app.instances.length;
+  if (n >= 0) { app.instances.splice(n, 1)[0].close(); at = n; }
+  for (const p of r.update) {
+    const k = app.instances.findIndex(i => i.url === feedUrl(address, p));
+    app.instances.splice(k, 1)[0].close();
+    addInstance(feedUrl(address, p), code, k);
+  }
+  r.add.forEach((p, k) => addInstance(feedUrl(address, p), code, Math.min(at + k, app.instances.length)));
   app.editing = -2;
   app.note = r.text;
   saveFeeds();
-  setCurrent(app.instances.length - r.add.length);
+  setCurrent(r.add.length ? Math.min(at, app.instances.length - 1) : app.instances.findIndex(i => i.url === feedUrl(address, r.update[0])));
 }
 
 function saveConn() {
-  if (app.editing === -1 && !$("fPort").value.trim()) { findConns(); return; }
+  if (!$("fPort").value.trim()) { findConns(); return; }
   const address = $("fAddr").value, port = parseInt($("fPort").value) || 0, code = $("fCode").value;
   let err = checkFeed(address, port, code);
   const url = feedUrl(address, port), n = app.editing;
@@ -1327,6 +1368,7 @@ function saveConn() {
 }
 
 function removeConn(n) {
+  leaveDemo();
   app.instances.splice(n, 1)[0].close();
   if (app.current >= app.instances.length || app.current > n) app.current = Math.max(0, app.current - 1);
   app.editing = -2;
@@ -1343,6 +1385,17 @@ function bindInput() {
   $("gear").onclick = () => ($("modal").hidden ? openSettings() : closeSettings());
   $("statusBtn").onclick = () => { renderStatusPage(); $("statusModal").hidden = !$("statusModal").hidden; };
   $("statusClose").onclick = () => { $("statusModal").hidden = true; };
+  $("dCopy").onclick = () => copyText($("dWins").innerText).then(ok => {
+    $("dCopy").textContent = ok ? "Copied" : "Copy failed";
+    setTimeout(() => { $("dCopy").textContent = "Copy"; }, 1500);
+  });
+  $("help").href = HELP_URL;
+  $("statusBody").onclick = e => {
+    if (!e.target.closest('[data-act="code"]')) return;
+    app.codeShown = !app.codeShown;
+    if (app.codeShown) copyText(inst().token);
+    renderStatusPage();
+  };
   $("statusModal").onmousedown = e => { if (e.target === $("statusModal")) $("statusModal").hidden = true; };
   $("close").onclick = closeSettings;
   $("modal").onmousedown = e => { if (e.target === $("modal")) closeSettings(); };
