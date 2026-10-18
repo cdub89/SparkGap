@@ -6,6 +6,7 @@ const CODE_PROTOCOL = "sparkgap.code.";  // the join code, offered as a subproto
 const FEED_VERSION = 1;
 const MAX_BINS = 16_384;
 const DEFAULT_PORT = 7320;
+const HELP_URL = "https://github.com/hotairfred/SparkGap/blob/main/docs/CONSOLE.md";  // the guide, from Settings
 const SCAN_PORTS = Array.from({ length: 20 }, (_, k) => DEFAULT_PORT + k);  // tried when a server is added without a port
 const SCAN_TIMEOUT_S = 3;
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
@@ -1368,6 +1369,7 @@ function bindInput() {
   $("gear").onclick = () => ($("modal").hidden ? openSettings() : closeSettings());
   $("statusBtn").onclick = () => { renderStatusPage(); $("statusModal").hidden = !$("statusModal").hidden; };
   $("statusClose").onclick = () => { $("statusModal").hidden = true; };
+  $("help").href = HELP_URL;
   $("statusBody").onclick = e => {
     if (!e.target.closest('[data-act="code"]')) return;
     app.codeShown = !app.codeShown;

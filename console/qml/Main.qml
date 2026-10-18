@@ -37,6 +37,7 @@ ApplicationWindow {
     color: t.bg
 
     property var inst: console_.current
+    readonly property string helpUrl: "https://github.com/hotairfred/SparkGap/blob/main/docs/CONSOLE.md"  // the guide, from Settings
     property bool codeShown: false  // Status shows this console's join code in clear
     TextEdit { id: codeClip; visible: false }  // clipboard for the join code
     property string themeOverride: "dark"  // dark by default; the toggle switches it
@@ -1145,6 +1146,11 @@ ApplicationWindow {
             }
             RowLayout {
                 Layout.fillWidth: true
+                Text {
+                    text: "Help"; color: t.muted; font.underline: true; font.pixelSize: 11
+                    HoverHandler { cursorShape: Qt.PointingHandCursor }
+                    TapHandler { onTapped: Qt.openUrlExternally(win.helpUrl) }
+                }
                 Text { text: build_; color: t.faint; font.family: t.mono; font.features: t.zero; font.pixelSize: 11 }
                 Item { Layout.fillWidth: true }
                 Rectangle {
