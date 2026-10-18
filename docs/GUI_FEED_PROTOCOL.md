@@ -81,8 +81,9 @@ Who this SparkGap is and the settings it runs with.
             "telnet_port": 7300, "enable_ft8": false,
             "spot_rule": "repeat", "spot_rule_cq_groups": true,
             "spot_rule_lockon": true, "spot_rule_cq_qualifiers": true,
-            "spot_rule_split_runs": true},
- "config_defaults": ["telnet_port"],
+            "spot_rule_split_runs": true, "spot_validation": "normal",
+            "spot_validation_calls": "rbn+skcc", "rbn_known_days": 7},
+ "config_defaults": ["rbn_known_days"],
  "config_built_in": ["spot_rule_cq_groups", "spot_rule_lockon",
                      "spot_rule_cq_qualifiers"],
  "bands": [{"name": "40m", "center_khz": 7048.0, "span_khz": 96.0}],
@@ -95,7 +96,8 @@ Who this SparkGap is and the settings it runs with.
 - `build`: the commit SparkGap runs from (`git describe`), `null` outside a git
   checkout.
 - `config`: settings in effect, including defaults SparkGap applied.
-  `flex_daxiq_channel` is `null` off a Flex.
+  `flex_daxiq_channel` is `null` off a Flex; `rbn_known_days` is `null` unless
+  the known calls come from RBN.
 - `config_defaults`: keys of `config` not set in the config file.
 - `config_built_in`: keys that follow from another setting (the repeat rule)
   rather than being set on their own.
@@ -159,8 +161,8 @@ Every 2 seconds.
  "telnet": {"port": 7300, "clients": 1}, "iq_trimmed_s": 0.0,
  "recording": {"file": "/srv/sparkgap/rec/40m.wav", "bytes": 2473963564},
  "windows": 72823, "calls": 97, "spots_hour": 41, "bins_peak": 52,
- "clients": [{"peer": "192.168.1.31:61718", "since": 1792018739,
-              "dropped": 12}],
+ "clients": [{"peer": "192.168.1.31:61718", "name": "shack",
+              "since": 1792018739, "dropped": 12}],
  "problems": {"warnings": 2, "errors": 8,
               "last": [{"utc": 1792019013, "level": "ERROR",
                         "msg": "hpsdr_create failed"}]}}
@@ -168,7 +170,7 @@ Every 2 seconds.
 
 Process and decoding:
 
-- `cpu`: percent of one core since the last status.
+- `cpu`: percent of one core, averaged over the last minute (all threads).
 - `rss_mb`: resident memory; `null` where the OS does not report it.
 - `clock_synced`: whether the system clock is NTP-synchronised; `null` where
   that cannot be read.
@@ -190,7 +192,8 @@ The station (absent in file mode except `radio`):
 
 The feed itself:
 
-- `clients`: each connected console: address, connected since (UTC seconds),
+- `clients`: each connected console: address, host name from reverse DNS
+  (`null` when it has none), connected since (UTC seconds),
   spectrum rows dropped because it fell behind.
 - `problems`: SparkGap's warnings and errors since start, with the last five
   (UTC seconds, level, message).

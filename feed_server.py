@@ -71,6 +71,7 @@ TLS_HANDSHAKE = b"\x16"  # first byte of every TLS connection
 PROBLEMS_KEPT = 5  # last warnings and errors shown on the status page
 PROBLEM_CHARS = 200
 CLOCK_CHECK_S = 60.0
+CPU_AVG_S = 60.0  # status CPU averaged this long: decoding is bursty, a 2 s sample swings
 SPECTRUM_QUEUE_MAX = 4  # spectrum rows queued per client; oldest dropped first
 DEFAULT_SPECTRUM_HZ = 20.0
 PING_INTERVAL_S = 20.0
@@ -82,6 +83,7 @@ CODE_MINT_ALPHABET = "ACDEFHJKMNPRTUVWXY3479"
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # accepted on entry
 CODE_LENGTH = 6
 LOCKOUT_TRIES = 5  # wrong codes from one address ...
+NAME_LOOKUP_S = 2.0  # reverse DNS for a console's name; it stays nameless past this
 LOCKOUT_S = 600.0  # ... within this long refuse that address until they age out
 
 OP_CONT, OP_TEXT, OP_BINARY, OP_CLOSE, OP_PING, OP_PONG = 0x0, 0x1, 0x2, 0x8, 0x9, 0xA
@@ -171,6 +173,7 @@ def is_loopback(host: str) -> bool:
 class Client:
     writer: asyncio.StreamWriter
     peer: str
+    name: str | None = None  # the console's host name, from reverse DNS
     text: collections.deque[bytes] = field(default_factory=collections.deque)
     spectrum: collections.deque[bytes] = field(
         default_factory=lambda: collections.deque(maxlen=SPECTRUM_QUEUE_MAX)
@@ -388,8 +391,8 @@ class FeedServer:
             calls=len(self.calls),
             spots_hour=len(self.spot_times),
             bins_peak=self.bins_peak,
-            clients=[{"peer": c.peer, "since": round(c.since), "dropped": c.dropped_rows}
-                     for c in self.clients],
+            clients=[{"peer": c.peer, "name": c.name, "since": round(c.since),
+                      "dropped": c.dropped_rows} for c in self.clients],
             problems=self.problems.summary(),
         )
         self.status = msg
@@ -618,6 +621,7 @@ class FeedServer:
         self.clients.add(c)
         self.n_clients = len(self.clients)
         log.info("GUI feed: %s connected (%d clients)", peer, self.n_clients)
+        namer = asyncio.ensure_future(self._name(c, host))
         sender = asyncio.ensure_future(self._send(c))
         try:
             await self._receive(c, reader)
@@ -630,7 +634,8 @@ class FeedServer:
             c.ready.set()
             self.clients.discard(c)
             self.n_clients = len(self.clients)
-            await asyncio.gather(sender, return_exceptions=True)
+            namer.cancel()
+            await asyncio.gather(sender, namer, return_exceptions=True)
             writer.close()
             log.info(
                 "GUI feed: %s left (%d clients, %d spectrum rows dropped)",
@@ -638,6 +643,14 @@ class FeedServer:
                 self.n_clients,
                 c.dropped_rows,
             )
+
+    async def _name(self, c: Client, host: str) -> None:
+        try:
+            lookup = asyncio.get_running_loop().run_in_executor(None, socket.gethostbyaddr, host)
+            name = await asyncio.wait_for(lookup, NAME_LOOKUP_S)
+        except (OSError, TimeoutError):
+            return
+        c.name = name[0].split(".")[0] or None
 
     async def _receive(self, c: Client, reader: asyncio.StreamReader) -> None:
         parts: list[bytes] = []
@@ -857,12 +870,13 @@ def clock_synced() -> bool | None:
 
 
 class ProcessStats:
-    """CPU % since the previous call, resident memory and clock sync of this process's machine.
+    """CPU % over the last CPU_AVG_S, resident memory and clock sync of this process's machine.
     The clock is read on a thread of its own: timedatectl may be slow, and sample() runs in
     SparkGap's main loop."""
 
     def __init__(self) -> None:
-        self.last = (time.monotonic(), sum(os.times()[:2]))
+        self.cpu_times: collections.deque[tuple[float, float]] = collections.deque(
+            [(time.monotonic(), sum(os.times()[:2]))])
         self.clock: bool | None = None
         self.clock_thread: threading.Thread | None = None
 
@@ -873,9 +887,12 @@ class ProcessStats:
 
     def sample(self) -> dict[str, Any]:
         now, cpu = time.monotonic(), sum(os.times()[:2])
-        dt = now - self.last[0]
-        pct = round(100 * (cpu - self.last[1]) / dt) if dt > 0 else None
-        self.last = (now, cpu)
+        self.cpu_times.append((now, cpu))
+        while len(self.cpu_times) > 2 and now - self.cpu_times[1][0] >= CPU_AVG_S:
+            self.cpu_times.popleft()
+        t0, cpu0 = self.cpu_times[0]
+        dt = now - t0
+        pct = round(100 * (cpu - cpu0) / dt) if dt > 0 else None
         rss_mb = None
         try:
             with open("/proc/self/statm") as fh:
