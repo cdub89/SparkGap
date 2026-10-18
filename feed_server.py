@@ -83,6 +83,7 @@ CODE_MINT_ALPHABET = "ACDEFHJKMNPRTUVWXY3479"
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # accepted on entry
 CODE_LENGTH = 6
 LOCKOUT_TRIES = 5  # wrong codes from one address ...
+NAME_LOOKUP_S = 2.0  # reverse DNS for a console's name; it stays nameless past this
 LOCKOUT_S = 600.0  # ... within this long refuse that address until they age out
 
 OP_CONT, OP_TEXT, OP_BINARY, OP_CLOSE, OP_PING, OP_PONG = 0x0, 0x1, 0x2, 0x8, 0x9, 0xA
@@ -172,6 +173,7 @@ def is_loopback(host: str) -> bool:
 class Client:
     writer: asyncio.StreamWriter
     peer: str
+    name: str | None = None  # the console's host name, from reverse DNS
     text: collections.deque[bytes] = field(default_factory=collections.deque)
     spectrum: collections.deque[bytes] = field(
         default_factory=lambda: collections.deque(maxlen=SPECTRUM_QUEUE_MAX)
@@ -389,8 +391,8 @@ class FeedServer:
             calls=len(self.calls),
             spots_hour=len(self.spot_times),
             bins_peak=self.bins_peak,
-            clients=[{"peer": c.peer, "since": round(c.since), "dropped": c.dropped_rows}
-                     for c in self.clients],
+            clients=[{"peer": c.peer, "name": c.name, "since": round(c.since),
+                      "dropped": c.dropped_rows} for c in self.clients],
             problems=self.problems.summary(),
         )
         self.status = msg
@@ -619,6 +621,7 @@ class FeedServer:
         self.clients.add(c)
         self.n_clients = len(self.clients)
         log.info("GUI feed: %s connected (%d clients)", peer, self.n_clients)
+        namer = asyncio.ensure_future(self._name(c, host))
         sender = asyncio.ensure_future(self._send(c))
         try:
             await self._receive(c, reader)
@@ -631,7 +634,8 @@ class FeedServer:
             c.ready.set()
             self.clients.discard(c)
             self.n_clients = len(self.clients)
-            await asyncio.gather(sender, return_exceptions=True)
+            namer.cancel()
+            await asyncio.gather(sender, namer, return_exceptions=True)
             writer.close()
             log.info(
                 "GUI feed: %s left (%d clients, %d spectrum rows dropped)",
@@ -639,6 +643,14 @@ class FeedServer:
                 self.n_clients,
                 c.dropped_rows,
             )
+
+    async def _name(self, c: Client, host: str) -> None:
+        try:
+            lookup = asyncio.get_running_loop().run_in_executor(None, socket.gethostbyaddr, host)
+            name = await asyncio.wait_for(lookup, NAME_LOOKUP_S)
+        except (OSError, TimeoutError):
+            return
+        c.name = name[0].split(".")[0] or None
 
     async def _receive(self, c: Client, reader: asyncio.StreamReader) -> None:
         parts: list[bytes] = []

@@ -210,6 +210,27 @@ def test_live_messages(feed: FeedServer) -> None:
     assert c.json("window")["cost"] == 0.5
 
 
+@pytest.mark.parametrize("found", [True, False])
+def test_console_name(feed: FeedServer, monkeypatch: pytest.MonkeyPatch, found: bool) -> None:
+    def lookup(host: str) -> tuple[str, list[str], list[str]]:
+        if not found:
+            raise socket.herror(1, "Unknown host")
+        return "shack.example.net", [], [host]
+
+    monkeypatch.setattr(feed_server.socket, "gethostbyaddr", lookup)
+    c = WS(feed.port)
+    c.json("snapshot")
+    wait_for(lambda: feed.n_clients == 1)
+    if found:
+        wait_for(lambda: next(iter(feed.clients)).name is not None)
+    else:
+        time.sleep(0.1)
+    feed.publish_status({"bins": 37})
+    (client,) = c.json("status")["clients"]
+    assert client["name"] == ("shack" if found else None)
+    assert client["peer"].startswith("127.0.0.1:")
+
+
 def test_ping_pong_and_close(feed: FeedServer) -> None:
     c = WS(feed.port)
     c.json("snapshot")

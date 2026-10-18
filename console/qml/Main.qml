@@ -767,7 +767,7 @@ ApplicationWindow {
                              : [row("Telnet", "not reported")]
         const cons = [row("This console", "since " + utc(i.since) + (i.reconnects ? ", " + i.reconnects + " reconnects" : ""), { mono: true, ref: true }),
                       row("Rows a second", statusPop.rate, { mono: true, key: true })]
-        for (const c of s.clients || []) cons.push(row(c.peer, num(c.dropped) + " dropped", { mono: true, sub: "since " + utc(c.since), key: true, bad: c.dropped > 600 }))
+        for (const c of s.clients || []) cons.push(row(c.name || c.peer, num(c.dropped) + " dropped", { mono: true, sub: (c.name ? c.peer + ", " : "") + "since " + utc(c.since), key: true, bad: c.dropped > 600 }))
         const p = s.problems || {}
         const probs = [row("Since start", num(p.errors) + " errors, " + num(p.warnings) + " warnings", { bad: p.errors > 0 })]
         for (const e of (p.last || []).slice().reverse()) probs.push(row(utc(e.utc), e.msg, { level: e.level }))
@@ -781,7 +781,7 @@ ApplicationWindow {
         if (r.reconnects > 0) issues.push({ lv: "warn", t: "Radio reconnected " + r.reconnects + "x, last " + utc(r.last_reconnect) })
         if (lossy) issues.push({ lv: "warn", t: num(r.lost) + " packets lost (" + (100 * r.lost / r.packets).toFixed(2) + "%)" })
         if (nearLimit) issues.push({ lv: "warn", t: "Recording near the 4 GiB limit" })
-        for (const c of s.clients || []) if (c.dropped > 600) issues.push({ lv: "warn", t: "Console " + c.peer + " falling behind" })
+        for (const c of s.clients || []) if (c.dropped > 600) issues.push({ lv: "warn", t: "Console " + (c.name || c.peer) + " falling behind" })
         if (p.warnings > 0) issues.push({ lv: "warn", t: num(p.warnings) + " warnings since start" })
         const worst = issues.some(x => x.lv === "bad") ? "bad" : issues.length ? "warn" : "ok"
         const tag = (text, lv) => ({ text: text, lv: lv })

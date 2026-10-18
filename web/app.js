@@ -1030,7 +1030,7 @@ function renderStatusPage() {
   i.statTotal = i.total; i.statAt = now();
   const cons = [row("This console", `since ${utcTime(i.since)}${i.reconnects ? `, ${i.reconnects} reconnects` : ""}`, { mono: true, ref: true }),
     row("Rows a second", rate === null ? null : rate.toFixed(0), { mono: true, key: true }),
-    ...(s.clients || []).map(c => row(c.peer, `${num(c.dropped)} dropped`, { mono: true, sub: `since ${utcTime(c.since)}`, key: true, bad: c.dropped > 600 }))];
+    ...(s.clients || []).map(c => row(c.name || c.peer, `${num(c.dropped)} dropped`, { mono: true, sub: `${c.name ? `${c.peer}, ` : ""}since ${utcTime(c.since)}`, key: true, bad: c.dropped > 600 }))];
 
   const p = s.problems || {};
   const probs = [`<div class="srow"><span class="k">Since start</span><span class="v"><span class="mono${p.errors ? " bad" : ""}">${num(p.errors)}</span> errors, `
@@ -1047,7 +1047,7 @@ function renderStatusPage() {
   if (r.reconnects > 0) issues.push(["warn", `Radio reconnected ${r.reconnects}x, last ${utcTime(r.last_reconnect)}`]);
   if (lossy) issues.push(["warn", `${num(r.lost)} packets lost (${(100 * r.lost / r.packets).toFixed(2)}%)`]);
   if (near) issues.push(["warn", "Recording near the 4 GiB limit"]);
-  for (const c of s.clients || []) if (c.dropped > 600) issues.push(["warn", `Console ${c.peer} falling behind`]);
+  for (const c of s.clients || []) if (c.dropped > 600) issues.push(["warn", `Console ${c.name || c.peer} falling behind`]);
   if (p.warnings > 0) issues.push(["warn", `${num(p.warnings)} warnings since start`]);
   const worst = issues.some(x => x[0] === "bad") ? "bad" : issues.length ? "warn" : "ok";
   const banner = `<div class="health ${worst}">${issues.length ? issues.map(([lv, t]) => `<span class="${lv}">${esc(t)}</span>`).join("")
