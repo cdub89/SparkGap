@@ -4,14 +4,16 @@ set -u
 R=${SPARKGAP_ROOT:-$HOME/sparkgap}
 START_WAIT_S=45   # longest a copy takes to reach the radio and go live
 STOP_WAIT_S=30
+CPU_SAMPLE_S=2    # status measures each copy's CPU over this long
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then BOLD=$'\e[1m' GREEN=$'\e[32m' CYAN=$'\e[36m' YELLOW=$'\e[33m' RED=$'\e[31m' OFF=$'\e[0m'; else BOLD= GREEN= CYAN= YELLOW= RED= OFF=; fi
 
 usage() {
   cat <<EOF
 sparkgap.sh: run the SparkGap instances on this machine.
 
-  sparkgap.sh status [name ...]    each instance: running or stopped (with the last error), uptime, band,
-                                   commit, GUI feed address and join code, telnet port, recording, spots,
-                                   errors, IQ trimmed, packets lost, top calls and its log
+  sparkgap.sh status [name ...]    each instance: running or stopped (with the last error), commit, uptime,
+                                   CPU, memory, band, GUI feed address and join code, telnet port, recording,
+                                   spots, errors, IQ trimmed, top calls and its log
   sparkgap.sh start [name ...]     start in the background and wait until it is live;
                                    the log goes to logs/<name>_<band>_<UTC>.log (UTC to the second, as recordings)
   sparkgap.sh stop [name ...]      stop cleanly (as Ctrl-C would) and wait up to ${STOP_WAIT_S} s
@@ -48,6 +50,15 @@ bands() {  # band names sparkgap.py accepts, read from its BANDS line
   grep -m1 "^BANDS = dict(zip(" "$(dir "$1")/sparkgap.py" | grep -o "'[0-9]*m'" | tr -d "'" | tr '\n' ' '
 }
 pid() { local p; p=$(cat "$R/logs/$1.pid" 2>/dev/null) && kill -0 "$p" 2>/dev/null && echo "$p"; }
+ticks() { local s; s=$(cat "/proc/$1/stat" 2>/dev/null) || return 1; s=${s##*) }; awk '{print $12 + $13}' <<< "$s"; }  # user + system CPU
+procinfo() {  # uptime as the console shows it, CPU % of one core over CPU_SAMPLE_S, resident memory
+  local s kb up t0 t1
+  read -r s kb < <(ps -o etimes=,rss= -p "$1" 2>/dev/null) || return 0
+  if [ "$s" -ge 3600 ]; then up="$((s / 3600))h $((s % 3600 / 60))m"; else up="$((s / 60))m $((s % 60))s"; fi
+  t0=$(ticks "$1") && sleep "$CPU_SAMPLE_S" && t1=$(ticks "$1") || { echo "up $up, $BOLD$CYAN$((kb / 1024)) MB$OFF"; return 0; }
+  echo "up $up, $BOLD${CYAN}cpu $((100 * (t1 - t0) / CPU_SAMPLE_S / $(getconf CLK_TCK)))%$OFF, $BOLD$CYAN$((kb / 1024)) MB$OFF"
+}
+bandlabel() { local b; b=$(band "$1"); echo "${BOLD}Band: ${b^^}$OFF"; }
 newest_log() { ls -t "$R"/logs/"$1"_*.log 2>/dev/null | head -1; }
 # a log's ERROR lines and the exception that ends a traceback
 errors_in() { grep -E '^[0-9:]+ ERROR |^[A-Za-z_.]*(Error|Exception): ' "$1"; }
@@ -80,12 +91,12 @@ status() {
   local i=$1 p log spots last
   log=$(newest_log "$i")
   if p=$(pid "$i"); then
-    echo "$i: running, pid $p, up $(ps -o etime= -p "$p" 2>/dev/null | tr -d ' '), $(band "$i"), $(git -C "$(dir "$i")" describe --always --dirty)"
+    echo "$BOLD$i$OFF: ${GREEN}running$OFF, $(git -C "$(dir "$i")" describe --always --dirty), pid $p, $(procinfo "$p"), $(bandlabel "$i")"
   else
-    echo "$i: stopped, $(band "$i"), $(git -C "$(dir "$i")" describe --always --dirty)"
-    [ -n "$log" ] && last=$(errors_in "$log" | tail -1) && [ -n "$last" ] && echo "   last error: $last"
+    echo "$BOLD$i$OFF: ${RED}stopped$OFF, $(git -C "$(dir "$i")" describe --always --dirty), $(bandlabel "$i")"
+    [ -n "$log" ] && last=$(errors_in "$log" | tail -1) && [ -n "$last" ] && echo "   ${RED}last error: $last$OFF"
   fi
-  python3 - "$(cfg "$i")" <<'PY'
+  python3 - "$(cfg "$i")" "$BOLD$YELLOW" "$OFF" <<'PY'
 import json, socket, sys
 c = json.load(open(sys.argv[1]))
 g = c.get("gui_feed")
@@ -93,19 +104,21 @@ if g:
     host = g.get("bind", "127.0.0.1")
     host = socket.gethostname() if host in ("0.0.0.0", "::") else host
     web = f", browser http://{host}:{g.get('port', 7320)}/" if g.get("web") else ""
-    print(f"   feed {host}:{g.get('port', 7320)}, join code {g.get('join_code') or 'none (local only)'}{web}")
+    print(f"   feed {host}:{g.get('port', 7320)}, join code {(sys.argv[2] + g['join_code'] + sys.argv[3]) if g.get('join_code') else 'none (local only)'}{web}")
 else:
     print("   feed off")
 print(f"   telnet {c.get('telnet_port', 7300)}, recording {'on' if c.get('record_wav') else 'off'}")
 PY
   [ -n "$log" ] || return 0
   spots=$(grep -c 'SPOT:' "$log")
-  local line trim
-  line="   spots $spots, errors $(errors_in "$log" | wc -l)"
+  local line trim errs
+  errs=$(errors_in "$log" | wc -l)
+  [ "$errs" -gt 0 ] && errs="$RED$errs$OFF"
+  line="   spots $spots, errors $errs"
   trim=$(grep -h 'IQ trimmed' "$log" | tail -1 | sed 's/.*INFO //')
+  [[ -n $trim && ! $trim =~ :\ 0(\.0)?s ]] && trim="$RED$trim$OFF"
   [ -n "$trim" ] && line="$line, $trim"
   echo "$line"
-  grep -h "\[Flex\].*packets" "$log" | tail -1 | sed 's/.*\[Flex\] /   radio: /'
   [ "$spots" -gt 0 ] && grep -h 'SPOT:' "$log" | awk '{print $6}' | sort | uniq -c | sort -rn | head -10 |
     awk 'BEGIN {printf "   top calls:"} {printf " %s(%s)", $2, $1} END {print ""}'
   echo "   log $log"
@@ -178,7 +191,8 @@ case $cmd in
 esac
 for a in "$@"; do [[ $a == -h || $a == --help ]] && { cmd_usage "$cmd"; exit 0; }; done
 case $cmd in
-  start|stop|status) [ $# -gt 0 ] || set -- $ALL; for i in "$@"; do dir "$i" > /dev/null; $cmd "$i"; done ;;
+  start|stop) [ $# -gt 0 ] || set -- $ALL; for i in "$@"; do dir "$i" > /dev/null; $cmd "$i"; done ;;
+  status) [ $# -gt 0 ] || set -- $ALL; sep=; for i in "$@"; do dir "$i" > /dev/null; [ -n "$sep" ] && echo; sep=1; status "$i"; done ;;
   restart) [ $# -gt 0 ] || set -- $ALL; for i in "$@"; do dir "$i" > /dev/null; stop "$i" && start "$i"; done ;;
   band)
     [ $# -eq 2 ] || { cmd_usage band; exit 2; }
