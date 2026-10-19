@@ -46,20 +46,55 @@ def test_failed_first_start_logs_an_error_and_raises(monkeypatch: Monkey, caplog
     assert (logging.ERROR, FAILED.format(1)) in _lines(caplog)
 
 
-def test_reconnect_logs_attempts_failure_and_success(monkeypatch: Monkey, caplog: Caplog) -> None:
-    rx = _receiver(monkeypatch, 1)
+def _no_kill(monkeypatch: Monkey) -> list[int]:
+    kills: list[int] = []
+    monkeypatch.setattr(flex_iq.os, "kill", lambda _pid, sig: kills.append(sig))
+    return kills
+
+
+def test_one_loss_gets_one_reconnect(monkeypatch: Monkey, caplog: Caplog) -> None:
+    rx, kills = _receiver(monkeypatch, 0), _no_kill(monkeypatch)
     rx._running = True
     with caplog.at_level(logging.INFO, logger="sparkgap.flex"):
         rx._restart("No DAX-IQ packets for 10 s")
     lines = _lines(caplog)
-    reason = "reconnect: No DAX-IQ packets for 10 s"
     assert lines[0] == (logging.ERROR, "[Flex] No DAX-IQ packets for 10 s: connecting again")
-    assert (logging.INFO, ATTEMPT.format(1, reason)) in lines
+    assert (logging.INFO, ATTEMPT.format(1, "reconnect: No DAX-IQ packets for 10 s")) in lines
+    assert lines[-1][1].startswith("[Flex] Reconnected on attempt 1, ")
+    assert kills == [] and rx._running and rx.reconnects == 1
+
+
+def test_failed_reconnect_stops_sparkgap(monkeypatch: Monkey, caplog: Caplog) -> None:
+    rx, kills = _receiver(monkeypatch, 1), _no_kill(monkeypatch)
+    rx._running = True
+    with caplog.at_level(logging.INFO, logger="sparkgap.flex"):
+        rx._restart("No DAX-IQ packets for 10 s")
+    lines = _lines(caplog)
     assert (logging.ERROR, FAILED.format(1)) in lines
-    assert (logging.INFO, ATTEMPT.format(2, reason)) in lines
-    assert lines[-1][0] == logging.INFO
-    assert lines[-1][1].startswith("[Flex] Reconnected on attempt 2, ")
-    assert rx.attempts == 2 and rx.reconnects == 1
+    assert lines[-1][0] == logging.ERROR
+    assert lines[-1][1].startswith("[Flex] reconnect attempt 1 failed: stopping SparkGap")
+    assert kills == [flex_iq.signal.SIGINT] and not rx._running and rx.state == "halted"
+
+
+def test_second_loss_within_the_window_stops_sparkgap(monkeypatch: Monkey,
+                                                      caplog: Caplog) -> None:
+    rx, kills = _receiver(monkeypatch, 0), _no_kill(monkeypatch)
+    rx._running = True
+    rx._last_loss = flex_iq.time.time() - 31
+    with caplog.at_level(logging.INFO, logger="sparkgap.flex"):
+        rx._restart("No DAX-IQ packets for 10 s")
+    lines = _lines(caplog)
+    assert len(lines) == 1 and lines[0][0] == logging.ERROR
+    assert "31 s after the previous lost connection: stopping SparkGap" in lines[0][1]
+    assert kills == [flex_iq.signal.SIGINT] and rx.attempts == 0
+
+
+def test_loss_after_the_window_reconnects(monkeypatch: Monkey) -> None:
+    rx, kills = _receiver(monkeypatch, 0), _no_kill(monkeypatch)
+    rx._running = True
+    rx._last_loss = flex_iq.time.time() - flex_iq.HALT_WINDOW_S - 1
+    rx._restart("No DAX-IQ packets for 10 s")
+    assert kills == [] and rx.attempts == 1
 
 
 class _ResetSocket:

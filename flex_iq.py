@@ -18,8 +18,10 @@ Protocol refs:
 """
 
 import logging
+import os
 import re
 import select
+import signal
 import socket
 import struct
 import threading
@@ -42,7 +44,8 @@ DAXIQ_FULL_SCALE = 32768.0
 
 STATION_NAME = 'SparkGap'   # shown in SmartSDR's station list (Multi-Flex), with the DAX-IQ channel
 STALL_S = 10                # no DAX-IQ packet for this long: set the radio up again
-RETRY_S = 30                # between attempts when that fails
+RETRY_S = 30                # after a reconnect: time for the new stream to start
+HALT_WINDOW_S = 600         # a second loss within this long stops SparkGap: no reconnect loops on the radio
 
 
 def owned_objects(lines, handle):
@@ -174,6 +177,7 @@ class FlexIQReceiver:
         self.reconnects = 0
         self.last_reconnect = None
         self.attempts = 0         # connection attempts, first start and reconnects
+        self._last_loss = None    # time.time() of the last lost connection
         self.others = []          # other stations on the radio at the last connect
 
     # -- TCP control channel -------------------------------------------------
@@ -456,25 +460,37 @@ class FlexIQReceiver:
         return True
 
     def _restart(self, why):
-        """Drop the connection and set the radio up again, until it works or stop() is called."""
+        """Drop the connection and set the radio up once more; a second loss within
+        HALT_WINDOW_S, or a failed reconnect, stops SparkGap instead."""
+        now = time.time()
+        if self._last_loss and now - self._last_loss < HALT_WINDOW_S:
+            self._halt("%s, %.0f s after the previous lost connection" % (why, now - self._last_loss))
+            return
+        self._last_loss = now
         log.error("[Flex] %s: connecting again", why)
         self.state = "reconnecting"
         self.reconnects += 1
-        self.last_reconnect = round(time.time())
-        began = time.time()
-        while self._running:
-            self._close("reconnecting")
-            self._buf = b''
-            try:
-                self.start(why)
-                log.info("[Flex] Reconnected on attempt %d, %.0f s after reconnecting began",
-                         self.attempts, time.time() - began)
-                return
-            except Exception:
-                log.info("[Flex] Next connection attempt in %d s", RETRY_S)
-            end = time.time() + RETRY_S
-            while self._running and time.time() < end:
-                time.sleep(0.2)
+        self.last_reconnect = round(now)
+        self._close("reconnecting")
+        self._buf = b''
+        try:
+            self.start(why)
+        except Exception:
+            self._halt("reconnect attempt %d failed" % self.attempts)
+            return
+        log.info("[Flex] Reconnected on attempt %d, %.0f s after reconnecting began",
+                 self.attempts, time.time() - now)
+
+    def _halt(self, why):
+        """Leave the radio alone: remove our objects if still connected, disconnect, and stop SparkGap."""
+        log.error("[Flex] %s: stopping SparkGap and leaving the radio alone until it is started again", why)
+        self.state = "halted"
+        self._running = False
+        if self._tcp:
+            self._remove_objects()
+        self._stream_id = self._pan_id = self._slice_id = None
+        self._close("halted")
+        os.kill(os.getpid(), signal.SIGINT)    # SparkGap's normal shutdown
 
     def health(self):
         """Radio state for the GUI status page."""
