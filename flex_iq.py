@@ -152,6 +152,8 @@ class FlexIQReceiver:
         self.channel = daxiq_channel
         # one name per copy: the radio refuses a station name already in use (R|500000AA)
         self.station = station or f"{STATION_NAME}-{daxiq_channel}"
+        # one GUI client ID per radio and station, the same on every start, as FlexLib keeps its own
+        self.client_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"sparkgap://{ip}/{self.station}")).upper()
         self.udp_port = udp_port
         self.control_port = control_port
         self.frequencies = [freq_hz]  # match HPSDRReceiver interface
@@ -301,7 +303,7 @@ class FlexIQReceiver:
         else:
             self._report("program name " + STATION_NAME, resp)
         self._bound = False
-        if self._report("GUI client", self._cmd(f"client gui {str(uuid.uuid4()).upper()}", timeout=5.0)):
+        if self._report("GUI client", self._cmd(f"client gui {self.client_id}", timeout=5.0)):
             self._report("station name " + self.station, self._cmd(f"client station {self.station}"))
         else:
             listed = self._cmd("sub client all", settle=0.5)
@@ -423,6 +425,10 @@ class FlexIQReceiver:
 
     def _close(self, reason):
         if self._tcp:
+            try:
+                self._tcp.sendall(b'\x04')    # FlexLib tells the radio it is leaving before it closes
+            except OSError:
+                pass
             log.info("[Flex] Disconnected from %s (client 0x%s, %s)", self.ip, self._handle, reason)
         for name in ('_tcp', '_udp'):
             sock = getattr(self, name)

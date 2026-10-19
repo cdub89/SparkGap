@@ -101,6 +101,9 @@ class _ResetSocket:
     def recv(self, *_: object) -> bytes:
         raise ConnectionResetError(104, "Connection reset by peer")
 
+    def sendall(self, *_: object) -> None:
+        pass
+
     def close(self) -> None:
         pass
 
@@ -152,3 +155,22 @@ def test_sent_commands_are_logged_at_info(caplog: Caplog) -> None:
                               (logging.INFO, "[Flex] <<< R1|0| (sub slice all)")]
     radio.close()
     rx._tcp.close()
+
+
+def test_client_id_is_the_same_on_every_start() -> None:
+    a = FlexIQReceiver("192.0.2.1", sample_rate=96_000, daxiq_channel=2)
+    b = FlexIQReceiver("192.0.2.1", sample_rate=96_000, daxiq_channel=2)
+    other = FlexIQReceiver("192.0.2.1", sample_rate=96_000, daxiq_channel=3)
+    assert a.client_id == b.client_id != other.client_id
+    assert a.client_id == a.client_id.upper() and len(a.client_id) == 36
+
+
+def test_close_says_goodbye_first() -> None:
+    import socket
+
+    rx = FlexIQReceiver("192.0.2.1", sample_rate=96_000)
+    rx._tcp, radio = socket.socketpair()
+    rx._close("stopping")
+    radio.settimeout(1.0)
+    assert radio.recv(16) == b"\x04"
+    radio.close()
