@@ -23,7 +23,9 @@ sparkgap.sh: run the SparkGap instances on this machine.
   sparkgap.sh add <name> <band>    a new instance: name = letters and the DAX-IQ channel (lakehouse4);
                                    a worktree of the first instance's clone in <name>/, its config copied
                                    to config/<name>.local.json with that channel, the band and the next
-                                   free ports (an existing config/<name>.local.json is reused); not started
+                                   free telnet and UDP ports; the GUI feed takes the first free port from
+                                   7320 when it starts (an existing config/<name>.local.json is reused);
+                                   not started
   sparkgap.sh remove <name>        take a stopped instance out: its worktree goes, its config stays in config/
   sparkgap.sh update               pull each code folder in instances, rebuild the native libraries
                                    where C code changed, restart what was running from it, and
@@ -101,15 +103,19 @@ status() {
     echo "$BOLD$i$OFF: ${RED}stopped$OFF, $(git -C "$(dir "$i")" describe --always --dirty), $(bandlabel "$i")"
     [ -n "$log" ] && last=$(errors_in "$log" | tail -1) && [ -n "$last" ] && echo "   ${RED}last error: $last$OFF"
   fi
-  python3 - "$(cfg "$i")" "$BOLD$YELLOW" "$OFF" <<'PY'
-import json, socket, sys
+  python3 - "$(cfg "$i")" "$BOLD$YELLOW" "$OFF" "$([ -n "$p" ] && echo "$log")" <<'PY'
+import json, re, socket, sys
 c = json.load(open(sys.argv[1]))
 g = c.get("gui_feed")
 if g:
     host = g.get("bind", "127.0.0.1")
     host = socket.gethostname() if host in ("0.0.0.0", "::") else host
-    web = f", browser http://{host}:{g.get('port', 7320)}/" if g.get("web") else ""
-    print(f"   feed {host}:{g.get('port', 7320)}, join code {(sys.argv[2] + g['join_code'] + sys.argv[3]) if g.get('join_code') else 'none (local only)'}{web}")
+    port = g.get("port", 7320)
+    if port == "auto":  # the port it got is in its log; stopped, it gets one at the next start
+        got = re.findall(r"GUI feed on wss?://\S+?:(\d+)/", open(sys.argv[4]).read()) if sys.argv[4] else []
+        port = got[-1] if got else "auto"
+    web = f", browser http://{host}:{port}/" if g.get("web") and port != "auto" else ""
+    print(f"   feed {host}:{port}, join code {(sys.argv[2] + g['join_code'] + sys.argv[3]) if g.get('join_code') else 'none (local only)'}{web}")
 else:
     print("   feed off")
 print(f"   telnet {c.get('telnet_port', 7300)}, recording {'on' if c.get('record_wav') else 'off'}")
@@ -183,7 +189,8 @@ for f, c in cs.items():
         sys.exit(f"DAX-IQ {num} is already used by {os.path.basename(f)}")
 keys = ("flex_udp_port", "telnet_port")
 def ports(c):
-    return [c[k] for k in keys if k in c] + ([c["gui_feed"]["port"]] if "port" in c.get("gui_feed", {}) else [])
+    feed = c.get("gui_feed", {}).get("port")
+    return [c[k] for k in keys if k in c] + ([feed] if isinstance(feed, int) else [])
 if os.path.exists(conf):
     text = open(conf).read()
     c = json.loads(text)
@@ -196,12 +203,11 @@ if os.path.exists(conf):
 else:
     text = open(others[0]).read()
     c = json.loads(text)
-    for k in keys + ("gui_feed",):
-        if k == "gui_feed":
-            if "port" in c.get("gui_feed", {}):
-                c["gui_feed"]["port"] = max(o.get("gui_feed", {}).get("port", 0) for o in cs.values()) + 1
-        elif k in c:
+    for k in keys:
+        if k in c:
             c[k] = max(o.get(k, 0) for o in cs.values()) + 1
+    if "gui_feed" in c:
+        c["gui_feed"]["port"] = "auto"  # the first free one from 7320 when it starts
     c["flex_daxiq_channel"] = num
     c.pop("flex_station", None)  # the station comes from the radio's nickname
     c["rbn_known_dir"] = f"{root}/rbn_known"  # one RBN cache for every instance on this machine

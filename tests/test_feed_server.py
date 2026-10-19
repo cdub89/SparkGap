@@ -525,6 +525,9 @@ def test_origin_checked_without_join_code(feed: FeedServer) -> None:
     assert WS(port, extra=[f"Origin: http://127.0.0.1:{port + 1}"]).status == 403
     assert WS(port, extra=[f"Origin: http://127.0.0.1:{port}"]).status == 101
     assert WS(port, extra=[f"Origin: http://localhost:{port}"]).status == 101
+    # another copy's page on this machine lists this copy too; just outside the range it may not
+    assert WS(port, extra=["Origin: http://127.0.0.1:7321"]).status == 101
+    assert WS(port, extra=["Origin: http://127.0.0.1:7340"]).status == 403
 
 
 def test_dns_rebinding_refused(feed: FeedServer) -> None:
@@ -608,3 +611,33 @@ def test_status_cpu_is_a_minute_average(monkeypatch: pytest.MonkeyPatch) -> None
     clock["t"] += 2.0
     clock["cpu"] += 2.0
     assert stats.sample()["cpu"] < 15  # one more busy 2 s moves it a little, not to 100
+
+
+def _free_pair() -> int:
+    """A port p with p and p + 1 both free on loopback."""
+    for _ in range(50):
+        with socket.socket() as a:
+            a.bind(("127.0.0.1", 0))
+            p = a.getsockname()[1]
+        try:
+            with socket.socket() as a, socket.socket() as b:
+                a.bind(("127.0.0.1", p))
+                b.bind(("127.0.0.1", p + 1))
+                return p
+        except OSError:
+            continue
+    raise RuntimeError("no two free ports in a row")
+
+
+def test_auto_port_takes_the_first_free_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    p = _free_pair()
+    monkeypatch.setattr(feed_server, "AUTO_PORTS", range(p, p + 2))
+    with socket.socket() as busy:
+        busy.bind(("127.0.0.1", p))
+        busy.listen()
+        f = FeedServer({"bind": "127.0.0.1", "port": "auto"}, HELLO)
+        f.start()
+        try:
+            assert f.server is not None and f.port == p + 1
+        finally:
+            f.stop()

@@ -10,6 +10,8 @@ Config block (off unless present):
 A join code is required whenever bind is not a loopback address: 6 characters, case, spaces and
 dashes ignored. A fresh one: python3 feed_server.py --new-code
 "web": true also serves the browser console (web/) at http://<bind>:<port>/.
+"port": "auto" takes the first free port of AUTO_PORTS, so the first copy started on a machine
+answers on 7320; the consoles search that range by address and join code.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import collections
+import errno
 import hashlib
 import hmac
 import ipaddress
@@ -83,6 +86,7 @@ CODE_MINT_ALPHABET = "ACDEFHJKMNPRTUVWXY3479"
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # accepted on entry
 CODE_LENGTH = 6
 LOCKOUT_TRIES = 5  # wrong codes from one address ...
+AUTO_PORTS = range(7320, 7340)  # "port": "auto"; the range the consoles search
 NAME_LOOKUP_S = 2.0  # reverse DNS for a console's name; it stays nameless past this
 LOCKOUT_S = 600.0  # ... within this long refuse that address until they age out
 
@@ -205,9 +209,11 @@ class FeedServer:
             raise ValueError("gui_feed must be an object, e.g. {\"bind\": \"127.0.0.1\"}")
         self.bind = str(cfg.get("bind", "127.0.0.1"))
         port = cfg.get("port", 7320)
-        if isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65_535:
-            raise ValueError(f"gui_feed: port must be a whole number 0 to 65535, got {port!r}")
-        self.port = port
+        if port != "auto" and (isinstance(port, bool) or not isinstance(port, int)
+                               or not 0 <= port <= 65_535):
+            raise ValueError(f"gui_feed: port must be \"auto\" or a whole number 0 to 65535, got {port!r}")
+        self.ports = list(AUTO_PORTS) if port == "auto" else [port]
+        self.port = self.ports[0]
         code = cfg.get("join_code")
         if code is not None and not valid_code(str(code)):
             raise ValueError(
@@ -258,9 +264,15 @@ class FeedServer:
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
         try:
-            self.server = self.loop.run_until_complete(
-                asyncio.start_server(self._handle, self.bind, self.port, ssl=self.tls)
-            )
+            for k, self.port in enumerate(self.ports):
+                try:
+                    self.server = self.loop.run_until_complete(
+                        asyncio.start_server(self._handle, self.bind, self.port, ssl=self.tls)
+                    )
+                    break
+                except OSError as e:
+                    if e.errno != errno.EADDRINUSE or k == len(self.ports) - 1:
+                        raise
             self.port = self.server.sockets[0].getsockname()[1]
             log.info(
                 "GUI feed on %s://%s:%d%s%s",
@@ -504,7 +516,8 @@ class FeedServer:
         ]
         # without a join code only this machine can connect; a browser on it must be on our page,
         # or any web site it visits could read the feed. Host is the requester's to set (DNS
-        # rebinding), so the origin itself must be a loopback address on our port.
+        # rebinding), so the origin itself must be a loopback address on a SparkGap port (ours, or
+        # another copy's page in AUTO_PORTS, which lists every copy on this machine).
         origin = headers.get("origin")
         if not self.code and origin is not None and not self._local_origin(origin):
             return self._reject(writer, 403, "Forbidden")
@@ -551,7 +564,7 @@ class FeedServer:
     def _local_origin(self, origin: str) -> bool:
         try:
             u = urlsplit(origin)
-            local = is_loopback(u.hostname or "") and u.port == self.port
+            local = is_loopback(u.hostname or "") and (u.port == self.port or u.port in AUTO_PORTS)
             return u.scheme in ("http", "https") and local
         except ValueError:
             return False
