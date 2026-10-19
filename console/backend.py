@@ -441,13 +441,17 @@ class Instance(QObject):
         bands = self._bands()
         b = bands[self._band] if 0 <= self._band < len(bands) else bands[0] if bands else None
         band = band_label(b) if b else ""
-        # a config named after its instance (lakehouse1.local.json) names the server, else the host
+        return " · ".join(p for p in (self._name(), band) if p)
+
+    def _name(self) -> str:
+        """The config name when it is <instance>.local.json (lakehouse1), else the host."""
         cfg = Path(str((self.hello.get("run") or {}).get("config") or "")).name
-        local = cfg.endswith(".local.json")
-        name = cfg.removesuffix(".local.json") if local else self.hello.get("host")
-        return " · ".join(p for p in (name, band) if p)
+        if cfg.endswith(".local.json"):
+            return cfg.removesuffix(".local.json")
+        return str(self.hello.get("host") or "")
 
     station = Property(str, _station, notify=changed)
+    name = Property(str, _name, notify=changed)
 
     @Property(str, notify=changed)
     def host(self) -> str:

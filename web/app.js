@@ -301,12 +301,16 @@ class Instance {
     this.on("hello");
   }
 
+  // a config named after its instance (lakehouse1.local.json) names the server, else the host
+  get name() {
+    const cfg = String((this.hello.run || {}).config || "").split("/").pop().match(/^(.+)\.local\.json$/);
+    return cfg ? cfg[1] : this.hello.host;
+  }
+
   get station() {
     const b = this.bands[this.band] || this.bands[0];
     const band = b ? bandLabel(b) : "";
-    // a config named after its instance (lakehouse1.local.json) names the server, else the host
-    const cfg = String((this.hello.run || {}).config || "").split("/").pop().match(/^(.+)\.local\.json$/);
-    return [cfg ? cfg[1] : this.hello.host, band].filter(x => x).join(" · ");
+    return [this.name, band].filter(x => x).join(" · ");
   }
 
   get title() { return this.demo ? "Demo" : this.station || this.url.split("//").pop().split("/")[0]; }
@@ -1110,7 +1114,7 @@ function bandChoices() {
   const out = [];
   app.instances.forEach((i, n) => {
     if (i.demo) return;
-    const host = i.hello.host || shortUrl(i.url);
+    const host = i.name || shortUrl(i.url);
     const bands = i.bands.length ? i.bands : [null];
     bands.forEach((b, k) => out.push({ n, band: k, label: b ? `${host} ${bandLabel(b)}` : host }));
   });

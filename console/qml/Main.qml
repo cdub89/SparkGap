@@ -204,7 +204,7 @@ ApplicationWindow {
                     for (let n = 0; n < all.length; n++) {
                         const i = all[n]
                         if (i.demo) continue
-                        const host = i.host || i.title
+                        const host = i.name || i.title
                         const names = i.bandNames.length ? i.bandNames : [""]
                         for (let k = 0; k < names.length; k++)
                             out.push({ n: n, band: k, label: names[k] ? host + " " + names[k] : host })
