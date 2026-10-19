@@ -312,5 +312,6 @@ def test_a_free_channel_goes_ahead(monkeypatch: Monkey) -> None:
 
 
 def test_an_unknown_owner_is_named_by_handle(monkeypatch: Monkey) -> None:
-    with pytest.raises(RuntimeError, match=r"DAX-IQ 1 is in use by client 0X28B5BE40 on pan 0x40000000"):
+    with pytest.raises(RuntimeError,
+                       match=r"DAX-IQ 1 is in use by client 0X28B5BE40 on pan 0x40000000"):
         _setup_to_pan(monkeypatch, 1, [LAKE_GUI], LAKE_PANS)
