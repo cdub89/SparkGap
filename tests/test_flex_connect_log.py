@@ -56,7 +56,7 @@ def test_one_loss_gets_one_reconnect(monkeypatch: Monkey, caplog: Caplog) -> Non
     rx, kills = _receiver(monkeypatch, 0), _no_kill(monkeypatch)
     rx._running = True
     with caplog.at_level(logging.INFO, logger="sparkgap.flex"):
-        rx._restart("No DAX-IQ packets for 10 s")
+        rx._restart("No DAX-IQ packets for 10 s", True)
     lines = _lines(caplog)
     assert lines[0] == (logging.ERROR, "[Flex] No DAX-IQ packets for 10 s: connecting again")
     assert (logging.INFO, ATTEMPT.format(1, "reconnect: No DAX-IQ packets for 10 s")) in lines
@@ -68,7 +68,7 @@ def test_failed_reconnect_stops_sparkgap(monkeypatch: Monkey, caplog: Caplog) ->
     rx, kills = _receiver(monkeypatch, 1), _no_kill(monkeypatch)
     rx._running = True
     with caplog.at_level(logging.INFO, logger="sparkgap.flex"):
-        rx._restart("No DAX-IQ packets for 10 s")
+        rx._restart("No DAX-IQ packets for 10 s", True)
     lines = _lines(caplog)
     assert (logging.ERROR, FAILED.format(1)) in lines
     assert lines[-1][0] == logging.ERROR
@@ -82,7 +82,7 @@ def test_second_loss_within_the_window_stops_sparkgap(monkeypatch: Monkey,
     rx._running = True
     rx._last_loss = flex_iq.time.time() - 31
     with caplog.at_level(logging.INFO, logger="sparkgap.flex"):
-        rx._restart("No DAX-IQ packets for 10 s")
+        rx._restart("No DAX-IQ packets for 10 s", True)
     lines = _lines(caplog)
     assert len(lines) == 1 and lines[0][0] == logging.ERROR
     assert "31 s after the previous lost connection: stopping SparkGap" in lines[0][1]
@@ -93,7 +93,7 @@ def test_loss_after_the_window_reconnects(monkeypatch: Monkey) -> None:
     rx, kills = _receiver(monkeypatch, 0), _no_kill(monkeypatch)
     rx._running = True
     rx._last_loss = flex_iq.time.time() - flex_iq.HALT_WINDOW_S - 1
-    rx._restart("No DAX-IQ packets for 10 s")
+    rx._restart("No DAX-IQ packets for 10 s", True)
     assert kills == [] and rx.attempts == 1
 
 
@@ -301,9 +301,16 @@ def test_a_channel_another_station_holds_is_refused(monkeypatch: Monkey) -> None
         _setup_to_pan(monkeypatch, 1, [MAESTRO, LAKE_GUI], LAKE_PANS)
 
 
-def test_a_channel_our_station_holds_is_ours(monkeypatch: Monkey) -> None:
-    sent = _setup_to_pan(monkeypatch, 3, [MAESTRO, LAKE_GUI], LAKE_PANS)
-    assert "client bind client_id=AAAA-1" in sent
+def test_a_channel_another_copy_of_our_station_holds_is_refused(monkeypatch: Monkey) -> None:
+    with pytest.raises(RuntimeError, match=r"DAX-IQ 3 is in use by SparkGap-Lake \(SparkGap\)"):
+        _setup_to_pan(monkeypatch, 3, [MAESTRO, LAKE_GUI], LAKE_PANS)
+
+
+def test_a_channel_this_client_holds_is_ours(monkeypatch: Monkey) -> None:
+    own = ["S0|display pan 0x40000003 client_handle=0x7F19D8AE",
+           "S0|display pan 0x40000003 daxiq_channel=4 "]
+    sent = _setup_to_pan(monkeypatch, 4, [MAESTRO, LAKE_GUI], LAKE_PANS + own)
+    assert "sub pan all" in sent
 
 
 def test_a_free_channel_goes_ahead(monkeypatch: Monkey) -> None:

@@ -8324,7 +8324,8 @@ async def async_main(config):
         pass
     finally:
         await skimmer.stop()
-    return 0
+    # a Flex halt stops for good: non-zero so a service manager sees a failure
+    return 1 if getattr(getattr(skimmer, 'receiver', None), 'state', None) == 'halted' else 0
 
 
 def read_24bit_iq_chunk(filename, start_sec, duration_sec, rate=192000):
