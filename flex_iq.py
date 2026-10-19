@@ -42,7 +42,7 @@ VALID_RATES = (24000, 48000, 96000, 192000)
 # DAX-IQ floats are int16 full scale; FlexLib VitaIFDataPacket divides by 2**15.
 DAXIQ_FULL_SCALE = 32768.0
 
-STATION_NAME = 'SparkGap'   # shown in SmartSDR's station list (Multi-Flex), with the DAX-IQ channel
+STATION_NAME = 'SparkGap'   # shown in SmartSDR's station list (Multi-Flex), with the radio's nickname
 STALL_S = 10                # no DAX-IQ packet for this long: set the radio up again
 RETRY_S = 30                # after a reconnect: time for the new stream to start
 HALT_WINDOW_S = 600         # a second loss within this long stops SparkGap: no reconnect loops on the radio
@@ -89,6 +89,22 @@ def gui_stations(lines):
             out.append((m.group(1), kv['client_id'], kv.get('program', ''),
                         kv.get('station', '').replace('\x7f', ' ')))
     return out
+
+
+def radio_nickname(lines):
+    """The radio's nickname from its reply to "info" (name="Dallas"), or '' when it has none."""
+    for line in lines:
+        m = re.match(r'R\d+\|0\|.*?\bname="([^"]*)"', line)
+        if m:
+            return m.group(1).strip()
+    return ''
+
+
+def station_for(nickname, channel):
+    """SparkGap-<radio nickname>, one station for every copy on that radio;
+    SparkGap-<DAX-IQ channel> when the radio has no nickname."""
+    nick = re.sub(r'[^A-Za-z0-9_-]+', '-', nickname).strip('-')
+    return f"{STATION_NAME}-{nick or channel}"
 
 
 def clients_gone(lines):
@@ -150,10 +166,9 @@ class FlexIQReceiver:
         self.freq_mhz = freq_hz / 1e6
         self.sample_rate = sample_rate
         self.channel = daxiq_channel
-        # one name per copy: the radio refuses a station name already in use (R|500000AA)
+        self._station_cfg = station  # flex_station; else SparkGap-<radio nickname>, set on connect
         self.station = station or f"{STATION_NAME}-{daxiq_channel}"
-        # one GUI client ID per radio and station, the same on every start, as FlexLib keeps its own
-        self.client_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"sparkgap://{ip}/{self.station}")).upper()
+        self.client_id = ''
         self.udp_port = udp_port
         self.control_port = control_port
         self.frequencies = [freq_hz]  # match HPSDRReceiver interface
@@ -287,6 +302,15 @@ class FlexIQReceiver:
         version = next((l[1:].strip() for l in hello if l.startswith('V')), '?')
         log.info("[Flex] Connected to %s, API %s, client handle 0x%s", self.ip, version, handle)
         self._handle = handle
+
+        # One station per radio: every copy on it names the same station, so a later copy
+        # finds the first one's GUI client below and attaches to it.
+        if not self._station_cfg:
+            nickname = radio_nickname(self._cmd("info"))
+            self.station = station_for(nickname, self.channel)
+            log.info("[Flex] Station %s (radio nickname %s)", self.station, repr(nickname) if nickname else "none")
+        # one GUI client ID per radio and station, the same on every start, as FlexLib keeps its own
+        self.client_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"sparkgap://{self.ip}/{self.station}")).upper()
 
         # Same order FlexLib uses: program, then gui, then station name.  The
         # name waits for the reply to "client gui": sent before the radio has

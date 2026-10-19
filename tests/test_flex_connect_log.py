@@ -157,12 +157,20 @@ def test_sent_commands_are_logged_at_info(caplog: Caplog) -> None:
     rx._tcp.close()
 
 
-def test_client_id_is_the_same_on_every_start() -> None:
-    a = FlexIQReceiver("192.0.2.1", sample_rate=96_000, daxiq_channel=2)
-    b = FlexIQReceiver("192.0.2.1", sample_rate=96_000, daxiq_channel=2)
-    other = FlexIQReceiver("192.0.2.1", sample_rate=96_000, daxiq_channel=3)
-    assert a.client_id == b.client_id != other.client_id
-    assert a.client_id == a.client_id.upper() and len(a.client_id) == 36
+DALLAS_INFO = ('R1|0|model="FLEX-6400M",chassis_serial="0520-0945-6401-3114",name="Dallas",'
+               'callsign="WX7V",gps="Not Present",atu_present=1,num_scu=1')
+
+
+def test_station_is_named_after_the_radio_nickname() -> None:
+    assert flex_iq.radio_nickname([DALLAS_INFO]) == "Dallas"
+    assert flex_iq.station_for("Dallas", 2) == "SparkGap-Dallas"
+    assert flex_iq.station_for("Lake House", 3) == "SparkGap-Lake-House"
+
+
+def test_no_nickname_falls_back_to_the_daxiq_channel() -> None:
+    assert flex_iq.radio_nickname(['R1|0|model="FLEX-6600",name=""']) == ""
+    assert flex_iq.radio_nickname(["R1|50000016|"]) == ""
+    assert flex_iq.station_for("", 3) == "SparkGap-3"
 
 
 def test_close_says_goodbye_first() -> None:
@@ -188,9 +196,10 @@ class _Stop(Exception):
     pass
 
 
-def _setup_commands(monkeypatch: Monkey, listed: list[str]) -> list[str]:
+def _setup_commands(monkeypatch: Monkey, listed: list[str], station: str | None = "SparkGap-1",
+                    channel: int = 1, nickname: str = "Dallas") -> list[str]:
     """Commands _setup sends up to "client udpport", with `listed` as the radio's client status."""
-    rx = FlexIQReceiver("192.0.2.1", sample_rate=96_000, daxiq_channel=1, station="SparkGap-1")
+    rx = FlexIQReceiver("192.0.2.1", sample_rate=96_000, daxiq_channel=channel, station=station)
     sent: list[str] = []
 
     def cmd(c: str, timeout: float = 2.0, settle: float = 0.0) -> list[str]:
@@ -198,6 +207,8 @@ def _setup_commands(monkeypatch: Monkey, listed: list[str]) -> list[str]:
             raise _Stop
         rx._seq += 1
         sent.append(c)
+        if c == "info":
+            return [f'R{rx._seq}|0|model="FLEX-6600",name="{nickname}",callsign="WX7V"']
         return (listed if c == "sub client all" else []) + [f"R{rx._seq}|0|"]
 
     monkeypatch.setattr(flex_iq.socket, "socket", lambda *_: _Sock())
@@ -220,3 +231,21 @@ def test_first_copy_claims_the_gui(monkeypatch: Monkey) -> None:
     sent = _setup_commands(monkeypatch, [smartsdr])
     assert any(c.startswith("client gui ") for c in sent)
     assert not any(c.startswith("client bind") for c in sent)
+
+
+def test_copies_on_one_radio_share_its_station(monkeypatch: Monkey) -> None:
+    first = "S0|client 0x4F8B82DB connected client_id=AAAA-1 program=SparkGap station=SparkGap-Lake"
+    sent = _setup_commands(monkeypatch, [first], station=None, channel=3, nickname="Lake")
+    assert sent[0] == "info"
+    assert "client bind client_id=AAAA-1" in sent
+    assert not any(c.startswith("client gui") for c in sent)
+
+
+def test_client_id_is_the_same_for_every_copy_and_start(monkeypatch: Monkey) -> None:
+    def gui_id(channel: int, nickname: str) -> str:
+        sent = _setup_commands(monkeypatch, [], station=None, channel=channel, nickname=nickname)
+        return next(c.split()[2] for c in sent if c.startswith("client gui "))
+
+    a, b, other = gui_id(2, "Lake"), gui_id(3, "Lake"), gui_id(2, "Dallas")
+    assert a == b != other
+    assert a == a.upper() and len(a) == 36
