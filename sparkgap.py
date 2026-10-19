@@ -123,7 +123,9 @@ def _publish_gui_status(managers, spots, uptime_s, extra=None):
         if sc and sc._h:
             bins += sc._lib.itila_sc_bin_count(sc._h)
     _gui_feed.publish_status(dict(_gui_feed.proc.sample(), bins=bins, spots=spots,
-                                  uptime_s=round(uptime_s), **(extra or {})))
+                                  uptime_s=round(uptime_s),
+                                  decode_khz=[getattr(m, 'decode_khz', None) for m in managers],
+                                  **(extra or {})))
 _GRID_RE = re.compile(r'^[A-R]{2}[0-9]{2}([a-x]{2})?$')
 
 def _get_mqtt_publisher():
@@ -4790,6 +4792,7 @@ class InstanceManager:
                         log.warning("CW window for %.0f kHz: no band-plan "
                                     "match, using fallback [%.0f, %.0f] kHz",
                                     center_khz, bmin, bmax)
+                self.decode_khz = (bmin, bmax)
                 self._itila_scanner = _ItilaScanner(
                     self.sample_rate, center_khz,
                     ev_thresh=self.itila_ev_thresh,

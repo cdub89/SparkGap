@@ -7,8 +7,10 @@ const FEED_VERSION = 1;
 const MAX_BINS = 16_384;
 const DEFAULT_PORT = 7320;
 const HELP_URL = "https://github.com/hotairfred/SparkGap/blob/main/docs/CONSOLE.md";  // the guide, from Settings
-const SCAN_PORTS = Array.from({ length: 20 }, (_, k) => DEFAULT_PORT + k);  // tried when a server is added without a port
+const SCAN_PORTS = Array.from({ length: 20 }, (_, k) => DEFAULT_PORT + k);  // searched for copies on a server (feed "port": "auto")
 const SCAN_TIMEOUT_S = 3;
+const RESCAN_S = 60;  // a server is searched again this often, for copies started since
+const RESCAN_DROP_S = 3;  // and this long after one of its copies drops
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 const CODE_LENGTH = 6;
 const SPECTRUM_HZ = 60;
@@ -301,10 +303,16 @@ class Instance {
     this.on("hello");
   }
 
+  // a config named <instance>.local.json names the server after the instance, else the host
+  get name() {
+    const cfg = String((this.hello.run || {}).config || "").split("/").pop().match(/^(.+)\.local\.json$/);
+    return cfg ? cfg[1] : this.hello.host;
+  }
+
   get station() {
     const b = this.bands[this.band] || this.bands[0];
     const band = b ? bandLabel(b) : "";
-    return [this.hello.host, band].filter(x => x).join(" · ");
+    return [this.name, band].filter(x => x).join(" · ");
   }
 
   get title() { return this.demo ? "Demo" : this.station || this.url.split("//").pop().split("/")[0]; }
@@ -793,6 +801,8 @@ class Waterfall {
 // ---- the page ----
 
 const app = {
+  servers: [],  // {address, token}: an address and join code; its copies are found by searching SCAN_PORTS
+  want: load("current", ""),  // the copy shown, by name, wherever its port is today
   instances: [],
   current: 0,
   selectedKhz: -1,
@@ -815,10 +825,16 @@ function urlParts(url) {
   try { const u = new URL(url); return [u.hostname.replace(/^\[|\]$/g, ""), Number(u.port) || DEFAULT_PORT]; } catch { return ["", DEFAULT_PORT]; }
 }
 function normalizeCode(code) { return code.toUpperCase().replace(/[ -]/g, ""); }
-function checkFeed(address, port, code) {
-  const a = address.trim();
-  if (!a || /[\s/:#?@]/.test(a)) return "address: a VPN or local IP address, nothing else";
-  if (!(port > 0 && port < 65_536)) return "port: 1 to 65535";
+// "host" searches SCAN_PORTS; "host:port" is one feed outside that range
+function hostPort(address) {
+  const m = address.trim().match(/^(.*?)(?::(\d+))?$/);
+  return [m[1], m[2] ? Number(m[2]) : 0];
+}
+function checkServer(address, code) {
+  const m = address.trim().match(/^([^\s/:#?@]+)(?::(\d+))?$/);
+  if (!m) return "address: a VPN or local IP address (host:port only for a feed outside 7320 to 7339)";
+  if (m[2] && !(Number(m[2]) > 0 && Number(m[2]) < 65_536)) return "port: 1 to 65535";
+  if (m[2] && SCAN_PORTS.includes(Number(m[2]))) return `leave the port off: ${SCAN_PORTS[0]} to ${SCAN_PORTS[SCAN_PORTS.length - 1]} are searched`;
   const c = normalizeCode(code);
   if (c && (c.length !== CODE_LENGTH || [...c].some(ch => !CODE_ALPHABET.includes(ch)))) {
     return `join code: ${CODE_LENGTH} letters and digits, as SparkGap's log shows it`;
@@ -853,27 +869,23 @@ function probeFeed(url, token) {
   });
 }
 
-// what a scan found: the ports to add and a line for the operator
-// stale: listed ports saved with another code; one that answers to this code gets it
-function scanReport(found, listed, stale = []) {
-  const ports = r => found.filter(f => f[1] === r).map(f => f[0]);
-  const add = ports("ok").filter(p => !listed.includes(p)), update = ports("ok").filter(p => stale.includes(p));
-  const have = ports("ok").filter(p => listed.includes(p) && !stale.includes(p));
+// what a search found, in a line for the operator
+function scanReport(found) {
+  const n = r => found.filter(f => f[1] === r).length;
   const parts = [];
-  if (add.length) parts.push(`Added ${add.join(", ")}.`);
-  if (update.length) parts.push(`Join code updated on ${update.join(", ")}.`);
-  if (have.length) parts.push(`Already in the list: ${have.join(", ")}.`);
-  if (ports("code").length) parts.push(`Different join code on ${ports("code").join(", ")}.`);
-  if (ports("lockout").length) parts.push(`Locked out for ${LOCKOUT_S / 60} min on ${ports("lockout").join(", ")}.`);
-  if (ports("full").length) parts.push(`Too many clients on ${ports("full").join(", ")}.`);
-  if (!parts.length) parts.push(`No SparkGap answered on ports ${SCAN_PORTS[0]} to ${SCAN_PORTS[SCAN_PORTS.length - 1]}.`);
-  return { add, update, text: parts.join(" ") };
+  if (n("ok")) parts.push(`Found ${n("ok")} SparkGap${n("ok") > 1 ? "s" : ""}.`);
+  if (n("code")) parts.push(`Different join code on ${n("code")}.`);
+  if (n("lockout")) parts.push(`Locked out for ${LOCKOUT_S / 60} min on ${n("lockout")}.`);
+  if (n("full")) parts.push(`Too many clients on ${n("full")}.`);
+  if (!parts.length) parts.push("No SparkGap answered at that address.");
+  return parts.join(" ");
 }
 
-function saveFeeds() { save("connections", app.instances.filter(i => !i.demo).map(i => ({ url: i.url, token: i.token }))); }
+function saveServers() { save("servers", app.servers.map(({ address, token }) => ({ address, token }))); }
 
-function addInstance(url, token, at) {
+function addInstance(url, token, at, server = null) {
   const i = new Instance(url, token);
+  i.server = server;
   i.on = what => changed(i, what);
   if (at === undefined) app.instances.push(i); else app.instances.splice(at, 0, i);
   i.open();
@@ -881,6 +893,12 @@ function addInstance(url, token, at) {
 }
 
 function changed(i, what) {
+  if (what === "state" && i.state === "dropped" && i.server && !i.server.rescan) {
+    const sv = i.server;
+    sv.rescan = setTimeout(() => { sv.rescan = 0; scanServer(sv); }, RESCAN_DROP_S * 1000);
+  }
+  if (what === "hello" && !i.demo && i.name === app.want && i !== inst()) { setCurrent(app.instances.indexOf(i)); return; }
+  if (what === "hello" && !i.demo && i === inst() && !app.want) { app.want = i.name; save("current", i.name); }
   if (what === "state") { renderConns(); if (i === inst()) renderState(); return; }
   if (i !== inst()) { if (what === "hello") { renderConns(); renderBands(); } return; }
   if (what === "hello") { wf.fit(); renderBands(); renderState(); renderStation(); renderSettings(); renderConns(); renderLadder(); }
@@ -896,6 +914,8 @@ function leaveDemo() {
 
 function setCurrent(n) {
   app.current = Math.max(0, Math.min(n, app.instances.length - 1));
+  const i = inst();
+  if (i && !i.demo && i.hello.run) { app.want = i.name; save("current", i.name); }
   app.selectedKhz = -1;
   wf.sel = -1;
   wf.setInstance(inst());
@@ -905,7 +925,7 @@ function setCurrent(n) {
 // demo is a view: the servers stay connected (and keep their history) while it shows
 function setDemo(on) {
   save("demo", on);
-  app.editing = -2;
+  app.editing = -2; app.form = null;
   const at = app.instances.findIndex(i => i.demo);
   if (on && at < 0) {
     app.back = app.current;
@@ -917,8 +937,58 @@ function setDemo(on) {
   }
 }
 
+// servers saved before they were searched by address: one per address and code, the port dropped
+function oldServers() {
+  const out = [];
+  for (const f of load("connections", [])) {
+    if (!f || !f.url) continue;
+    const [host, port] = urlParts(f.url);
+    const address = SCAN_PORTS.includes(port) ? host : `${host}:${port}`, token = f.token || "";
+    if (!out.some(s => s.address === address && s.token === token)) out.push({ address, token });
+  }
+  return out;
+}
+
 function loadServers() {
-  for (const f of load("connections", [])) if (f && f.url) addInstance(f.url, f.token || "");
+  app.servers = load("servers", null) || oldServers();
+  saveServers();
+  app.servers.forEach(scanServer);
+}
+
+// a search offers the code to each port; a port that refused it is left out of the automatic
+// searches until the server is edited, so a stale code never earns the feed's lockout
+async function probeServer(s, every = false) {
+  const [host, port] = hostPort(s.address);
+  s.refused = every || !s.refused ? new Set() : s.refused;
+  const ports = (port ? [port] : SCAN_PORTS).filter(p => !s.refused.has(p));
+  const found = await Promise.all(ports.map(p => probeFeed(feedUrl(host, p), s.token).then(r => [p, r])));
+  for (const [p, r] of found) if (r === "code" || r === "lockout") s.refused.add(p);
+  return found;
+}
+
+// the copies a search found join the list; a copy that no longer answers leaves it
+function reconcile(s, found) {
+  const [host] = hostPort(s.address);
+  const ok = found.filter(f => f[1] === "ok").map(f => feedUrl(host, f[0]));
+  app.instances.filter(i => i.server === s && !ok.includes(i.url) && i.state !== "live").forEach(removeInstance);
+  for (const url of ok) if (!app.instances.some(i => i.url === url)) addInstance(url, s.token, undefined, s);
+  if (!inst() && app.instances.length) setCurrent(0);
+  renderAll();
+}
+
+async function scanServer(s) {
+  if (s.scanning) return;
+  s.scanning = true;
+  const found = await probeServer(s);
+  s.scanning = false;
+  if (app.servers.includes(s)) reconcile(s, found);
+}
+
+function removeInstance(i) {
+  const n = app.instances.indexOf(i);
+  if (n < 0) return;
+  app.instances.splice(n, 1)[0].close();
+  if (app.current >= app.instances.length || app.current > n) app.current = Math.max(0, app.current - 1);
 }
 
 function pick(khz, call) {
@@ -1034,6 +1104,12 @@ function renderStatusPage() {
   const radio = [row("Type", r.type === "flex" ? "FlexRadio" : r.type === "hpsdr" ? "HPSDR" : r.type === "file" ? "File replay" : r.type, { ref: true }),
     r.type === "file" ? fileRow("File", r.address, "-", { ref: true }) : row("Address", r.address, { mono: true, ref: true })];
   if ("station" in r) radio.push(row("Station", r.station, { ref: true }), row("DAX-IQ channel", r.daxiq_channel, { mono: true, ref: true }));
+  const mhz = khz => (khz / 1000).toFixed(3);
+  (h.bands || []).forEach((b, n) => {
+    const tag = h.bands.length > 1 ? ` ${bandLabel(b)}` : "", d = (s.decode_khz || [])[n];
+    radio.push(row("IQ" + tag, `${mhz(b.center_khz)} MHz, ${b.span_khz} kHz`, { mono: true, ref: true }));
+    if (d) radio.push(row("Decoding" + tag, `${mhz(d[0])} to ${mhz(d[1])} MHz`, { mono: true, ref: true }));
+  });
   if ("packets" in r) radio.push(row("Packets", num(r.packets), { mono: true, ref: true }), row("Lost", num(r.lost), { mono: true, key: true, bad: lossy }));
   if ("pkt_per_s" in r) radio.push(row("Packets a second", num(r.pkt_per_s), { mono: true, key: true }));
   if ("reconnects" in r) radio.push(row("Reconnects", r.reconnects ? `${r.reconnects}, last ${utcTime(r.last_reconnect)}` : "none", { mono: !!r.reconnects, key: true, bad: r.reconnects > 0 }));
@@ -1044,7 +1120,7 @@ function renderStatusPage() {
   const sg = [row("Host", `${h.host}, port ${urlParts(i.url)[1]}`, { ref: true }),
     i.token ? row("Join code", app.codeShown ? i.token : "•••-•••", { mono: true, ref: true, act: "code", title: app.codeShown ? "Click to hide" : "Click to show and copy" })
       : row("Join code", "none (local only)", { ref: true }), row("Decoder", h.decoder, { ref: true }),
-    row("Bands", (h.bands || []).map(b => `${bandLabel(b)} (${b.center_khz} kHz)`).join(", "), { key: true }),
+    row("Bands", (h.bands || []).map(bandLabel).join(", "), { key: true }),
     fileRow("Config", run.config, "-", { ref: true }), fileRow("Log", run.log, "terminal", { ref: true }),
     rec ? fileRow("Recording", rec.file, "off", { bad: near, ref: !near }) : row("Recording", "off", { ref: true }),
     ...(rec ? [row("Recording size", gb(rec.bytes) + (near ? "  (near the 4 GiB limit)" : ""), { mono: true, key: true, bad: near })] : []),
@@ -1060,10 +1136,9 @@ function renderStatusPage() {
     ...(s.clients || []).map(c => row(c.name || c.peer, `${num(c.dropped)} dropped`, { mono: true, sub: `${c.name ? `${c.peer}, ` : ""}since ${utcTime(c.since)}`, key: true, bad: c.dropped > 600 }))];
 
   const p = s.problems || {};
-  const probs = [`<div class="srow"><span class="k">Since start</span><span class="v"><span class="mono${p.errors ? " bad" : ""}">${num(p.errors)}</span> errors, `
-    + `<span class="mono">${num(p.warnings)}</span> warnings</span></div>`,
+  const probs = [`<div class="srow"><span class="k">Since start</span><span class="v"><span class="mono${p.errors ? " bad" : ""}">${num(p.errors)}</span> errors</span></div>`,
     ...(p.last || []).slice().reverse().map(e => `<div class="prob"><span class="mono t">${utcTime(e.utc)}</span>`
-      + `<span class="pill ${e.level === "WARNING" ? "warnlvl" : "warn"}">${esc(e.level)}</span><span class="m">${esc(e.msg)}</span></div>`)];
+      + `<span class="pill warn">${esc(e.level)}</span><span class="m">${esc(e.msg)}</span></div>`)];
 
   // health at a glance: what needs attention, worst first
   const issues = [];
@@ -1075,13 +1150,12 @@ function renderStatusPage() {
   if (lossy) issues.push(["warn", `${num(r.lost)} packets lost (${(100 * r.lost / r.packets).toFixed(2)}%)`]);
   if (near) issues.push(["warn", "Recording near the 4 GiB limit"]);
   for (const c of s.clients || []) if (c.dropped > 600) issues.push(["warn", `Console ${c.name || c.peer} falling behind`]);
-  if (p.warnings > 0) issues.push(["warn", `${num(p.warnings)} warnings since start`]);
   const worst = issues.some(x => x[0] === "bad") ? "bad" : issues.length ? "warn" : "ok";
   const banner = `<div class="health ${worst}">${issues.length ? issues.map(([lv, t]) => `<span class="${lv}">${esc(t)}</span>`).join("")
     : "<span>Healthy: radio live, decoding keeping up, no errors</span>"}</div>`;
   const tagRadio = r.state ? pill(String(r.state).toUpperCase(), live ? (r.reconnects || lossy ? "warnlvl" : "ok") : "warn") : "";
   const tagSg = s.clock_synced === false ? pill("CLOCK OFF", "warn") : s.clock_synced ? pill("CLOCK OK", "ok") : "";
-  const tagProb = p.errors ? pill(`${num(p.errors)} ERRORS`, "warn") : p.warnings ? pill(`${num(p.warnings)} WARNINGS`, "warnlvl") : pill("NONE", "ok");
+  const tagProb = p.errors ? pill(`${num(p.errors)} ERRORS`, "warn") : pill("NONE", "ok");
 
   $("statusBody").innerHTML = banner + `<div class="stats stiles">${tiles.join("")}</div><div class="scards">`
     + card("RADIO", radio, false, tagRadio) + card("SPARKGAP", sg, false, tagSg) + card("SPOT OUTPUT", out) + card("CONSOLES", cons)
@@ -1102,7 +1176,7 @@ function bandChoices() {
   const out = [];
   app.instances.forEach((i, n) => {
     if (i.demo) return;
-    const host = i.hello.host || shortUrl(i.url);
+    const host = i.name || shortUrl(i.url);
     const bands = i.bands.length ? i.bands : [null];
     bands.forEach((b, k) => out.push({ n, band: k, label: b ? `${host} ${bandLabel(b)}` : host }));
   });
@@ -1273,31 +1347,32 @@ function renderSettings() {
   for (const id of ["lValid", "sValid", "lCalls", "sCalls"]) $(id).hidden = !("spot_validation" in c);  // a SparkGap without call validation
 }
 
+// Settings lists servers (address and join code); each line shows the copies found on it
 function renderConns() {
   const box = $("conns");
   box.textContent = "";
   const cs = getComputedStyle(document.documentElement);
-  app.instances.forEach((i, n) => {
-    if (i.demo) return;  // demo is the toggle above, not a server
+  app.servers.forEach((sv, n) => {
+    const copies = app.instances.filter(i => i.server === sv);
+    const live = copies.filter(i => i.state === "live");
     const row = document.createElement("div");
-    row.className = "conn" + (n === app.current ? " cur" : "");
-    const failing = i.state !== "live" && !!i.error;
+    row.className = "conn" + (copies.includes(inst()) ? " cur" : "");
     const dot = document.createElement("span");
     dot.className = "sdot";
-    dot.style.background = cs.getPropertyValue(i.state === "live" ? "--good" : i.state === "connecting" ? "--accent" : "--bad");
-    const name = document.createElement("span"); name.className = "n"; name.textContent = i.title;
-    const url = document.createElement("span"); url.className = "u" + (failing ? " bad" : "");
-    url.textContent = failing ? i.error : shortUrl(i.url);
-    row.append(dot, name, url);
+    dot.style.background = cs.getPropertyValue(live.length ? "--good" : sv.scanning ? "--accent" : "--bad");
+    const name = document.createElement("span"); name.className = "n"; name.textContent = sv.address;
+    const what = document.createElement("span"); what.className = "u" + (copies.length ? "" : " bad");
+    what.textContent = copies.length ? copies.map(i => i.title).join(", ") : sv.scanning ? "searching..." : "no SparkGap answering";
+    row.append(dot, name, what);
     const edit = document.createElement("button"); edit.className = "btn small"; edit.textContent = "Edit";
     edit.onclick = e => { e.stopPropagation(); editConn(n); };
     const del = document.createElement("button"); del.className = "btn small"; del.textContent = "✕";
     del.onclick = e => { e.stopPropagation(); removeConn(n); };
     row.append(edit, del);
-    row.onclick = () => { leaveDemo(); setCurrent(n); };
+    row.onclick = () => { leaveDemo(); if (copies.length) setCurrent(app.instances.indexOf(copies[0])); };
     box.appendChild(row);
   });
-  if (!app.instances.some(i => !i.demo) && app.editing === -2) {
+  if (!app.servers.length && app.editing === -2) {
     const p = document.createElement("div"); p.className = "small muted"; p.textContent = "No servers yet."; box.appendChild(p);
   }
   if (app.note && app.editing === -2) {
@@ -1310,74 +1385,55 @@ function renderConns() {
 
 function editConn(n) {
   leaveDemo();
-  const i = app.instances[n];
-  // a new server defaults to the SparkGap that served this page, if one did
+  const sv = app.servers[n];
+  // a new server defaults to the machine that served this page, if one did
   const served = /^https?:$/.test(location.protocol);
-  const [address, port] = i ? urlParts(i.url) : [served ? location.hostname : "", ""];  // no port: find them all
-  $("fAddr").value = address; $("fPort").value = port; $("fCode").value = i ? i.token : "";
+  $("fAddr").value = sv ? sv.address : served ? location.hostname : ""; $("fCode").value = sv ? sv.token : "";
   $("fErr").hidden = true;
   app.editing = n;
+  app.form = {};  // this form; a search finished after it closed is dropped
   app.note = "";
   renderConns();
   $("fAddr").focus();
 }
 
-// a server added or edited without a port: every SparkGap on the address that takes the code
-async function findConns() {
-  const n = app.editing;  // -1 adding, else the row being edited, which the search replaces
-  const address = $("fAddr").value.trim(), code = normalizeCode($("fCode").value);
-  const err = checkFeed(address, DEFAULT_PORT, code);
+// a server is kept once a search of its address finds a SparkGap that takes the code
+async function saveConn() {
+  const n = app.editing, form = app.form, address = $("fAddr").value.trim(), token = normalizeCode($("fCode").value);
+  let err = checkServer(address, token);
+  if (!err && app.servers.some((sv, k) => k !== n && sv.address === address)) err = "already in the list";
   if (err) { $("fErr").textContent = err; $("fErr").hidden = false; return; }
   $("fErr").hidden = true;
   $("fSave").disabled = true;
   $("fSave").textContent = "Searching...";
-  const found = await Promise.all(SCAN_PORTS.map(p => probeFeed(feedUrl(address, p), code).then(r => [p, r])));
+  const sv = { address, token };
+  const found = await probeServer(sv, true);
+  if (app.form !== form) return;  // closed meanwhile; another form may be open
   $("fSave").disabled = false;
-  if (app.editing !== n) return;  // cancelled meanwhile
-  const others = app.instances.filter((i, k) => k !== n && urlParts(i.url)[0] === address);
-  const listed = others.map(i => urlParts(i.url)[1]);
-  const r = scanReport(found, listed, others.filter(i => i.token !== code).map(i => urlParts(i.url)[1]));
-  if (!r.add.length && !r.update.length) { $("fErr").textContent = r.text; $("fErr").hidden = false; renderConns(); return; }
-  let at = app.instances.length;
-  if (n >= 0) { app.instances.splice(n, 1)[0].close(); at = n; }
-  for (const p of r.update) {
-    const k = app.instances.findIndex(i => i.url === feedUrl(address, p));
-    app.instances.splice(k, 1)[0].close();
-    addInstance(feedUrl(address, p), code, k);
-  }
-  r.add.forEach((p, k) => addInstance(feedUrl(address, p), code, Math.min(at + k, app.instances.length)));
-  app.editing = -2;
-  app.note = r.text;
-  saveFeeds();
-  setCurrent(r.add.length ? Math.min(at, app.instances.length - 1) : app.instances.findIndex(i => i.url === feedUrl(address, r.update[0])));
-}
-
-function saveConn() {
-  if (!$("fPort").value.trim()) { findConns(); return; }
-  const address = $("fAddr").value, port = parseInt($("fPort").value) || 0, code = $("fCode").value;
-  let err = checkFeed(address, port, code);
-  const url = feedUrl(address, port), n = app.editing;
-  if (!err && app.instances.some((i, k) => k !== n && i.url === url)) err = "already in the list";
-  if (err) { $("fErr").textContent = err; $("fErr").hidden = false; return; }
-  let at;
-  if (n >= 0) { app.instances.splice(n, 1)[0].close(); at = n; } else at = app.instances.length;
-  addInstance(url, normalizeCode(code), at);
-  app.editing = -2;
-  saveFeeds();
-  setCurrent(at);
+  const text = scanReport(found);
+  if (!found.some(f => f[1] === "ok")) { $("fErr").textContent = text; $("fErr").hidden = false; renderConns(); return; }
+  if (n >= 0) {
+    app.instances.filter(i => i.server === app.servers[n]).forEach(removeInstance);
+    app.servers[n] = sv;
+  } else app.servers.push(sv);
+  app.editing = -2; app.form = null;
+  app.note = text;
+  saveServers();
+  reconcile(sv, found);
+  setCurrent(app.instances.findIndex(i => i.server === sv));
 }
 
 function removeConn(n) {
   leaveDemo();
-  app.instances.splice(n, 1)[0].close();
-  if (app.current >= app.instances.length || app.current > n) app.current = Math.max(0, app.current - 1);
-  app.editing = -2;
-  saveFeeds();
+  app.instances.filter(i => i.server === app.servers[n]).forEach(removeInstance);
+  app.servers.splice(n, 1);
+  app.editing = -2; app.form = null;
+  saveServers();
   setCurrent(app.current);
 }
 
 function openSettings() { renderSettings(); renderConns(); $("modal").hidden = false; }
-function closeSettings() { $("modal").hidden = true; app.editing = -2; }
+function closeSettings() { $("modal").hidden = true; app.editing = -2; app.form = null; $("fSave").disabled = false; }
 
 // ---- input ----
 
@@ -1401,8 +1457,8 @@ function bindInput() {
   $("modal").onmousedown = e => { if (e.target === $("modal")) closeSettings(); };
   $("addConn").onclick = () => editConn(-1);
   $("fSave").onclick = saveConn;
-  $("fCancel").onclick = () => { app.editing = -2; renderConns(); };
-  for (const id of ["fAddr", "fPort", "fCode"]) $(id).onkeydown = e => { if (e.key === "Enter") saveConn(); };
+  $("fCancel").onclick = () => { app.editing = -2; app.form = null; $("fSave").disabled = false; renderConns(); };
+  for (const id of ["fAddr", "fCode"]) $(id).onkeydown = e => { if (e.key === "Enter") saveConn(); };
   $("theme").onclick = () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
 
   const search = $("search"), list = $("matches");
@@ -1515,9 +1571,10 @@ function start() {
   app.decoded = DECODED.includes(load("decoded", "lowest")) ? load("decoded", "lowest") : "lowest";
   // no saved servers yet: start in demo
   loadServers();
-  setDemo(load("demo", !app.instances.length));
+  setDemo(load("demo", !app.servers.length));
   setCurrent(app.current);
-  if (!app.instances.length) { openSettings(); editConn(-1); }
+  if (!app.servers.length) { openSettings(); editConn(-1); }
+  setInterval(() => app.servers.forEach(scanServer), RESCAN_S * 1000);
   setInterval(() => { $("utc").textContent = "UTC: " + new Date().toISOString().substr(11, 8); }, 250);
   setInterval(() => { renderLadder(); }, 1000);
   // instances not on screen still move their rows into history, so switching shows their recent waterfall

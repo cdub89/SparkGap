@@ -161,9 +161,10 @@ Every 2 seconds.
  "telnet": {"port": 7300, "clients": 1}, "iq_trimmed_s": 0.0,
  "recording": {"file": "/srv/sparkgap/rec/40m.wav", "bytes": 2473963564},
  "windows": 72823, "calls": 97, "spots_hour": 41, "bins_peak": 52,
+ "decode_khz": [[7000.0, 7070.0]],
  "clients": [{"peer": "192.168.1.31:61718", "name": "shack",
               "since": 1792018739, "dropped": 12}],
- "problems": {"warnings": 2, "errors": 8,
+ "problems": {"errors": 8,
               "last": [{"utc": 1792019013, "level": "ERROR",
                         "msg": "hpsdr_create failed"}]}}
 ```
@@ -175,6 +176,8 @@ Process and decoding:
 - `clock_synced`: whether the system clock is NTP-synchronised; `null` where
   that cannot be read.
 - `bins`: decoder bins open across all bands; `bins_peak`: the most since start.
+- `decode_khz`: each band's decode window `[low, high]` in kHz, in `bands` order;
+  `null` until the band's first IQ arrives.
 - `spots`: spots since start; `spots_hour`: in the last hour; `calls`: distinct
   calls spotted since start.
 - `windows`: decoded windows since start.
@@ -195,7 +198,7 @@ The feed itself:
 - `clients`: each connected console: address, host name from reverse DNS
   (`null` when it has none), connected since (UTC seconds),
   spectrum rows dropped because it fell behind.
-- `problems`: SparkGap's warnings and errors since start, with the last five
+- `problems`: SparkGap's errors since start, with the last five
   (UTC seconds, level, message).
 
 ### Spectrum rows (binary)
