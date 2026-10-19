@@ -20,6 +20,11 @@ sparkgap.sh: run the SparkGap instances on this machine.
   sparkgap.sh restart [name ...]   stop, then start
   sparkgap.sh band <name> <band>   set the band in its config; restarts it if it was running
   sparkgap.sh rec <name> on|off    record IQ to rec/ or stop recording; restarts it if it was running
+  sparkgap.sh add <name> <band>    a new instance: name = letters and the DAX-IQ channel (lakehouse4);
+                                   a worktree of the first instance's clone in <name>/, its config copied
+                                   to config/<name>.local.json with that channel, the band and the next
+                                   free ports (an existing config/<name>.local.json is reused); not started
+  sparkgap.sh remove <name>        take a stopped instance out: its worktree goes, its config stays in config/
   sparkgap.sh update               pull each code folder in instances, rebuild the native libraries
                                    where C code changed, restart what was running from it, and
                                    refresh this script in the root from tools/sparkgap.sh
@@ -27,7 +32,7 @@ sparkgap.sh: run the SparkGap instances on this machine.
 
 With no name, start, stop, restart and status act on every instance.
 Only instances started by sparkgap.sh are seen: each has a pid file in logs/.
-Root: $R (instances, logs/, rec/); set SPARKGAP_ROOT to use another.
+Root: $R (instances, config/, logs/, rec/); set SPARKGAP_ROOT to use another.
 EOF
   [ -f "$R/instances" ] && echo "Instances: $ALL   (from instances: name, code folder, config, python)"
 }
@@ -44,7 +49,7 @@ ALL=$(awk '!/^#/ && NF {printf "%s ", $1}' "$R/instances")
 
 field() { awk -v n="$1" -v f="$2" '$1 == n {print $f}' "$R/instances"; }
 dir() { local d; d=$(field "$1" 2); [ -n "$d" ] || die "unknown instance $1 (instances: $ALL)"; echo "$d"; }
-cfg() { echo "$(dir "$1")/$(field "$1" 3)"; }
+cfg() { dir "$1" > /dev/null; echo "$R/config/$(field "$1" 3)"; }
 band() { python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['bands'][0])" "$(cfg "$1")"; }
 bands() {  # band names sparkgap.py accepts, read from its BANDS line
   grep -m1 "^BANDS = dict(zip(" "$(dir "$1")/sparkgap.py" | grep -o "'[0-9]*m'" | tr -d "'" | tr '\n' ' '
@@ -68,7 +73,7 @@ start() {
   if p=$(pid "$i"); then echo "$i: already running (pid $p)"; return; fi
   t=$(date -u +%Y%m%d_%H%M%SZ); log="$R/logs/${i}_$(band "$i")_$t.log"
   (cd "$(dir "$i")" && setsid bash -c 'echo $$ > "$1"; exec "$2" sparkgap.py --config "$3" > "$4" 2>&1 < /dev/null' \
-     _ "$R/logs/$i.pid" "$(field "$i" 4)" "$(field "$i" 3)" "$log" &)
+     _ "$R/logs/$i.pid" "$(field "$i" 4)" "$(cfg "$i")" "$log" &)
   for _ in $(seq 1 "$START_WAIT_S"); do
     sleep 1
     grep -q "SparkGap LIVE:" "$log" 2>/dev/null && { echo "$i: live (pid $(pid "$i")), log $log"; return; }
@@ -149,6 +154,84 @@ reconfigure() {  # restart after a config change, only if it was running
   if pid "$1" >/dev/null; then stop "$1" && start "$1"; fi
 }
 
+clone_of() {  # the clone, on a branch, that a code folder shares its repository with
+  git -C "$1" worktree list --porcelain | awk '/^worktree / {w = $2} /^branch / {print w; exit}'
+}
+
+add() {
+  local n=$1 b=$2 num src top d conf py l
+  [[ $n =~ ^[a-z]+([1-9])$ ]] || die "name must be letters and one digit 1 to 9, the DAX-IQ channel (e.g. lakehouse4)"
+  num=${BASH_REMATCH[1]}
+  [ -z "$(field "$n" 1)" ] || die "$n is already in instances"
+  d=$R/$n; [ ! -e "$d" ] || die "$d already exists"
+  src=${ALL%% *}; [ -n "$src" ] || die "add copies the first instance in instances; there is none"
+  [[ " $(bands "$src") " == *" $b "* ]] || die "band must be one of: $(bands "$src")"
+  top=$(clone_of "$(dir "$src")"); [ -n "$top" ] || die "$src has no clone on a branch to add a worktree to"
+  conf=$R/config/$n.local.json; py=$(field "$src" 4)
+  # check and write the config before touching git, so a refusal leaves nothing behind
+  local cfgs=(); for l in $ALL; do cfgs+=("$(cfg "$l")"); done
+  python3 - "$R" "$n" "$num" "$b" "$conf" "${cfgs[@]}" <<'PY' || exit 2
+import json, os, re, sys
+root, name, num, band, conf, *others = sys.argv[1:]
+num = int(num)
+cs = {f: json.load(open(f)) for f in others}
+src = cs[others[0]]
+if src.get("sdr_type") != "flex":
+    sys.exit(f"add copies a Flex instance; {others[0]} is {src.get('sdr_type')}")
+for f, c in cs.items():
+    if c.get("flex_daxiq_channel") == num and f != conf:
+        sys.exit(f"DAX-IQ {num} is already used by {os.path.basename(f)}")
+keys = ("flex_udp_port", "telnet_port")
+def ports(c):
+    return [c[k] for k in keys if k in c] + ([c["gui_feed"]["port"]] if "port" in c.get("gui_feed", {}) else [])
+if os.path.exists(conf):
+    text = open(conf).read()
+    c = json.loads(text)
+    clash = set(ports(c)) & {p for f, o in cs.items() if f != conf for p in ports(o)}
+    if clash:
+        sys.exit(f"{conf} uses ports already taken: {sorted(clash)}")
+    if c.get("flex_daxiq_channel") != num:
+        sys.exit(f"{conf} uses DAX-IQ {c.get('flex_daxiq_channel')}, not {num}")
+    print(f"{name}: reusing {conf}")
+else:
+    text = open(others[0]).read()
+    c = json.loads(text)
+    for k in keys + ("gui_feed",):
+        if k == "gui_feed":
+            if "port" in c.get("gui_feed", {}):
+                c["gui_feed"]["port"] = max(o.get("gui_feed", {}).get("port", 0) for o in cs.values()) + 1
+        elif k in c:
+            c[k] = max(o.get(k, 0) for o in cs.values()) + 1
+    c["flex_daxiq_channel"] = num
+    c.pop("flex_station", None)  # the station comes from the radio's nickname
+    c["rbn_known_dir"] = f"{root}/rbn_known"  # one RBN cache for every instance on this machine
+    if c.get("record_wav"):
+        c["record_wav"] = f"{root}/rec/{name}_{{band}}_{{ts}}.wav"
+c["bands"] = [band]
+m = re.search(r'\n([ \t]+)"', text)
+open(conf + ".new", "w").write(json.dumps(c, indent=m.group(1) if m else 2) + "\n")
+g = c.get("gui_feed", {})
+print(f"{name}: DAX-IQ {num}, {band}, telnet {c.get('telnet_port')}, feed {g.get('port', 'off')}, "
+      f"UDP {c.get('flex_udp_port')}, config {conf}")
+PY
+  git -C "$top" worktree add -q --detach "$d" HEAD || { rm -f "$conf.new"; exit 2; }
+  for l in "$top"/*.so; do cp "$l" "$d/"; done
+  git -C "$d" ls-files '*.so' | (cd "$d" && xargs -r git update-index --assume-unchanged)
+  mv "$conf.new" "$conf"
+  echo "$n $d $n.local.json $py" >> "$R/instances"
+  echo "start with: sparkgap.sh start $n"
+}
+
+remove() {
+  local n=$1 d f
+  d=$(dir "$n"); f=$(field "$n" 3)
+  pid "$n" > /dev/null && die "$n is running; stop it first"
+  [ -f "$d/.git" ] || die "$d is the clone the other instances share; only a worktree can be removed"
+  git -C "$(clone_of "$d")" worktree remove "$d" || die "git kept $d (changes in it?); nothing removed"
+  awk -v n="$n" '$1 != n' "$R/instances" > "$R/instances.new" && mv "$R/instances.new" "$R/instances"
+  echo "$n: removed; its config stays in $R/config/$f"
+}
+
 update() {
   local d i old new top changed=""
   declare -A was
@@ -192,7 +275,7 @@ update() {
 cmd=$1; shift
 case $cmd in help|-h|--help) usage; exit 0 ;; esac
 case $cmd in
-  status|start|stop|restart|band|rec|update) ;;
+  status|start|stop|restart|band|rec|update|add|remove) ;;
   *) echo "sparkgap.sh: unknown command '$cmd'" >&2; echo >&2; usage >&2; exit 2 ;;
 esac
 for a in "$@"; do [[ $a == -h || $a == --help ]] && { cmd_usage "$cmd"; exit 0; }; done
@@ -211,4 +294,6 @@ case $cmd in
     if [ "$2" = on ]; then setcfg "$1" record_wav "\"$R/rec/${1}_{band}_{ts}.wav\""; else setcfg "$1" record_wav null; fi
     echo "$1: recording $2 ($(df -h --output=avail "$R/rec" | tail -1 | tr -d ' ') free in rec/)"; reconfigure "$1" ;;
   update) [ $# -eq 0 ] || { cmd_usage update; exit 2; }; update ;;
+  add) [ $# -eq 2 ] || { cmd_usage add; exit 2; }; add "$1" "$2" ;;
+  remove) [ $# -eq 1 ] || { cmd_usage remove; exit 2; }; remove "$1" ;;
 esac
