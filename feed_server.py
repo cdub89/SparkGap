@@ -271,8 +271,10 @@ class FeedServer:
                     )
                     break
                 except OSError as e:
-                    if e.errno != errno.EADDRINUSE or k == len(self.ports) - 1:
+                    if e.errno != errno.EADDRINUSE or len(self.ports) == 1:
                         raise
+                    if k == len(self.ports) - 1:
+                        raise OSError(e.errno, f"no free port in {self.ports[0]}-{self.ports[-1]}") from e
             self.port = self.server.sockets[0].getsockname()[1]
             log.info(
                 "GUI feed on %s://%s:%d%s%s",

@@ -304,9 +304,16 @@ class Instance {
   }
 
   // a config named <instance>.local.json names the server after the instance, else the host
-  get name() {
+  get baseName() {
     const cfg = String((this.hello.run || {}).config || "").split("/").pop().match(/^(.+)\.local\.json$/);
     return cfg ? cfg[1] : this.hello.host;
+  }
+
+  // two copies with one name are told apart by port
+  get name() {
+    const base = this.baseName;
+    const twin = base && app.instances.some(i => i !== this && !i.demo && i.baseName === base);
+    return twin ? `${base} :${urlParts(this.url)[1]}` : base;
   }
 
   get station() {
@@ -881,7 +888,9 @@ function scanReport(found) {
   return parts.join(" ");
 }
 
-function saveServers() { save("servers", app.servers.map(({ address, token }) => ({ address, token }))); }
+function saveServers() {
+  save("servers", app.servers.map(({ address, token, refused }) => ({ address, token, refused: [...(refused || [])] })));
+}
 
 function addInstance(url, token, at, server = null) {
   const i = new Instance(url, token);
@@ -897,7 +906,10 @@ function changed(i, what) {
     const sv = i.server;
     sv.rescan = setTimeout(() => { sv.rescan = 0; scanServer(sv); }, RESCAN_DROP_S * 1000);
   }
-  if (what === "hello" && !i.demo && i.name === app.want && i !== inst()) { setCurrent(app.instances.indexOf(i)); return; }
+  // a copy that comes back on another port is followed by name, but never away from a live one
+  if (what === "hello" && !i.demo && i.name === app.want && i !== inst() && !(inst() && inst().state === "live")) {
+    setCurrent(app.instances.indexOf(i)); return;
+  }
   if (what === "hello" && !i.demo && i === inst() && !app.want) { app.want = i.name; save("current", i.name); }
   if (what === "state") { renderConns(); if (i === inst()) renderState(); return; }
   if (i !== inst()) { if (what === "hello") { renderConns(); renderBands(); } return; }
@@ -950,7 +962,7 @@ function oldServers() {
 }
 
 function loadServers() {
-  app.servers = load("servers", null) || oldServers();
+  app.servers = (load("servers", null) || oldServers()).map(s => ({ ...s, refused: new Set(s.refused || []) }));
   saveServers();
   app.servers.forEach(scanServer);
 }
@@ -960,19 +972,23 @@ function loadServers() {
 async function probeServer(s, every = false) {
   const [host, port] = hostPort(s.address);
   s.refused = every || !s.refused ? new Set() : s.refused;
-  const ports = (port ? [port] : SCAN_PORTS).filter(p => !s.refused.has(p));
+  // a port with a live copy of this server is not probed again: it would send a whole snapshot
+  const live = every ? [] : app.instances.filter(i => i.server === s && i.state === "live").map(i => urlParts(i.url)[1]);
+  const ports = (port ? [port] : SCAN_PORTS).filter(p => !s.refused.has(p) && !live.includes(p));
   const found = await Promise.all(ports.map(p => probeFeed(feedUrl(host, p), s.token).then(r => [p, r])));
   for (const [p, r] of found) if (r === "code" || r === "lockout") s.refused.add(p);
-  return found;
+  if (found.some(([, r]) => r === "code" || r === "lockout") && app.servers.includes(s)) saveServers();
+  return found.concat(live.map(p => [p, "ok"]));
 }
 
 // the copies a search found join the list; a copy that no longer answers leaves it
 function reconcile(s, found) {
   const [host] = hostPort(s.address);
   const ok = found.filter(f => f[1] === "ok").map(f => feedUrl(host, f[0]));
+  const was = inst();
   app.instances.filter(i => i.server === s && !ok.includes(i.url) && i.state !== "live").forEach(removeInstance);
   for (const url of ok) if (!app.instances.some(i => i.url === url)) addInstance(url, s.token, undefined, s);
-  if (!inst() && app.instances.length) setCurrent(0);
+  if (inst() !== was || (!inst() && app.instances.length)) setCurrent(app.current);
   renderAll();
 }
 
@@ -1392,6 +1408,7 @@ function editConn(n) {
   $("fErr").hidden = true;
   app.editing = n;
   app.form = {};  // this form; a search finished after it closed is dropped
+  $("fSave").disabled = false;
   app.note = "";
   renderConns();
   $("fAddr").focus();
@@ -1401,7 +1418,7 @@ function editConn(n) {
 async function saveConn() {
   const n = app.editing, form = app.form, address = $("fAddr").value.trim(), token = normalizeCode($("fCode").value);
   let err = checkServer(address, token);
-  if (!err && app.servers.some((sv, k) => k !== n && sv.address === address)) err = "already in the list";
+  if (!err && app.servers.some((sv, k) => k !== n && sv.address === address && sv.token === token)) err = "already in the list";
   if (err) { $("fErr").textContent = err; $("fErr").hidden = false; return; }
   $("fErr").hidden = true;
   $("fSave").disabled = true;

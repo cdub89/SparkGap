@@ -641,3 +641,21 @@ def test_auto_port_takes_the_first_free_one(monkeypatch: pytest.MonkeyPatch) -> 
             assert f.server is not None and f.port == p + 1
         finally:
             f.stop()
+
+
+def test_auto_port_says_when_none_is_free(monkeypatch: pytest.MonkeyPatch,
+                                          caplog: pytest.LogCaptureFixture) -> None:
+    p = _free_pair()
+    monkeypatch.setattr(feed_server, "AUTO_PORTS", range(p, p + 2))
+    with socket.socket() as a, socket.socket() as b:
+        for s, port in ((a, p), (b, p + 1)):
+            s.bind(("127.0.0.1", port))
+            s.listen()
+        f = FeedServer({"bind": "127.0.0.1", "port": "auto"}, HELLO)
+        with caplog.at_level(logging.ERROR):
+            f.start()
+        try:
+            assert f.server is None
+            assert f"no free port in {p}-{p + 1}" in caplog.text
+        finally:
+            f.stop()
