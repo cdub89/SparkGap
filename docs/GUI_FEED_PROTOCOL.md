@@ -156,8 +156,10 @@ Every 2 seconds.
 ```json
 {"type": "status", "cpu": 38, "rss_mb": 331, "clock_synced": true,
  "bins": 37, "spots": 412, "uptime_s": 27243, "utc": 1792020910.0,
- "radio": {"type": "hpsdr", "address": "192.168.1.20", "state": "live",
-           "packets": 5023532, "lost": 0, "pkt_per_s": 3810},
+ "radio": {"type": "flex", "address": "192.168.1.20", "state": "live",
+           "packets": 5023532, "lost": 0, "reconnects": 1,
+           "last_reconnect": 1792019016, "station": "SparkGap-2",
+           "daxiq_channel": 2, "others": ["Shack (SmartSDR-Win)"]},
  "telnet": {"port": 7300, "clients": 1}, "iq_trimmed_s": 0.0,
  "recording": {"file": "/srv/sparkgap/rec/40m.wav", "bytes": 2473963564},
  "windows": 72823, "calls": 97, "spots_hour": 41, "bins_peak": 52,
@@ -183,10 +185,13 @@ Process and decoding:
 
 The station (absent in file mode except `radio`):
 
-- `radio`: `type` (`flex`, `hpsdr` or `file`) and `address` (the radio's
-  address, or the file being replayed). The HPSDR C receiver adds `state`
-  (`live` or `waiting`), `packets`, `lost` and `pkt_per_s`; file mode adds
-  `state` (`replaying`) and `position_s`.
+- `radio`: `type` (`flex`, `hpsdr` or `file`), `address` (the radio's address,
+  or the file being replayed) and `state` (`connecting`, `live`, `reconnecting`,
+  `waiting` or `replaying`). A Flex adds `packets`, `lost`, `reconnects`,
+  `last_reconnect` (UTC seconds or `null`), its `station` name, its
+  `daxiq_channel` and the `others` stations on the radio at the last connect.
+  The HPSDR C receiver adds `packets`, `lost` and `pkt_per_s`; file mode adds
+  `position_s`.
 - `telnet`: the spot port and how many telnet clients are connected.
 - `recording`: the IQ file being written and its size, or `null`.
 

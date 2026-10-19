@@ -69,10 +69,11 @@ def test_snapshot_fields(feed: FeedServer) -> None:
 
 
 def test_status_fields(feed: FeedServer) -> None:
-    # as sparkgap._publish_gui_status builds it on the C receiver; the feed adds its own counters
+    # as sparkgap._publish_gui_status builds it on a Flex; the feed adds its own counters
     import sparkgap
+    from flex_iq import FlexIQReceiver
 
-    radio = sparkgap._CReceiver("192.0.2.1", 1024, 1, 192_000).health()
+    radio = FlexIQReceiver("192.0.2.1", sample_rate=96_000).health()
     c = socket.create_connection(("127.0.0.1", feed.port))  # a console, for the clients list
     c.sendall(b"GET /feed HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
               b"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")
