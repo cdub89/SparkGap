@@ -245,14 +245,20 @@ update() {
   for d in $(awk '!/^#/ && NF {print $2}' "$R/instances" | sort -u); do
     old=$(git -C "$d" rev-parse HEAD) || return 1
     if git -C "$d" symbolic-ref -q HEAD >/dev/null; then
-      git -C "$d" pull -q --ff-only || { echo "$d: pull failed"; return 1; }
+      git -C "$d" fetch -q || { echo "$d: fetch failed"; return 1; }
+      new=$(git -C "$d" rev-parse '@{u}')
     else  # a detached worktree follows the clone it shares a repository with
       top=$(git -C "$d" worktree list --porcelain | awk '/^worktree / {w = $2} /^branch / {print w; exit}')
       [ -n "$top" ] || { echo "$d: detached, no branch to follow"; continue; }
-      git -C "$d" checkout -q --detach "$(git -C "$top" rev-parse HEAD)"
+      new=$(git -C "$top" rev-parse HEAD)
     fi
-    new=$(git -C "$d" rev-parse HEAD)
     if [ "$new" = "$old" ]; then echo "$d: already at $(git -C "$d" log --oneline -1)"; continue; fi
+    # the native builds stand in for the tracked portable ones: put those back so the move can update them
+    git -C "$d" ls-files '*.so' | (cd "$d" && xargs -r git update-index --no-assume-unchanged)
+    git -C "$d" checkout -q -- '*.so'
+    git -C "$d" merge -q --ff-only "$new" 2>/dev/null || git -C "$d" checkout -q --detach "$new" \
+      || { echo "$d: update to $new failed"; return 1; }
+    git -C "$d" ls-files '*.so' | (cd "$d" && xargs -r git update-index --assume-unchanged)
     echo "$d: $(git -C "$d" log --oneline -1)"
     was[$d]=$old; changed="$changed $d"
   done
@@ -268,12 +274,10 @@ update() {
     [[ " $changed " == *" $(dir "$i") "* ]] && pid "$i" >/dev/null && running="$running $i"
   done
   for i in $running; do stop "$i"; done
-  for d in $changed; do
-    if git -C "$d" diff --name-only "${was[$d]}" HEAD | grep -qE '\.(c|h|cpp)$|^Makefile$'; then
-      (cd "$d" && make -B native ARCH=native > "$R/logs/make_native.log" 2>&1) \
-        || { echo "$d: native build failed, see logs/make_native.log"; return 1; }
-      echo "$d: native libraries rebuilt"
-    fi
+  for d in $changed; do  # the move put the portable builds back
+    (cd "$d" && make -B native ARCH=native > "$R/logs/make_native.log" 2>&1) \
+      || { echo "$d: native build failed, see logs/make_native.log"; return 1; }
+    echo "$d: native libraries rebuilt"
   done
   for i in $running; do start "$i"; done
 }
