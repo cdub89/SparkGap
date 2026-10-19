@@ -7160,7 +7160,8 @@ class SparkGap:
                                            sample_rate=rx_sample_rate,
                                            daxiq_channel=self.cfg.get('flex_daxiq_channel', 1),
                                            udp_port=flex_port,
-                                           control_port=sdr_port)
+                                           control_port=sdr_port,
+                                           station=self.cfg.get('flex_station'))
             log.info("Using FlexRadio DAX-IQ receiver at %s", device_ip)
         else:
             # HPSDR Protocol 1 path (Red Pitaya) — supports n_receivers for multi-band
@@ -8294,7 +8295,8 @@ async def async_main(config):
         pass
     finally:
         await skimmer.stop()
-    return 0
+    # a Flex halt stops for good: non-zero so a service manager sees a failure
+    return 1 if getattr(getattr(skimmer, 'receiver', None), 'state', None) == 'halted' else 0
 
 
 def read_24bit_iq_chunk(filename, start_sec, duration_sec, rate=192000):
