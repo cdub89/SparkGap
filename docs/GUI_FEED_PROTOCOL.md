@@ -157,7 +157,6 @@ Every 2 seconds.
 ```json
 {"type": "status", "cpu": 38, "rss_mb": 331, "clock_synced": true,
  "bins": 37, "spots": 412, "uptime_s": 27243, "utc": 1792020910.0,
- "decode_khz": [[7000.0, 7070.0]],
  "radio": {"type": "flex", "address": "192.168.1.20", "state": "live",
            "packets": 5023532, "lost": 0, "reconnects": 1,
            "last_reconnect": 1792019016, "station": "SparkGap-2",
@@ -165,6 +164,7 @@ Every 2 seconds.
  "telnet": {"port": 7300, "clients": 1}, "iq_trimmed_s": 0.0,
  "recording": {"file": "/srv/sparkgap/rec/40m.wav", "bytes": 2473963564},
  "windows": 72823, "calls": 97, "spots_hour": 41, "bins_peak": 52,
+ "decode_khz": [[7000.0, 7070.0]],
  "clients": [{"peer": "192.168.1.31:61718", "name": "shack",
               "since": 1792018739, "dropped": 12}],
  "problems": {"errors": 8,

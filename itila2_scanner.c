@@ -6,6 +6,8 @@
  *   - one bin per signal: spawn spacing 75 Hz on interpolated frequencies, bin at the mean of its candidate's peaks
  *   - per-bin DSP split over itila_decode_threads workers (itila_sc_set_threads)
  *   - fir_dot without the per-tap modulo
+ *   - stage 1 (mix + FIR to 12 kHz) as one shared FFT per block (overlap-save), a small IFFT per bin;
+ *     ITILA_SC_FIR1=1 in the environment restores the per-bin mix + FIR1 (for A/B)
  * Bin keep-alive is the same as itila_scanner.c: spot evidence only (word keep-alive kept noise bins alive, removed 2026-10-06).
  *
  * Implements the complete per-feed pipeline:
@@ -33,11 +35,6 @@
 
 /* ---- compile-time limits ---- */
 #define SC_MAX_BINS   512
-/* A window's SNR is the median of the bin's scan readings over the window (one scan every ~21 ms).
- * The last reading alone was low and erratic against CW Skimmer on the same receiver (median
- * -4 dB, middle half 13 dB wide, 40m CWT replay 2026-10-08); the median: +0.3 dB, 6.6 dB wide. */
-#define SNR_HIST_DB   0.5
-#define SNR_HIST_N    160            /* 0 to 80 dB */
 #define SC_DEC1       16      /* max stage-1 decimation: 192 kHz → 12 kHz (8 at 96k, 4 at 48k) */
 #define SC_DEC2       6       /* 12 kHz → 2 kHz    (FIR stage 2) */
 #define SC_DEC3       10      /* 2 kHz → 200 Hz    (FIR stage 3) */
@@ -57,13 +54,6 @@
 #define SC_CAND_AVG_HZ         25.0    /* hits averaged into the new bin's frequency */
 
 #include "itila_fir_coeffs.h"
-/* Hot loops built twice, AVX2/FMA and baseline, chosen at load time: portable builds keep
- * running on older CPUs and get the native speed on newer ones (cdub89/SparkGap#19 A4). */
-#if defined(__GNUC__) && !defined(__clang__) && defined(__x86_64__)
-#define HOT_CLONES __attribute__((target_clones("arch=x86-64-v3", "default")))
-#else
-#define HOT_CLONES
-#endif
 
 #define SC_HANN_MS     40.0  /* Hann window on the 100 Hz path, at 2 kHz */
 #define SC_HANN_LEN    80    /* SC_HANN_MS x 2 taps */
@@ -129,37 +119,89 @@ static const double FIR1W_48K[9] = {
 };
 #define SC_FIR1_MAX FIR1W_192K_LEN
 
+/* ---- FFT plan: precomputed bit reversal and twiddles, power of 2, forward ---- */
+typedef struct { int n; int *rev; double *wr, *wi; } FftPlan;
+
+static int fft_plan_init(FftPlan *p, int n)
+{
+    p->n = n;
+    p->rev = (int *)malloc(n * sizeof(int));
+    p->wr = (double *)malloc(n / 2 * sizeof(double));
+    p->wi = (double *)malloc(n / 2 * sizeof(double));
+    if (!p->rev || !p->wr || !p->wi) return 0;
+    int bits = 0;
+    while ((1 << bits) < n) bits++;
+    for (int i = 0; i < n; i++) {
+        int r = 0;
+        for (int b = 0; b < bits; b++) if (i & (1 << b)) r |= 1 << (bits - 1 - b);
+        p->rev[i] = r;
+    }
+    for (int k = 0; k < n / 2; k++) { p->wr[k] = cos(-2.0 * M_PI * k / n); p->wi[k] = sin(-2.0 * M_PI * k / n); }
+    return 1;
+}
+
+static void fft_plan_free(FftPlan *p)
+{
+    free(p->rev); free(p->wr); free(p->wi);
+    p->rev = NULL; p->wr = p->wi = NULL;
+}
+
+static void fft_exec(const FftPlan *p, double *re, double *im)
+{
+    int n = p->n;
+    for (int i = 0; i < n; i++) {
+        int j = p->rev[i];
+        if (i < j) {
+            double t = re[i]; re[i] = re[j]; re[j] = t;
+            t = im[i]; im[i] = im[j]; im[j] = t;
+        }
+    }
+    for (int len = 2; len <= n; len <<= 1) {
+        int half = len >> 1, step = n / len;
+        for (int i = 0; i < n; i += len) {
+            for (int k = 0; k < half; k++) {
+                double cr = p->wr[k * step], ci = p->wi[k * step];
+                double vr = re[i+k+half], vi = im[i+k+half];
+                double tr = vr*cr - vi*ci, ti = vr*ci + vi*cr;
+                double ur = re[i+k], ui = im[i+k];
+                re[i+k]      = ur + tr; im[i+k]      = ui + ti;
+                re[i+k+half] = ur - tr; im[i+k+half] = ui - ti;
+            }
+        }
+    }
+}
+
 /* ---- per-bin state ---- */
 typedef struct {
     double f_hz;
     int    active;
-    double c_phase, s_phase;           /* mixer phase at the next stage-1 output */
-    double r1_c, r1_s;                 /* mixer step per stage-1 output (dec1 samples) */
+    double c_phase, s_phase;           /* oscillator state */
 
-    /* FIR stage 1: to 12k, the mixer folded into the taps: g1[k] = fir1[k] * e^(-j step k) (cdub89/SparkGap#19 A2) */
-    double g1_r[SC_FIR1_MAX];
-    double g1_i[SC_FIR1_MAX];
-    int    dl1_count;                  /* samples fed since the last stage-1 output (mod dec1) */
+    /* FIR stage 1: to 12k (up to SC_FIR1_MAX taps, complex I/Q) */
+    double dl1_i[SC_FIR1_MAX];
+    double dl1_q[SC_FIR1_MAX];
+    int    dl1_count;                  /* samples fed since last output */
 
     /* FIR stage 2: 12k→2k (96 taps, complex I/Q, two paths) */
-    double dl2_100i[2*FIR_S2_100_LEN];
-    double dl2_100q[2*FIR_S2_100_LEN];
-    double dl2_200i[2*FIR_S2_200_LEN];
-    double dl2_200q[2*FIR_S2_200_LEN];
+    double dl2_100i[FIR_S2_100_LEN];
+    double dl2_100q[FIR_S2_100_LEN];
+    double dl2_200i[FIR_S2_200_LEN];
+    double dl2_200q[FIR_S2_200_LEN];
     int    dl2_count;
 
     /* Hann window on the 100 Hz path (2 kHz, complex I/Q) */
-    double dlh_i[2*SC_HANN_LEN];
-    double dlh_q[2*SC_HANN_LEN];
-    double dlw_i[2*SC_WIDE_LEN];         /* channel filter on the 200 Hz path */
-    double dlw_q[2*SC_WIDE_LEN];
+    double dlh_i[SC_HANN_LEN];
+    double dlh_q[SC_HANN_LEN];
+    double dlw_i[SC_WIDE_LEN];         /* channel filter on the 200 Hz path */
+    double dlw_q[SC_WIDE_LEN];
     int    dlw_count;
     int    dlh_count;
     int    need_preroll;               /* feed the pre-roll IQ on the next process_bins */
+    int64_t start_in;                  /* FFT front end: first input sample this bin is fed (pre-roll start) */
 
     /* FIR stage 3: 2k→200Hz (60 taps, real envelope, two paths) */
-    double dl3_100[2*FIR_STAGE3_LEN];
-    double dl3_200[2*FIR_STAGE3_LEN];
+    double dl3_100[FIR_STAGE3_LEN];
+    double dl3_200[FIR_STAGE3_LEN];
     int    dl3_count;
 
     double env100[SC_ENV_CAP];
@@ -168,8 +210,6 @@ typedef struct {
     int64_t created_sample;           /* 12 kHz units; int64 so long runs never wrap */
     int64_t last_evidence;
     double snr_db;
-    uint16_t snr_hist[SNR_HIST_N];    /* scan SNR readings since the last window, in SNR_HIST_DB steps */
-    int    snr_n;
 
     /* ITILA decoder handles - created lazily, one per LPF path */
     void  *h100;
@@ -205,13 +245,28 @@ struct ItilaSc {
     int     pre_n;             /* samples in the ring (<= pre_len) */
     int     pre_w;             /* next write position */
     double *lin_i;             /* the ring in time order, built when a bin needs it */
-    double *lin_q;             /* both start SC_FIR1_MAX zeros into lin_bi/lin_bq: stage-1 history */
-    double *lin_bi, *lin_bq;
+    double *lin_q;
     int     lin_n;
-    double  h1_i[SC_FIR1_MAX - 1];   /* raw IQ just before the next feed: stage-1 history */
-    double  h1_q[SC_FIR1_MAX - 1];
     int     preroll_pending;   /* a bin was spawned since lin_* was built */
     /* IIR SOS removed - replaced by per-bin FIR delay lines */
+
+    /* Shared FFT front end (stage 1).  Overlap-save: each block is fN input samples, the last
+     * fP of the previous block plus fL new ones; one forward FFT per block, then per bin the
+     * fNd = fN/dec1 FFT bins around it, times the channel mask fH, one inverse FFT of fNd
+     * gives fL/dec1 samples at 12 kHz.  The last ring_k block spectra are kept for pre-roll. */
+    int     fft_front;
+    int     fN, fNd, fP, fL;
+    FftPlan plan_N, plan_Nd;
+    double *fH;                /* [fNd] mask, FFT order (index m is offset m or m - fNd bins) */
+    double *blk_i, *blk_q;     /* [fN] block being filled */
+    int     blk_n;
+    int64_t blk_start;         /* input sample index of blk[0] */
+    int64_t in_fed;            /* input samples fed before the current itila_sc_feed_iq call */
+    int     ring_k, ring_w, ring_cnt;
+    double **ring_re, **ring_im;
+    int64_t *ring_a;           /* blk_start of each stored spectrum */
+    double *scr_re[SC_MAX_THREADS], *scr_im[SC_MAX_THREADS];   /* per-stripe IFFT scratch */
+    int     job_slot;
 
     double iq_res_i[SC_DEC1];
     double iq_res_q[SC_DEC1];
@@ -221,6 +276,10 @@ struct ItilaSc {
     double *scan_i;
     double *scan_q;
     int     scan_n;
+    /* run_scan work buffers and Blackman window, made once instead of per scan */
+    FftPlan plan_scan;
+    double *scan_win, *scan_re, *scan_im, *scan_psd;
+    void   *scan_peaks;
 
     int    n_bins;
     ScBin  bins[SC_MAX_BINS];
@@ -274,41 +333,6 @@ struct ItilaSc {
 
 static void bin_free_decoders(ItilaSc *sc, ScBin *b);
 
-/* ---- FFT (Cooley-Tukey in-place, power-of-2, forward) ---- */
-static void fft_forward(double *re, double *im, int n)
-{
-    /* bit-reversal */
-    int j = 0;
-    for (int i = 1; i < n; i++) {
-        int bit = n >> 1;
-        for (; j & bit; bit >>= 1) j ^= bit;
-        j ^= bit;
-        if (i < j) {
-            double t;
-            t = re[i]; re[i] = re[j]; re[j] = t;
-            t = im[i]; im[i] = im[j]; im[j] = t;
-        }
-    }
-    /* butterfly */
-    for (int len = 2; len <= n; len <<= 1) {
-        double ang = -2.0 * M_PI / len;
-        double wre = cos(ang), wim = sin(ang);
-        for (int i = 0; i < n; i += len) {
-            double cr = 1.0, ci = 0.0;
-            for (int k = 0; k < len / 2; k++) {
-                double ur = re[i+k],       ui = im[i+k];
-                double vr = re[i+k+len/2], vi = im[i+k+len/2];
-                double tr = vr*cr - vi*ci, ti = vr*ci + vi*cr;
-                re[i+k]        = ur + tr; im[i+k]        = ui + ti;
-                re[i+k+len/2]  = ur - tr; im[i+k+len/2]  = ui - ti;
-                double nc = cr*wre - ci*wim;
-                ci = cr*wim + ci*wre;
-                cr = nc;
-            }
-        }
-    }
-}
-
 /* ---- qsort comparator (file scope, not nested) ---- */
 typedef struct { double power; double f_hz; double snr; double f_exact; } ScPeak;
 static int cmp_peak_desc(const void *a, const void *b)
@@ -317,63 +341,29 @@ static int cmp_peak_desc(const void *a, const void *b)
     return da > db ? -1 : da < db ? 1 : 0;
 }
 
-/* ---- window SNR: the median of a bin's scan readings ---- */
-static void snr_note(ScBin *b, double snr)
-{
-    int k = (int)(snr / SNR_HIST_DB);
-    if (k < 0) k = 0;
-    if (k >= SNR_HIST_N) k = SNR_HIST_N - 1;
-    if (b->snr_hist[k] < UINT16_MAX) b->snr_hist[k]++;
-    b->snr_n++;
-}
-
-/* The window's median SNR, and a fresh count for the next window.  A window without readings
- * keeps the bin's current SNR rather than an older window's. */
-static double snr_take(ScBin *b)
-{
-    double snr = b->snr_db;
-    if (b->snr_n > 0) {
-        int half = (b->snr_n + 1) / 2, sum = 0;
-        for (int k = 0; k < SNR_HIST_N; k++) {
-            sum += b->snr_hist[k];
-            if (sum >= half) { snr = (k + 0.5) * SNR_HIST_DB; break; }
-        }
-    }
-    memset(b->snr_hist, 0, sizeof(b->snr_hist));
-    b->snr_n = 0;
-    return snr;
-}
-
 /* ---- energy scan ---- */
-HOT_CLONES static void run_scan(ItilaSc *sc, const double *seg_i, const double *seg_q)
+static void run_scan(ItilaSc *sc, const double *seg_i, const double *seg_q)
 {
     int N = sc->energy_win;
-    double *re = (double *)malloc(N * sizeof(double));
-    double *im = (double *)malloc(N * sizeof(double));
-    if (!re || !im) { free(re); free(im); return; }
+    double *re = sc->scan_re, *im = sc->scan_im, *psd = sc->scan_psd;
 
     /* Blackman window + load */
     for (int k = 0; k < N; k++) {
-        double w = 0.42 - 0.5*cos(2.0*M_PI*k/(N-1)) + 0.08*cos(4.0*M_PI*k/(N-1));
-        re[k] = seg_i[k] * w;
-        im[k] = seg_q[k] * w;
+        re[k] = seg_i[k] * sc->scan_win[k];
+        im[k] = seg_q[k] * sc->scan_win[k];
     }
-    fft_forward(re, im, N);
+    fft_exec(&sc->plan_scan, re, im);
 
     /* PSD in dB */
-    double *psd = (double *)malloc(N * sizeof(double));
-    if (!psd) { free(re); free(im); return; }
     for (int k = 0; k < N; k++)
         psd[k] = 10.0 * log10(re[k]*re[k] + im[k]*im[k] + 1e-20);
-    free(re); free(im);
 
     double bin_hz  = (double)sc->sample_rate / N;
 
     /* Collect LOCAL MAXIMA using CFAR detection - local noise estimate per bin.
      * For each candidate peak, compute median of nearby bins (excluding the peak
      * and its immediate neighbors). Self-calibrates to local QRM conditions. */
-    ScPeak *peaks = (ScPeak *)malloc(N * sizeof(ScPeak));
-    if (!peaks) { free(psd); return; }
+    ScPeak *peaks = (ScPeak *)sc->scan_peaks;
     int np = 0;
     int guard = 3;   /* bins to exclude around candidate */
     int window = 20; /* bins each side for local noise estimate */
@@ -382,18 +372,24 @@ HOT_CLONES static void run_scan(ItilaSc *sc, const double *seg_i, const double *
         /* Local noise: median of bins within ±window, excluding ±guard */
         double local[64]; int nl = 0;
         for (int j = k - window; j <= k + window && nl < 64; j++) {
-            int jj = ((j % N) + N) % N;  /* wrap around */
+            int jj = j < 0 ? j + N : j >= N ? j - N : j;  /* wrap around */
             if (abs(j - k) <= guard) continue;
             local[nl++] = psd[jj];
         }
         if (nl < 5) continue;
-        /* Sort for median */
-        for (int a = 1; a < nl; a++) {
-            double tmp = local[a]; int b = a-1;
-            while (b >= 0 && local[b] > tmp) { local[b+1] = local[b]; b--; }
-            local[b+1] = tmp;
+        /* Median: the nl/2-th smallest (quickselect; same element a full sort would put there) */
+        int lo = 0, hi = nl - 1, kth = nl / 2;
+        while (lo < hi) {
+            double piv = local[(lo + hi) / 2];
+            int a = lo, b = hi;
+            while (a <= b) {
+                while (local[a] < piv) a++;
+                while (local[b] > piv) b--;
+                if (a <= b) { double t = local[a]; local[a] = local[b]; local[b] = t; a++; b--; }
+            }
+            if (kth <= b) hi = b; else if (kth >= a) lo = a; else break;
         }
-        double local_noise = local[nl/2];
+        double local_noise = local[kth];
         if (psd[k] <= local_noise + sc->min_snr) continue;
         /* Parabolic interpolation for sub-bin accuracy */
         double delta = 0.5 * (psd[k-1] - psd[k+1]) /
@@ -410,8 +406,6 @@ HOT_CLONES static void run_scan(ItilaSc *sc, const double *seg_i, const double *
         peaks[np].f_exact = f_abs;
         np++;
     }
-    free(psd);
-
     qsort(peaks, np, sizeof(ScPeak), cmp_peak_desc);
 
     /* Bump scan counter and expire stale candidates (haven't been seen in
@@ -470,7 +464,6 @@ HOT_CLONES static void run_scan(ItilaSc *sc, const double *seg_i, const double *
         for (int b = 0; b < SC_MAX_BINS; b++) {
             if (sc->bins[b].active && fabs(sc->bins[b].f_hz - peaks[i].f_exact) <= cluster_hz) {
                 sc->bins[b].snr_db = peaks[i].snr;
-                snr_note(&sc->bins[b], peaks[i].snr);
                 found = 1; break;
             }
         }
@@ -566,122 +559,188 @@ HOT_CLONES static void run_scan(ItilaSc *sc, const double *seg_i, const double *
         bin->f_hz           = sc->cand[cand_idx].f_sum / sc->cand[cand_idx].n_avg;
         bin->created_sample = sc->total_samples;
         bin->active  = 1;
-        double step = -2.0 * M_PI * (bin->f_hz - sc->center_hz) / sc->sample_rate;
-        for (int k = 0; k < sc->fir1_len; k++) {
-            bin->g1_r[k] =  sc->fir1[k] * cos(step * k);
-            bin->g1_i[k] = -sc->fir1[k] * sin(step * k);
-        }
-        bin->c_phase = cos(step * (sc->dec1 - 1));   /* first output: sample dec1 - 1 */
-        bin->s_phase = sin(step * (sc->dec1 - 1));
-        bin->r1_c    = cos(step * sc->dec1);
-        bin->r1_s    = sin(step * sc->dec1);
+        bin->c_phase = 1.0;
+        bin->s_phase = 0.0;
         bin->snr_db  = peaks[i].snr;
-        snr_note(bin, peaks[i].snr);
         bin->need_preroll = 1;
+        bin->start_in = sc->in_fed - sc->pre_len;     /* as the per-bin path: the 1 s before this feed */
         sc->preroll_pending = 1;
         sc->n_bins++;
     }
-    free(peaks);
 }
 
 /* ---- FIR convolution helper: dot product of delay line with filter ---- */
-/* Delay lines are written twice (pos and pos + len), so the newest-first window is one
- * contiguous run: same taps in the same order as (pos - k + len) % len (cdub89/SparkGap#19 A3). */
 static double fir_dot(const double *dl, int pos, const double *h, int len)
 {
-    const double *x = dl + pos + len;
+    /* Same taps in the same order as (pos - k + len) % len, without the modulo. */
     double acc = 0.0;
-    for (int k = 0; k < len; k++)
-        acc += x[-k] * h[k];
+    int k = 0;
+    for (; k <= pos; k++)
+        acc += dl[pos - k] * h[k];
+    for (; k < len; k++)
+        acc += dl[pos - k + len] * h[k];
     return acc;
 }
 
+/* Stages 2 and 3 for one 12 kHz sample of a bin: FIR2 (100/200 Hz paths) to 2 kHz, Hann and
+ * channel filter, envelope, FIR3 to 200 Hz.  Returns 1 when the envelope buffer was full. */
+static int bin_push_12k(const ItilaSc *sc, ScBin *b, double s1_i, double s1_q)
+{
+    /* Stage 2: push into FIR2 delay lines (100 Hz + 200 Hz paths), decimate 6:1 */
+    int pos2_100 = b->dl2_count % FIR_S2_100_LEN;
+    int pos2_200 = b->dl2_count % FIR_S2_200_LEN;
+    b->dl2_100i[pos2_100] = s1_i;
+    b->dl2_100q[pos2_100] = s1_q;
+    b->dl2_200i[pos2_200] = s1_i;
+    b->dl2_200q[pos2_200] = s1_q;
+    if (++b->dl2_count == FIR_S2_100_LEN * FIR_S2_200_LEN * SC_DEC2) b->dl2_count = 0;
+
+    if (b->dl2_count % SC_DEC2 != 0) return 0;
+    /* Output one 2k sample per path */
+    double s2_100i = fir_dot(b->dl2_100i, pos2_100, FIR_S2_100, FIR_S2_100_LEN);
+    double s2_100q = fir_dot(b->dl2_100q, pos2_100, FIR_S2_100, FIR_S2_100_LEN);
+    double s2_200i = fir_dot(b->dl2_200i, pos2_200, FIR_S2_200, FIR_S2_200_LEN);
+    double s2_200q = fir_dot(b->dl2_200q, pos2_200, FIR_S2_200, FIR_S2_200_LEN);
+
+    /* Hann window on the 100 Hz path before the magnitude */
+    int ph = b->dlh_count;
+    b->dlh_i[ph] = s2_100i;
+    b->dlh_q[ph] = s2_100q;
+    if (++b->dlh_count == SC_HANN_LEN) b->dlh_count = 0;
+    s2_100i = fir_dot(b->dlh_i, ph, sc->hann, SC_HANN_LEN);
+    s2_100q = fir_dot(b->dlh_q, ph, sc->hann, SC_HANN_LEN);
+
+    int pw = b->dlw_count;
+    b->dlw_i[pw] = s2_200i;
+    b->dlw_q[pw] = s2_200q;
+    if (++b->dlw_count == SC_WIDE_LEN) b->dlw_count = 0;
+    s2_200i = fir_dot(b->dlw_i, pw, WIDE_TAPS, SC_WIDE_LEN);
+    s2_200q = fir_dot(b->dlw_q, pw, WIDE_TAPS, SC_WIDE_LEN);
+
+    /* Envelope at 2 kHz */
+    double env2_100 = sqrt(s2_100i*s2_100i + s2_100q*s2_100q);
+    double env2_200 = sqrt(s2_200i*s2_200i + s2_200q*s2_200q);
+
+    /* Stage 3: push envelope into FIR3 delay lines, decimate 10:1 */
+    int pos3 = b->dl3_count % FIR_STAGE3_LEN;
+    b->dl3_100[pos3] = env2_100;
+    b->dl3_200[pos3] = env2_200;
+    if (++b->dl3_count == FIR_STAGE3_LEN * SC_DEC3) b->dl3_count = 0;
+
+    if (b->dl3_count % SC_DEC3 != 0) return 0;
+    /* Output one 200 Hz envelope sample */
+    double env_100 = fir_dot(b->dl3_100, pos3, FIR_STAGE3, FIR_STAGE3_LEN);
+    double env_200 = fir_dot(b->dl3_200, pos3, FIR_STAGE3, FIR_STAGE3_LEN);
+
+    if (b->env_n < SC_ENV_CAP) {
+        b->env100[b->env_n] = env_100;
+        b->env200[b->env_n] = env_200;
+        b->env_n++;
+    } else {
+        return 1;
+    }
+    return 0;
+}
+
 /* ---- per-bin DSP: all-FIR linear-phase chain ---- */
-HOT_CLONES static int process_bin(ItilaSc *sc, ScBin *b, const double *i_full, const double *q_full, int n)
+static int process_bin(ItilaSc *sc, ScBin *b, const double *i_full, const double *q_full, int n)
 {
     int drops = 0;
     {
 
-        /* Stage 1 at the 12k output instants only: FIR1 with the mixer folded into the taps,
-         * then the mixer phase at that instant.  i_full[t - k] reaches back into the history
-         * kept before the buffer (h1_* or the zeros before lin_*). */
-        const int L = sc->fir1_len, D = sc->dec1;
-        const double rc = b->r1_c, rs = b->r1_s;
+        /* Oscillator for mixing to baseband */
+        double step   = -2.0 * M_PI * (b->f_hz - sc->center_hz) / sc->sample_rate;
+        double c_step = cos(step);
+        double s_step = sin(step);
         double cp = b->c_phase, sp = b->s_phase;
 
-        for (int t = D - 1 - b->dl1_count; t < n; t += D) {
-            double re = 0.0, im = 0.0;
-            for (int k = 0; k < L; k++) {
-                double xi = i_full[t - k], xq = q_full[t - k];
-                re += b->g1_r[k] * xi - b->g1_i[k] * xq;
-                im += b->g1_r[k] * xq + b->g1_i[k] * xi;
-            }
-            double s1_i = re * cp - im * sp;
-            double s1_q = re * sp + im * cp;
-            double cn = cp * rc - sp * rs;
-            sp = sp * rc + cp * rs;
-            cp = cn;
+        for (int t = 0; t < n; t++) {
+            double ii = i_full[t], qi = q_full[t];
+            double mixed_i = ii*cp - qi*sp;
+            double mixed_q = ii*sp + qi*cp;
+            double cn = cp*c_step - sp*s_step;
+            double sn = sp*c_step + cp*s_step;
+            cp = cn; sp = sn;
 
-            /* Stage 2: push into FIR2 delay lines (100 Hz + 200 Hz paths), decimate 6:1 */
-            int pos2_100 = b->dl2_count % FIR_S2_100_LEN;
-            int pos2_200 = b->dl2_count % FIR_S2_200_LEN;
-            b->dl2_100i[pos2_100] = b->dl2_100i[pos2_100 + FIR_S2_100_LEN] = s1_i;
-            b->dl2_100q[pos2_100] = b->dl2_100q[pos2_100 + FIR_S2_100_LEN] = s1_q;
-            b->dl2_200i[pos2_200] = b->dl2_200i[pos2_200 + FIR_S2_200_LEN] = s1_i;
-            b->dl2_200q[pos2_200] = b->dl2_200q[pos2_200 + FIR_S2_200_LEN] = s1_q;
-            if (++b->dl2_count == FIR_S2_100_LEN * FIR_S2_200_LEN * SC_DEC2) b->dl2_count = 0;
+            /* Stage 1: push into FIR1 delay line, decimate 16:1 */
+            int pos1 = b->dl1_count % sc->fir1_len;
+            b->dl1_i[pos1] = mixed_i;
+            b->dl1_q[pos1] = mixed_q;
+            if (++b->dl1_count == sc->fir1_len * sc->dec1) b->dl1_count = 0;  /* wrap: keeps both moduli */
 
-            if (b->dl2_count % SC_DEC2 != 0) continue;
-            /* Output one 2k sample per path */
-            double s2_100i = fir_dot(b->dl2_100i, pos2_100, FIR_S2_100, FIR_S2_100_LEN);
-            double s2_100q = fir_dot(b->dl2_100q, pos2_100, FIR_S2_100, FIR_S2_100_LEN);
-            double s2_200i = fir_dot(b->dl2_200i, pos2_200, FIR_S2_200, FIR_S2_200_LEN);
-            double s2_200q = fir_dot(b->dl2_200q, pos2_200, FIR_S2_200, FIR_S2_200_LEN);
+            if (b->dl1_count % sc->dec1 != 0) continue;
+            /* Output one 12k sample */
+            double s1_i = fir_dot(b->dl1_i, pos1, sc->fir1, sc->fir1_len);
+            double s1_q = fir_dot(b->dl1_q, pos1, sc->fir1, sc->fir1_len);
 
-            /* Hann window on the 100 Hz path before the magnitude */
-            int ph = b->dlh_count;
-            b->dlh_i[ph] = b->dlh_i[ph + SC_HANN_LEN] = s2_100i;
-            b->dlh_q[ph] = b->dlh_q[ph + SC_HANN_LEN] = s2_100q;
-            if (++b->dlh_count == SC_HANN_LEN) b->dlh_count = 0;
-            s2_100i = fir_dot(b->dlh_i, ph, sc->hann, SC_HANN_LEN);
-            s2_100q = fir_dot(b->dlh_q, ph, sc->hann, SC_HANN_LEN);
-
-            int pw = b->dlw_count;
-            b->dlw_i[pw] = b->dlw_i[pw + SC_WIDE_LEN] = s2_200i;
-            b->dlw_q[pw] = b->dlw_q[pw + SC_WIDE_LEN] = s2_200q;
-            if (++b->dlw_count == SC_WIDE_LEN) b->dlw_count = 0;
-            s2_200i = fir_dot(b->dlw_i, pw, WIDE_TAPS, SC_WIDE_LEN);
-            s2_200q = fir_dot(b->dlw_q, pw, WIDE_TAPS, SC_WIDE_LEN);
-
-            /* Envelope at 2 kHz */
-            double env2_100 = sqrt(s2_100i*s2_100i + s2_100q*s2_100q);
-            double env2_200 = sqrt(s2_200i*s2_200i + s2_200q*s2_200q);
-
-            /* Stage 3: push envelope into FIR3 delay lines, decimate 10:1 */
-            int pos3 = b->dl3_count % FIR_STAGE3_LEN;
-            b->dl3_100[pos3] = b->dl3_100[pos3 + FIR_STAGE3_LEN] = env2_100;
-            b->dl3_200[pos3] = b->dl3_200[pos3 + FIR_STAGE3_LEN] = env2_200;
-            if (++b->dl3_count == FIR_STAGE3_LEN * SC_DEC3) b->dl3_count = 0;
-
-            if (b->dl3_count % SC_DEC3 != 0) continue;
-            /* Output one 200 Hz envelope sample */
-            double env_100 = fir_dot(b->dl3_100, pos3, FIR_STAGE3, FIR_STAGE3_LEN);
-            double env_200 = fir_dot(b->dl3_200, pos3, FIR_STAGE3, FIR_STAGE3_LEN);
-
-            if (b->env_n < SC_ENV_CAP) {
-                b->env100[b->env_n] = env_100;
-                b->env200[b->env_n] = env_200;
-                b->env_n++;
-            } else {
-                drops++;
-            }
+            drops += bin_push_12k(sc, b, s1_i, s1_q);
         }
 
-        b->dl1_count = (b->dl1_count + n) % D;
         /* Renormalize oscillator */
         double norm = 1.0 / sqrt(cp*cp + sp*sp);
         b->c_phase = cp * norm;
         b->s_phase = sp * norm;
+    }
+    return drops;
+}
+
+/* Stage 1 from the shared FFT: one block of a bin.  The fNd FFT bins around the bin, times the
+ * mask, inverse FFT.  The mask is zero-phase, so an output needs input on both sides of it: half
+ * the overlap (fP/2) is dropped at each end of the block, else the last outputs wrap around to
+ * the start of the block (a strong carrier nearby then leaks a burst every block).  The block FFT
+ * mixes by k0 FFT bins relative to blk_start, so a phase term makes the mix continuous from
+ * block to block; the residual (under half an FFT bin) is mixed out at 12 kHz by the bin's
+ * oscillator, after the mask, which is flat far beyond it. */
+static int process_bin_fft(ItilaSc *sc, ScBin *b, int slot, double *yr, double *yi)
+{
+    const double *xr = sc->ring_re[slot], *xi = sc->ring_im[slot];
+    int N = sc->fN, Nd = sc->fNd;
+    double df  = (double)sc->sample_rate / N;
+    double off = b->f_hz - sc->center_hz;
+    long k0 = lround(off / df);
+    double r = off - k0 * df;
+    for (int m = 0; m < Nd; m++) {
+        long mm = m < Nd / 2 ? m : m - Nd;
+        long src = ((k0 + mm) % N + N) % N;
+        /* conjugate in, conjugate out: the forward FFT computes the inverse */
+        yr[m] =  xr[src] * sc->fH[m];
+        yi[m] = -xi[src] * sc->fH[m];
+    }
+    fft_exec(&sc->plan_Nd, yr, yi);
+    long ph = (long)(((int64_t)k0 % N * (sc->ring_a[slot] % N)) % N);
+    double th = -2.0 * M_PI * (double)ph / N;
+    double pc = cos(th) / N, ps = sin(th) / N;          /* 1/N: unnormalised forward + inverse */
+    double step = -2.0 * M_PI * r * sc->dec1 / sc->sample_rate;
+    double c_step = cos(step), s_step = sin(step);
+    double cp = b->c_phase, sp = b->s_phase;
+    int drops = 0;
+    int t0 = sc->fP / sc->dec1 / 2, t1 = Nd - t0;                  /* half the overlap off each end */
+    int64_t first = sc->ring_a[slot] + (int64_t)t0 * sc->dec1;     /* input sample of output t0 */
+    if (first < b->start_in) {                                     /* pre-roll starts mid-block */
+        int64_t skip = (b->start_in - first + sc->dec1 - 1) / sc->dec1;
+        t0 = skip >= t1 - t0 ? t1 : t0 + (int)skip;
+    }
+    for (int t = t0; t < t1; t++) {
+        double zr = yr[t], zi = -yi[t];
+        double ar = zr*pc - zi*ps, ai = zr*ps + zi*pc;
+        double s1_i = ar*cp - ai*sp, s1_q = ar*sp + ai*cp;
+        double cn = cp*c_step - sp*s_step;
+        sp = sp*c_step + cp*s_step; cp = cn;
+        drops += bin_push_12k(sc, b, s1_i, s1_q);
+    }
+    double norm = 1.0 / sqrt(cp*cp + sp*sp);
+    b->c_phase = cp * norm;
+    b->s_phase = sp * norm;
+    return drops;
+}
+
+/* A new bin first gets the stored block spectra older than `slot`, oldest first (pre-roll). */
+static int preroll_fft(ItilaSc *sc, ScBin *b, int slot, double *yr, double *yi)
+{
+    int drops = 0;
+    for (int age = sc->ring_cnt - 1; age >= 1; age--) {
+        int k = ((slot - age) % sc->ring_k + sc->ring_k) % sc->ring_k;
+        drops += process_bin_fft(sc, b, k, yr, yi);
     }
     return drops;
 }
@@ -696,6 +755,14 @@ static int process_stripe(ItilaSc *sc, int stripe, const double *i_full, const d
     for (int bi = stripe; bi < SC_MAX_BINS; bi += step) {
         ScBin *b = &sc->bins[bi];
         if (!b->active) continue;
+        if (sc->fft_front) {
+            if (b->need_preroll) {
+                b->need_preroll = 0;
+                drops += preroll_fft(sc, b, sc->job_slot, sc->scr_re[stripe], sc->scr_im[stripe]);
+            }
+            drops += process_bin_fft(sc, b, sc->job_slot, sc->scr_re[stripe], sc->scr_im[stripe]);
+            continue;
+        }
         if (b->need_preroll) {
             b->need_preroll = 0;
             if (sc->lin_n > 0) drops += process_bin(sc, b, sc->lin_i, sc->lin_q, sc->lin_n);
@@ -744,7 +811,7 @@ static void preroll_linearize(ItilaSc *sc)
 
 static void process_bins(ItilaSc *sc, const double *i_full, const double *q_full, int n)
 {
-    if (sc->preroll_pending) {
+    if (sc->preroll_pending && !sc->fft_front) {
         sc->preroll_pending = 0;
         preroll_linearize(sc);
     }
@@ -874,15 +941,65 @@ ItilaSc *itila_sc_create(int sample_rate, double center_hz,
 
     sc->scan_i = (double *)calloc(energy_win, sizeof(double));
     sc->scan_q = (double *)calloc(energy_win, sizeof(double));
+    sc->scan_win = (double *)malloc(energy_win * sizeof(double));
+    sc->scan_re  = (double *)malloc(energy_win * sizeof(double));
+    sc->scan_im  = (double *)malloc(energy_win * sizeof(double));
+    sc->scan_psd = (double *)malloc(energy_win * sizeof(double));
+    sc->scan_peaks = malloc(energy_win * sizeof(ScPeak));
+    if (!sc->scan_win || !sc->scan_re || !sc->scan_im || !sc->scan_psd || !sc->scan_peaks ||
+        !fft_plan_init(&sc->plan_scan, energy_win)) {
+        itila_sc_free(sc); return NULL;
+    }
+    for (int k = 0; k < energy_win; k++)
+        sc->scan_win[k] = 0.42 - 0.5*cos(2.0*M_PI*k/(energy_win-1)) + 0.08*cos(4.0*M_PI*k/(energy_win-1));
     sc->pre_len = (int)(SC_PREROLL_SEC * sample_rate) / sc->dec1 * sc->dec1;
     sc->pre_i = (double *)calloc(sc->pre_len, sizeof(double));
     sc->pre_q = (double *)calloc(sc->pre_len, sizeof(double));
-    sc->lin_bi = (double *)calloc(sc->pre_len + SC_FIR1_MAX, sizeof(double));
-    sc->lin_bq = (double *)calloc(sc->pre_len + SC_FIR1_MAX, sizeof(double));
-    sc->lin_i = sc->lin_bi ? sc->lin_bi + SC_FIR1_MAX : NULL;
-    sc->lin_q = sc->lin_bq ? sc->lin_bq + SC_FIR1_MAX : NULL;
+    sc->lin_i = (double *)calloc(sc->pre_len, sizeof(double));
+    sc->lin_q = (double *)calloc(sc->pre_len, sizeof(double));
     if (!sc->scan_i || !sc->scan_q || !sc->pre_i || !sc->pre_q || !sc->lin_i || !sc->lin_q) {
         itila_sc_free(sc); return NULL;
+    }
+
+    const char *fir1_env = getenv("ITILA_SC_FIR1");
+    sc->fft_front = !(fir1_env && fir1_env[0] == '1');
+    if (sc->fft_front) {
+        /* 11.7 Hz FFT bins at every rate; 1024 bins = 12 kHz per bin; 64 output samples of overlap
+         * (5.3 ms), 32 dropped at each end, hold the zero-phase mask's impulse response on both
+         * sides; 960 new 12 kHz samples per block, 2.7 ms behind the input. */
+        sc->fNd = 1024;
+        sc->fN  = sc->fNd * sc->dec1;
+        sc->fP  = 64 * sc->dec1;
+        sc->fL  = sc->fN - sc->fP;
+        sc->ring_k = (sc->pre_len + sc->fL - 1) / sc->fL + 1;
+        int ok = fft_plan_init(&sc->plan_N, sc->fN) && fft_plan_init(&sc->plan_Nd, sc->fNd);
+        sc->fH    = (double *)calloc(sc->fNd, sizeof(double));
+        sc->blk_i = (double *)calloc(sc->fN, sizeof(double));
+        sc->blk_q = (double *)calloc(sc->fN, sizeof(double));
+        sc->ring_re = (double **)calloc(sc->ring_k, sizeof(double *));
+        sc->ring_im = (double **)calloc(sc->ring_k, sizeof(double *));
+        sc->ring_a  = (int64_t *)calloc(sc->ring_k, sizeof(int64_t));
+        ok = ok && sc->fH && sc->blk_i && sc->blk_q && sc->ring_re && sc->ring_im && sc->ring_a;
+        for (int k = 0; ok && k < sc->ring_k; k++) {
+            sc->ring_re[k] = (double *)malloc(sc->fN * sizeof(double));
+            sc->ring_im[k] = (double *)malloc(sc->fN * sizeof(double));
+            ok = sc->ring_re[k] && sc->ring_im[k];
+        }
+        for (int k = 0; ok && k < SC_MAX_THREADS; k++) {
+            sc->scr_re[k] = (double *)malloc(sc->fNd * sizeof(double));
+            sc->scr_im[k] = (double *)malloc(sc->fNd * sizeof(double));
+            ok = sc->scr_re[k] && sc->scr_im[k];
+        }
+        if (!ok) { itila_sc_free(sc); return NULL; }
+        /* Channel mask: flat to +-4.8 kHz, raised-cosine to zero at +-6 kHz (the 12 kHz edges).
+         * The old FIR1 droops < 0.03 dB at 300 Hz; downstream FIR2 only passes +-200 Hz. */
+        double df = (double)sample_rate / sc->fN;
+        for (int m = 0; m < sc->fNd; m++) {
+            double f = fabs((m < sc->fNd / 2 ? m : m - sc->fNd) * df);
+            sc->fH[m] = f <= 4800.0 ? 1.0 : f >= 6000.0 ? 0.0 : 0.5 * (1.0 + cos(M_PI * (f - 4800.0) / 1200.0));
+        }
+        sc->blk_n = sc->fP / 2;          /* silence before input sample 0: the first output is sample 0 */
+        sc->blk_start = -sc->fP / 2;
     }
 
     return sc;
@@ -902,10 +1019,23 @@ void itila_sc_free(ItilaSc *sc)
     pthread_cond_destroy(&sc->pool_done);
     free(sc->scan_i);
     free(sc->scan_q);
+    free(sc->scan_win); free(sc->scan_re); free(sc->scan_im); free(sc->scan_psd); free(sc->scan_peaks);
+    fft_plan_free(&sc->plan_scan);
     free(sc->pre_i);
     free(sc->pre_q);
-    free(sc->lin_bi);
-    free(sc->lin_bq);
+    free(sc->lin_i);
+    free(sc->lin_q);
+    if (sc->fft_front) {
+        fft_plan_free(&sc->plan_N);
+        fft_plan_free(&sc->plan_Nd);
+        for (int k = 0; k < sc->ring_k; k++) {
+            if (sc->ring_re) free(sc->ring_re[k]);
+            if (sc->ring_im) free(sc->ring_im[k]);
+        }
+        free(sc->ring_re); free(sc->ring_im); free(sc->ring_a);
+        for (int k = 0; k < SC_MAX_THREADS; k++) { free(sc->scr_re[k]); free(sc->scr_im[k]); }
+        free(sc->fH); free(sc->blk_i); free(sc->blk_q);
+    }
     free(sc);
 }
 
@@ -916,22 +1046,6 @@ double itila_sc_get_snr(ItilaSc *sc, double f_hz)
             return sc->bins[i].snr_db;
     }
     return 0.0;
-}
-
-/* SNR for the window just drained at f_hz (median of its scan readings, see SNR_HIST_N). */
-double itila_sc_take_snr(ItilaSc *sc, double f_hz)
-{
-    double snr = 0.0;
-    pthread_mutex_lock(&sc->lock);
-    for (int i = 0; i < SC_MAX_BINS; i++) {
-        ScBin *b = &sc->bins[i];
-        if (b->active && fabs(b->f_hz - f_hz) < 1.0) {
-            snr = snr_take(b);
-            break;
-        }
-    }
-    pthread_mutex_unlock(&sc->lock);
-    return snr;
 }
 
 void itila_sc_mark_evidence(ItilaSc *sc, double f_hz)
@@ -965,18 +1079,46 @@ void itila_sc_feed_iq(ItilaSc *sc,
         }
     }
 
+    if (sc->fft_front) {
+        /* --- stage 1 by blocks: fill, FFT, store the spectrum, run the bins --- */
+        int pos = 0;
+        while (pos < n) {
+            int copy = sc->fN - sc->blk_n;
+            if (copy > n - pos) copy = n - pos;
+            memcpy(sc->blk_i + sc->blk_n, i_arr + pos, copy * sizeof(double));
+            memcpy(sc->blk_q + sc->blk_n, q_arr + pos, copy * sizeof(double));
+            sc->blk_n += copy;
+            pos += copy;
+            if (sc->blk_n < sc->fN) break;
+            int slot = sc->ring_w;
+            memcpy(sc->ring_re[slot], sc->blk_i, sc->fN * sizeof(double));
+            memcpy(sc->ring_im[slot], sc->blk_q, sc->fN * sizeof(double));
+            fft_exec(&sc->plan_N, sc->ring_re[slot], sc->ring_im[slot]);
+            sc->ring_a[slot] = sc->blk_start;
+            sc->ring_w = (slot + 1) % sc->ring_k;
+            if (sc->ring_cnt < sc->ring_k) sc->ring_cnt++;
+            if (sc->n_bins > 0) {
+                sc->job_slot = slot;
+                process_bins(sc, NULL, NULL, 0);
+            }
+            memmove(sc->blk_i, sc->blk_i + sc->fL, sc->fP * sizeof(double));
+            memmove(sc->blk_q, sc->blk_q + sc->fL, sc->fP * sizeof(double));
+            sc->blk_n = sc->fP;
+            sc->blk_start += sc->fL;
+        }
+        sc->in_fed += n;
+        pthread_mutex_unlock(&sc->lock);
+        return;
+    }
+
     /* --- IQ routing: prepend residual, process bins --- */
     int total   = sc->iq_res_n + n;
     int n_dec1  = (total / sc->dec1) * sc->dec1;
     int new_res = total - n_dec1;
 
-    const int pad = SC_FIR1_MAX - 1;   /* stage-1 history in front of the buffer */
-    double *i_buf = (double *)malloc((pad + total) * sizeof(double));
-    double *q_buf = (double *)malloc((pad + total) * sizeof(double));
-    if (!i_buf || !q_buf) { free(i_buf); free(q_buf); pthread_mutex_unlock(&sc->lock); return; }
-    memcpy(i_buf, sc->h1_i, pad * sizeof(double));
-    memcpy(q_buf, sc->h1_q, pad * sizeof(double));
-    double *i_full = i_buf + pad, *q_full = q_buf + pad;
+    double *i_full = (double *)malloc(total * sizeof(double));
+    double *q_full = (double *)malloc(total * sizeof(double));
+    if (!i_full || !q_full) { free(i_full); free(q_full); pthread_mutex_unlock(&sc->lock); return; }
 
     memcpy(i_full,                  sc->iq_res_i, sc->iq_res_n * sizeof(double));
     memcpy(q_full,                  sc->iq_res_q, sc->iq_res_n * sizeof(double));
@@ -989,14 +1131,11 @@ void itila_sc_feed_iq(ItilaSc *sc,
 
     if (n_dec1 > 0 && sc->n_bins > 0)
         process_bins(sc, i_full, q_full, n_dec1);
-    if (n_dec1 > 0) {
+    if (n_dec1 > 0)
         preroll_push(sc, i_full, q_full, n_dec1);
-        memcpy(sc->h1_i, i_buf + n_dec1, pad * sizeof(double));   /* the pad samples before i_full[n_dec1] */
-        memcpy(sc->h1_q, q_buf + n_dec1, pad * sizeof(double));
-    }
 
-    free(i_buf);
-    free(q_buf);
+    free(i_full);
+    free(q_full);
     pthread_mutex_unlock(&sc->lock);
 }
 
@@ -1150,7 +1289,7 @@ int itila_sc_decode_ready(ItilaSc *sc, int window_samples,
              * mutates b->f_hz mid-iteration (e.g. fine-tuning toward
              * carrier offset).  Squelch caught this latent inconsistency
              * in pre-deploy review 2026-05-24. */
-            double snr_local = snr_take(b);
+            double snr_local = b->snr_db;
             double f_hz_local = b->f_hz;
             double f_khz = f_hz_local / 1000.0;
             void *handles[2] = { b->h100, b->h200 };
