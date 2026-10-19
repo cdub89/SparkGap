@@ -41,8 +41,10 @@ HAM_BANDS = (("160m", 1800, 2000), ("80m", 3500, 4000), ("60m", 5330, 5410),
              ("40m", 7000, 7300), ("30m", 10100, 10150), ("20m", 14000, 14350),
              ("17m", 18068, 18168), ("15m", 21000, 21450), ("12m", 24890, 24990),
              ("10m", 28000, 29700))  # kHz, to name a band given as a frequency
-SCAN_PORTS = range(DEFAULT_PORT, DEFAULT_PORT + 20)  # tried when a server is added without a port
+SCAN_PORTS = range(DEFAULT_PORT, DEFAULT_PORT + 20)  # searched for a server's copies (port "auto")
 SCAN_TIMEOUT_S = 3.0
+RESCAN_S = 60.0  # a server is searched again this often, for copies started since
+RESCAN_DROP_S = 3.0  # and this long after one of its copies drops
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # join codes, as the feed server accepts them
 CODE_LENGTH = 6
 SPECTRUM_HEADER = struct.Struct("<IddffH")
@@ -1125,7 +1127,7 @@ class Probe(QObject):
         super().__init__(parent)
         self.port = url_parts(url)[1]
         self.result = ""
-        self.ws = QWebSocket()
+        self.ws = QWebSocket(parent=self)  # freed with the probe
         self.ws.textMessageReceived.connect(self._on_text)
         self.ws.errorOccurred.connect(self._on_error)
         self.ws.disconnected.connect(lambda: self._finish("none"))
@@ -1151,36 +1153,19 @@ class Probe(QObject):
         self.done.emit(self.port, result)
 
 
-def scan_report(found: dict[int, str], listed: list[int],
-                stale: list[int] | None = None) -> tuple[list[int], list[int], str]:
-    """The ports a scan adds, the listed ones whose code it updates (stale: saved with another
-    code), and a line for the operator."""
-    def ports(r: str) -> list[int]:
-        return sorted(p for p, v in found.items() if v == r)
-
-    stale = stale or []
-    add = [p for p in ports("ok") if p not in listed]
-    update = [p for p in ports("ok") if p in stale]
-    have = [p for p in ports("ok") if p in listed and p not in stale]
-    def joined(ps: list[int]) -> str:
-        return ", ".join(map(str, ps))
-
+def scan_report(found: dict[int, str]) -> str:
+    """What a search of one address found, in a line for the operator."""
+    n = collections.Counter(found.values())
     parts = []
-    if add:
-        parts.append(f"Added {joined(add)}.")
-    if update:
-        parts.append(f"Join code updated on {joined(update)}.")
-    if have:
-        parts.append(f"Already in the list: {joined(have)}.")
-    if ports("code"):
-        parts.append(f"Different join code on {joined(ports('code'))}.")
-    if ports("lockout"):
-        parts.append(f"Locked out for {LOCKOUT_S // 60} min on {joined(ports('lockout'))}.")
-    if ports("full"):
-        parts.append(f"Too many clients on {joined(ports('full'))}.")
-    if not parts:
-        parts.append(f"No SparkGap answered on ports {SCAN_PORTS[0]} to {SCAN_PORTS[-1]}.")
-    return add, update, " ".join(parts)
+    if n["ok"]:
+        parts.append(f"Found {n['ok']} SparkGap{'s' if n['ok'] > 1 else ''}.")
+    if n["code"]:
+        parts.append(f"Different join code on {n['code']}.")
+    if n["lockout"]:
+        parts.append(f"Locked out for {LOCKOUT_S // 60} min on {n['lockout']}.")
+    if n["full"]:
+        parts.append(f"Too many clients on {n['full']}.")
+    return " ".join(parts) or "No SparkGap answered at that address."
 
 
 def feed_url(address: str, port: int) -> str:
@@ -1197,20 +1182,33 @@ def normalize_code(code: str) -> str:
     return "".join(ch for ch in code.upper() if ch not in " -")
 
 
-def check_feed(address: str, port: int, code: str = "") -> str:
+def host_port(address: str) -> tuple[str, int]:
+    """("host", 0) searches SCAN_PORTS; "host:port" is one feed outside that range."""
+    host, _, port = address.strip().partition(":")
+    return host, int(port) if port.isdigit() else 0
+
+
+def check_server(address: str, code: str = "") -> str:
     """Why a server entry cannot be used, or "" when it can. An empty code suits a local server."""
-    a = address.strip()
-    if not a or any(ch.isspace() or ch in "/:#?@" for ch in a):
-        return "address: a VPN or local IP address, nothing else"
-    if not 0 < port < 65_536:
+    host, sep, port = address.strip().partition(":")
+    bad = not host or any(ch.isspace() or ch in "/:#?@" for ch in host)
+    if bad or (sep and not port.isdigit()):
+        return "address: a VPN or local IP address (host:port only for a feed outside 7320 to 7339)"
+    if sep and not 0 < int(port) < 65_536:
         return "port: 1 to 65535"
+    if sep and int(port) in SCAN_PORTS:
+        return f"leave the port off: {SCAN_PORTS[0]} to {SCAN_PORTS[-1]} are searched"
     c = normalize_code(code)
     if c and (len(c) != CODE_LENGTH or any(ch not in CODE_ALPHABET for ch in c)):
         return f"join code: {CODE_LENGTH} letters and digits, as SparkGap's log shows it"
     return ""
 
 
+Servers = list[tuple[str, str]]  # (address, join code) per server
+
+
 def load_feeds(store: QSettings) -> list[tuple[str, str]]:
+    """The (url, code) list kept before servers were searched by address."""
     n = store.beginReadArray("connections")
     feeds = []
     for i in range(n):
@@ -1220,51 +1218,84 @@ def load_feeds(store: QSettings) -> list[tuple[str, str]]:
     return [f for f in feeds if f[0]]
 
 
-def save_feeds(store: QSettings, feeds: list[tuple[str, str]]) -> None:
-    store.remove("connections")
-    store.beginWriteArray("connections", len(feeds))
-    for i, (url, token) in enumerate(feeds):
+def servers_from_feeds(feeds: list[tuple[str, str]]) -> Servers:
+    """One server per address and code; a port in SCAN_PORTS is dropped, one outside it kept."""
+    out: Servers = []
+    for url, token in feeds:
+        host, port = url_parts(url)
+        s = (host if port in SCAN_PORTS else f"{host}:{port}", token)
+        if s not in out:
+            out.append(s)
+    return out
+
+
+def load_servers(store: QSettings) -> Servers:
+    """The saved servers; a list saved before servers existed is converted from its feeds."""
+    if not store.contains("servers/size"):
+        return servers_from_feeds(load_feeds(store))
+    n = store.beginReadArray("servers")
+    out = []
+    for i in range(n):
         store.setArrayIndex(i)
-        store.setValue("url", url)
+        out.append((str(store.value("address", "")), str(store.value("token", ""))))
+    store.endArray()
+    return [s for s in out if s[0]]
+
+
+def save_servers(store: QSettings, servers: Servers) -> None:
+    store.remove("servers")
+    store.beginWriteArray("servers", len(servers))
+    for i, (address, token) in enumerate(servers):
+        store.setArrayIndex(i)
+        store.setValue("address", address)
         store.setValue("token", token)
     store.endArray()
     store.sync()
 
 
-Feeds = list[tuple[str, str]]  # (url, token) per server
-
-
-def merge_feeds(saved: Feeds, extra: Feeds) -> Feeds:
-    """Saved servers plus those from the command line; a URL already saved takes the newer token."""
+def merge_servers(saved: Servers, extra: Servers) -> Servers:
+    """Saved servers plus those from the command line; a saved address takes the newer code."""
     out = dict(saved)
     out.update(extra)
     return list(out.items())
 
 
+class Server:
+    """An address and join code; the SparkGap copies on it are found by searching SCAN_PORTS."""
+
+    def __init__(self, address: str, token: str) -> None:
+        self.address, self.token = address, token
+        self.refused: set[int] = set()  # ports that refused the code: not searched automatically
+        self.scanning = False
+        self.rescan = False  # a search is due after a copy dropped
+
+
 class Console(QObject):
-    """Root object: the list of instances and the current one."""
+    """Root object: the servers, the copies found on them, and the one shown."""
 
     instancesChanged = Signal()
     currentChanged = Signal()
-    scanDone = Signal(bool, str)  # whether servers were added or updated, and what the search found
+    scanDone = Signal(bool, str)  # whether the server was kept, and what the search found
 
-    def __init__(self, feeds: list[tuple[str, str]], store: QSettings | None = None) -> None:
+    def __init__(self, servers: Servers, store: QSettings | None = None) -> None:
         super().__init__()
         self._store = store  # where the server list is kept; None keeps it in memory only
-        self._instances = [Instance(u, t, self) for u, t in feeds]
+        self._servers = [Server(a, t) for a, t in servers]
+        self._instances: list[Instance] = []
         self._current = 0
-        self._back = 0  # the server shown before demo
-        self._scan: dict[int, str] = {}  # port -> result of the search under way
-        self._probes: list[Probe] = []
-        self._scan_at = ("", "")  # (address, code) being searched
-        self._scan_edit = -1  # the row the search replaces, or -1 when adding
-        for i in self._instances:
-            i.open()
+        self._back: Instance | None = None  # the copy shown before demo
+        self._want = str(store.value("ui/current", "")) if store is not None else ""  # by name
+        self._form: object | None = None  # the Settings form a search was started from
         # instances not on screen still move their spectrum rows into history, so switching to
         # one shows its recent waterfall (the shown one is advanced by the waterfall each frame)
         self._bg = QTimer(self, interval=50)
         self._bg.timeout.connect(self._advance_background)
         self._bg.start()
+        self._rescan = QTimer(self, interval=int(RESCAN_S * 1000))
+        self._rescan.timeout.connect(lambda: [self._scan(s) for s in self._servers])
+        self._rescan.start()
+        for s in self._servers:
+            self._scan(s)
 
     @Property(bool, notify=instancesChanged)
     def demo(self) -> bool:
@@ -1277,7 +1308,7 @@ class Console(QObject):
             self._store.setValue("ui/demo", on)
         at = next((n for n, i in enumerate(self._instances) if i.is_demo), -1)
         if on and at < 0:
-            self._back = self._current
+            self._back = self._shown()
             inst = Instance(DEMO_URL, "", self)
             self._instances.append(inst)
             inst.open()
@@ -1286,7 +1317,8 @@ class Console(QObject):
             old = self._instances.pop(at)
             old.close()
             old.deleteLater()
-            self._current = min(self._back, max(0, len(self._instances) - 1))
+            back = self._back
+            self._current = self._instances.index(back) if back in self._instances else 0
         else:
             return
         self.instancesChanged.emit()
@@ -1313,14 +1345,128 @@ class Console(QObject):
     def setCurrent(self, i: int) -> None:  # noqa: N802
         if 0 <= i < len(self._instances) and i != self._current:
             self._current = i
+            self._remember()
             self.currentChanged.emit()
 
+    def _shown(self) -> Instance | None:
+        return self._instances[self._current] if self._instances else None
 
-    # ---- server list, edited in Settings ----
+    def _remember(self) -> None:
+        """The copy shown is kept by name, so it is found again wherever its port is."""
+        inst = self._shown()
+        if inst is not None and not inst.is_demo and inst.hello.get("run"):
+            self._want = inst._name()
+            if self._store is not None:
+                self._store.setValue("ui/current", self._want)
+
+    # ---- servers and the copies found on them ----
 
     def _save(self) -> None:
         if self._store is not None:
-            save_feeds(self._store, [i.feed for i in self._instances if not i.is_demo])
+            save_servers(self._store, [(s.address, s.token) for s in self._servers])
+
+    def _scan(self, s: Server, every: bool = False, done: Any = None) -> None:
+        """Offers the code to each port of the server; done(server, {port: result}) when all answer.
+        A port that refused the code is skipped by later automatic searches (every=False)."""
+        if s.scanning:
+            return
+        host, port = host_port(s.address)
+        if every:
+            s.refused = set()
+        ports = [p for p in ([port] if port else SCAN_PORTS) if p not in s.refused]
+        found: dict[int, str] = {}
+        finish = done or self._reconcile
+        if not ports:
+            finish(s, found)
+            return
+        s.scanning = True
+        self.instancesChanged.emit()  # Settings shows "searching..."
+        probes = [Probe(feed_url(host, p), s.token, self) for p in ports]
+
+        def got(p: int, result: str) -> None:
+            found[p] = result
+            if len(found) < len(ports):
+                return
+            for probe in probes:
+                probe.deleteLater()
+            s.scanning = False
+            s.refused |= {q for q, r in found.items() if r in ("code", "lockout")}
+            finish(s, found)
+
+        for probe in probes:
+            probe.done.connect(got)
+
+    def _reconcile(self, s: Server, found: dict[int, str]) -> None:
+        """Copies a search found join the list; one not answering and not live leaves it."""
+        if s not in self._servers:
+            return
+        host = host_port(s.address)[0]
+        ok = [feed_url(host, p) for p, r in sorted(found.items()) if r == "ok"]
+        for inst in [i for i in self._instances if getattr(i, "server", None) is s
+                     and i.feed[0] not in ok and i.state != "live"]:
+            self._drop(inst)
+        have = {i.feed[0] for i in self._instances}
+        for url in ok:
+            if url not in have:
+                self._add(url, s)
+        self._current = min(self._current, max(0, len(self._instances) - 1))
+        self.instancesChanged.emit()
+        self.currentChanged.emit()
+
+    def _copies(self, s: Server | None) -> list[Instance]:
+        return [i for i in self._instances if getattr(i, "server", None) is s]
+
+    def _add(self, url: str, s: Server) -> Instance:
+        inst = Instance(url, s.token, self)
+        inst.server = s  # type: ignore[attr-defined]
+        inst.stateChanged.connect(lambda: self._dropped(inst))
+        inst.changed.connect(lambda: self._follow(inst))
+        self._instances.append(inst)
+        inst.open()
+        return inst
+
+    def _drop(self, inst: Instance) -> None:
+        n = self._instances.index(inst)
+        self._instances.pop(n)
+        inst.close()
+        inst.deleteLater()
+        if self._current > n or self._current >= len(self._instances):
+            self._current = max(0, self._current - 1)
+
+    def _dropped(self, inst: Instance) -> None:
+        s = getattr(inst, "server", None)
+        if inst.state != "dropped" or s is None or s.rescan:
+            return
+        s.rescan = True
+
+        def again() -> None:
+            s.rescan = False
+            self._scan(s)
+
+        QTimer.singleShot(int(RESCAN_DROP_S * 1000), self, again)
+
+    def _follow(self, inst: Instance) -> None:
+        """The copy shown is followed by name; the first one shown is remembered."""
+        if inst.is_demo or inst not in self._instances or not inst.hello.get("run"):
+            return
+        if inst._name() == self._want and inst is not self._shown():
+            self.setCurrent(self._instances.index(inst))
+        elif inst is self._shown() and not self._want:
+            self._remember()
+
+    @Property(list, notify=instancesChanged)
+    def servers(self) -> list[dict[str, Any]]:
+        out = []
+        for s in self._servers:
+            copies = self._copies(s)
+            out.append({"address": s.address, "copies": ", ".join(str(i.title) for i in copies),
+                        "live": any(i.state == "live" for i in copies), "scanning": s.scanning})
+        return out
+
+    @Slot(int, result="QVariantMap")
+    def serverAt(self, i: int) -> dict[str, Any]:  # noqa: N802
+        s = self._servers[i] if 0 <= i < len(self._servers) else None
+        return {"address": s.address, "token": s.token} if s else {"address": "", "token": ""}
 
     @Slot(int, result="QVariantMap")
     def feedAt(self, i: int) -> dict[str, Any]:  # noqa: N802
@@ -1330,99 +1476,61 @@ class Console(QObject):
         address, port = url_parts(url)
         return {"address": address, "port": port, "token": token}
 
-    @Slot(int, str, int, str, result=str)
-    def saveFeed(self, i: int, address: str, port: int, token: str) -> str:  # noqa: N802
-        """Adds a server (i < 0) or replaces server i. Returns why it was refused, or ""."""
-        if err := check_feed(address, port, token):
-            return err
-        url = feed_url(address, port)
-        if any(n != i and inst.feed[0] == url for n, inst in enumerate(self._instances)):
-            return "already in the list"
-        inst = Instance(url, normalize_code(token), self)
-        if 0 <= i < len(self._instances):
-            old = self._instances[i]
-            self._instances[i] = inst
-            old.close()
-            old.deleteLater()
-        else:
-            self._instances.append(inst)
-            i = len(self._instances) - 1
-        inst.open()
-        self._current = i
-        self._save()
-        self.instancesChanged.emit()
-        self.currentChanged.emit()
-        return ""
-
     @Slot(int, str, str, result=str)
-    def findFeeds(self, i: int, address: str, token: str) -> str:  # noqa: N802
-        """Tries every port in SCAN_PORTS on address with one code; scanDone reports. i: the row
-        being edited, which the result replaces, or -1. Returns why it cannot start, or ""."""
-        if err := check_feed(address, DEFAULT_PORT, token):
+    def saveServer(self, i: int, address: str, token: str) -> str:  # noqa: N802
+        """Adds a server (i < 0) or replaces server i once a search of it finds a SparkGap that
+        takes the code; scanDone reports. Returns why it cannot start, or ""."""
+        if err := check_server(address, token):
             return err
-        if self._scan_at[0]:
-            return "already searching"
         address, token = address.strip(), normalize_code(token)
-        self._scan, self._scan_at = {}, (address, token)
-        self._scan_edit = i if 0 <= i < len(self._instances) else -1
-        self._probes = [Probe(feed_url(address, port), token, self) for port in SCAN_PORTS]
-        for probe in self._probes:
-            probe.done.connect(self._probed)
+        if any(n != i and s.address == address for n, s in enumerate(self._servers)):
+            return "already in the list"
+        form = self._form = object()
+        s = Server(address, token)
+
+        def done(s: Server, found: dict[int, str]) -> None:
+            if self._form is not form:
+                return  # the form closed meanwhile; another may be open
+            self._form = None
+            text = scan_report(found)
+            if "ok" not in found.values():
+                self.scanDone.emit(False, text)
+                return
+            if 0 <= i < len(self._servers):
+                for inst in self._copies(self._servers[i]):
+                    self._drop(inst)
+                self._servers[i] = s
+            else:
+                self._servers.append(s)
+            self._save()
+            self._reconcile(s, found)
+            copies = self._copies(s)
+            if copies:
+                self.setCurrent(self._instances.index(copies[0]))
+            self.scanDone.emit(True, text)
+
+        self._scan(s, every=True, done=done)
         return ""
 
-    def _probed(self, port: int, result: str) -> None:
-        self._scan[port] = result
-        if len(self._scan) < len(SCAN_PORTS):
-            return
-        for probe in self._probes:
-            probe.deleteLater()
-        self._probes = []
-        address, token = self._scan_at
-        edit, self._scan_at, self._scan_edit = self._scan_edit, ("", ""), -1
-        others = [inst for n, inst in enumerate(self._instances) if n != edit
-                  and not inst.is_demo and url_parts(inst.feed[0])[0] == address]
-        listed = [url_parts(inst.feed[0])[1] for inst in others]
-        stale = [url_parts(inst.feed[0])[1] for inst in others if inst.feed[1] != token]
-        add, update, text = scan_report(self._scan, listed, stale)
-        if add or update:
-            at = len(self._instances)
-            if 0 <= edit < len(self._instances):
-                self._drop(edit)
-                at = edit
-            for port in update:
-                k = next(n for n, inst in enumerate(self._instances)
-                         if inst.feed[0] == feed_url(address, port))
-                self._drop(k)
-                self._insert(k, Instance(feed_url(address, port), token, self))
-            for k, port in enumerate(add):
-                self._insert(min(at + k, len(self._instances)),
-                             Instance(feed_url(address, port), token, self))
-            self._current = (min(at, len(self._instances) - 1) if add else next(
-                n for n, inst in enumerate(self._instances)
-                if inst.feed[0] == feed_url(address, update[0])))
-            self._save()
-            self.instancesChanged.emit()
-            self.currentChanged.emit()
-        self.scanDone.emit(bool(add or update), text)
-
-    def _drop(self, i: int) -> None:
-        old = self._instances.pop(i)
-        old.close()
-        old.deleteLater()
-
-    def _insert(self, i: int, inst: Instance) -> None:
-        self._instances.insert(i, inst)
-        inst.open()
+    @Slot()
+    def cancelSearch(self) -> None:  # noqa: N802
+        self._form = None
 
     @Slot(int)
-    def removeFeed(self, i: int) -> None:  # noqa: N802
-        if not 0 <= i < len(self._instances):
+    def showServer(self, i: int) -> None:  # noqa: N802
+        """Shows the first copy found on server i."""
+        s = self._servers[i] if 0 <= i < len(self._servers) else None
+        n = next((k for k, x in enumerate(self._instances) if getattr(x, "server", None) is s), -1)
+        if n >= 0:
+            self.setCurrent(n)
+
+    @Slot(int)
+    def removeServer(self, i: int) -> None:  # noqa: N802
+        if not 0 <= i < len(self._servers):
             return
-        old = self._instances.pop(i)
-        old.close()
-        old.deleteLater()
-        if self._current >= len(self._instances) or self._current > i:
-            self._current = max(0, self._current - 1)
+        s = self._servers.pop(i)
+        for inst in [x for x in self._instances if getattr(x, "server", None) is s]:
+            self._drop(inst)
         self._save()
         self.instancesChanged.emit()
         self.currentChanged.emit()

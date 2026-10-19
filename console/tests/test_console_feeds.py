@@ -11,12 +11,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from backend import (
     SPECTRUM_HEADER,
-    check_feed,
+    check_server,
     feed_url,
-    load_feeds,
-    merge_feeds,
+    host_port,
+    load_servers,
+    merge_servers,
     open_request,
-    save_feeds,
+    save_servers,
+    servers_from_feeds,
     url_parts,
 )
 from PySide6.QtCore import QSettings
@@ -39,20 +41,22 @@ def test_url_round_trip() -> None:
 
 
 @pytest.mark.parametrize(
-    ("address", "port", "ok"),
+    ("address", "ok"),
     [
-        ("127.0.0.1", 7320, True),
-        ("127.0.0.1", 7321, True),
-        ("", 7320, False),
-        ("ws://127.0.0.1", 7320, False),
-        ("127.0.0.1:7321", 7320, False),
-        ("local host", 7320, False),
-        ("127.0.0.1", 0, False),
-        ("127.0.0.1", 70_000, False),
+        ("127.0.0.1", True),
+        ("beelink", True),
+        ("beelink:9000", True),  # one feed outside the searched range
+        ("beelink:7321", False),  # inside it: leave the port off, every port there is searched
+        ("", False),
+        ("ws://127.0.0.1", False),
+        ("local host", False),
+        ("beelink:x", False),
+        ("beelink:0", False),
+        ("beelink:70000", False),
     ],
 )
-def test_check_feed(address: str, port: int, ok: bool) -> None:
-    assert (check_feed(address, port) == "") is ok
+def test_check_server(address: str, ok: bool) -> None:
+    assert (check_server(address) == "") is ok
 
 
 @pytest.mark.parametrize(
@@ -61,51 +65,48 @@ def test_check_feed(address: str, port: int, ok: bool) -> None:
      ("XXXXX", False), ("XXXXXXX", False), ("XXXXXO", False), ("XXXXX1", False)],
 )
 def test_check_join_code(code: str, ok: bool) -> None:
-    assert (check_feed("127.0.0.1", 7320, code) == "") is ok
+    assert (check_server("127.0.0.1", code) == "") is ok
+
+
+def test_host_port() -> None:
+    assert host_port(" beelink ") == ("beelink", 0)
+    assert host_port("beelink:9000") == ("beelink", 9000)
 
 
 def test_save_load_round_trip(tmp_path: Path) -> None:
     store = QSettings(str(tmp_path / "c.ini"), QSettings.Format.IniFormat)
-    feeds = [("ws://127.0.0.1:7321/feed", "tok1"), ("ws://127.0.0.1:7320/feed", "")]
-    save_feeds(store, feeds)
-    assert load_feeds(QSettings(str(tmp_path / "c.ini"), QSettings.Format.IniFormat)) == feeds
-    save_feeds(store, feeds[:1])  # a shorter list leaves no stale rows behind
-    assert load_feeds(store) == feeds[:1]
+    servers = [("beelink", "TOK111"), ("127.0.0.1", "")]
+    save_servers(store, servers)
+    assert load_servers(QSettings(str(tmp_path / "c.ini"), QSettings.Format.IniFormat)) == servers
+    save_servers(store, servers[:1])  # a shorter list leaves no stale rows behind
+    assert load_servers(store) == servers[:1]
+
+
+def test_old_per_port_list_becomes_servers(tmp_path: Path) -> None:
+    store = QSettings(str(tmp_path / "c.ini"), QSettings.Format.IniFormat)
+    old = [("ws://beelink:7320/feed", "AAAAAA"), ("ws://beelink:7321/feed", "AAAAAA"),
+           ("ws://rednuc:7320/feed", "BBBBBB"), ("ws://far:9000/feed", "")]
+    store.beginWriteArray("connections", len(old))
+    for i, (url, token) in enumerate(old):
+        store.setArrayIndex(i)
+        store.setValue("url", url)
+        store.setValue("token", token)
+    store.endArray()
+    assert load_servers(store) == [("beelink", "AAAAAA"), ("rednuc", "BBBBBB"), ("far:9000", "")]
 
 
 def test_merge_keeps_order_and_takes_newer_token() -> None:
-    saved = [("ws://a:7320/feed", "old"), ("ws://b:7320/feed", "x")]
-    extra = [("ws://a:7320/feed", "new"), ("ws://c:7320/feed", "y")]
-    assert merge_feeds(saved, extra) == [
-        ("ws://a:7320/feed", "new"),
-        ("ws://b:7320/feed", "x"),
-        ("ws://c:7320/feed", "y"),
-    ]
+    saved = [("a", "old"), ("b", "x")]
+    extra = [("a", "new"), ("c", "y")]
+    assert merge_servers(saved, extra) == [("a", "new"), ("b", "x"), ("c", "y")]
 
 
 def test_parse_normalises_to_saved_form() -> None:
     assert parse(["127.0.0.1:7321#xxx-xxx"]) == [("ws://127.0.0.1:7321/feed", "XXXXXX")]
     assert parse(["ws://127.0.0.1/feed"]) == [("ws://127.0.0.1:7320/feed", "")]
     assert parse([]) == []
-
-
-def test_console_add_edit_remove(tmp_path: Path) -> None:
-    from backend import Console
-    from PySide6.QtCore import QCoreApplication
-
-    app = QCoreApplication.instance() or QCoreApplication([])  # noqa: F841 - sockets need one
-    store = QSettings(str(tmp_path / "c.ini"), QSettings.Format.IniFormat)
-    c = Console([], store)
-    assert c.saveFeed(-1, "local host", 7320, "") != ""
-    assert c.saveFeed(-1, "127.0.0.1", 9, "xxx-xxx") == ""
-    assert load_feeds(store) == [("ws://127.0.0.1:9/feed", "XXXXXX")]  # kept normalised
-    assert c.saveFeed(-1, "127.0.0.1", 9, "") == "already in the list"
-    assert c.saveFeed(0, "127.0.0.1", 9, "YYYYYY") == ""  # editing a row may keep its own address
-    assert c.saveFeed(-1, "localhost", 10, "") == "" and c.currentIndex == 1
-    c.removeFeed(0)
-    assert load_feeds(store) == [("ws://localhost:10/feed", "")] and c.currentIndex == 0
-    c.removeFeed(0)
-    assert load_feeds(store) == [] and c.current is None
+    assert servers_from_feeds(parse(["127.0.0.1:7321#xxx-xxx", "far:9000"])) == [
+        ("127.0.0.1", "XXXXXX"), ("far:9000", "")]
 
 
 def test_wrong_code_is_not_retried() -> None:
@@ -192,15 +193,16 @@ def test_demo_is_a_view(tmp_path: Path) -> None:
 
     app = QCoreApplication.instance() or QCoreApplication([])  # noqa: F841
     store = QSettings(str(tmp_path / "c.ini"), QSettings.Format.IniFormat)
-    c: Any = Console([("ws://127.0.0.1:9/feed", "")], store)
-    server = c.current
+    c: Any = Console([("127.0.0.1:9", "")], store)
+    server = c._add("ws://127.0.0.1:9/feed", c._servers[0])
     c.setDemo(True)
     assert c.demo and c.current.demo and c.current is not server
     assert server in c.instances and not server.closed  # still connected behind the demo
     c._save()
-    assert load_feeds(store) == [("ws://127.0.0.1:9/feed", "")]  # demo is never saved
+    assert load_servers(store) == [("127.0.0.1:9", "")]  # demo is never saved
     c.setDemo(False)
     assert not c.demo and c.current is server and len(c.instances) == 1
+    server.close()
 
 
 def test_station_name_has_no_address() -> None:
@@ -230,88 +232,94 @@ def test_instance_config_names_the_server() -> None:
 
 
 def test_scan_report() -> None:
-    from backend import SCAN_PORTS, scan_report
+    from backend import scan_report
 
-    add, update, text = scan_report({7320: "ok", 7321: "ok", 7322: "code", 7323: "none"}, [7321])
-    assert (add, update) == ([7320], [])
-    assert text == "Added 7320. Already in the list: 7321. Different join code on 7322."
-    assert scan_report({p: "none" for p in SCAN_PORTS}, [])[2].startswith("No SparkGap answered")
-    add, update, text = scan_report({7320: "ok", 7321: "ok"}, [7320, 7321], stale=[7321])
-    assert (add, update) == ([], [7321])
-    assert text == "Join code updated on 7321. Already in the list: 7320."
+    assert scan_report({7320: "ok", 7321: "ok", 7322: "code", 7323: "none"}) == (
+        "Found 2 SparkGaps. Different join code on 1.")
+    assert scan_report({7320: "none"}) == "No SparkGap answered at that address."
 
 
-def test_find_feeds_adds_every_instance_with_the_code(tmp_path: Path, monkeypatch: Any) -> None:
-    # one code finds each SparkGap on the address; a different code is reported, once, never retried
+def _feeds(codes: list[str], names: list[str]) -> list[Any]:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    import backend
-    from PySide6.QtCore import QCoreApplication, QTimer
-
     import feed_server
 
-    app = QCoreApplication.instance() or QCoreApplication([])
-    feeds = [feed_server.FeedServer({"bind": "127.0.0.1", "port": 0, "join_code": c}, {})
-             for c in ("XXXXXX", "XXXXXX", "YYYYYY")]
-    for f in feeds:
+    out = []
+    for code, name in zip(codes, names, strict=True):
+        hello = {"run": {"config": f"/x/config/{name}.local.json"},
+                 "bands": [{"name": "20m", "center_khz": 14048.0, "span_khz": 96.0}]}
+        f = feed_server.FeedServer({"bind": "127.0.0.1", "port": 0, "join_code": code}, hello)
         f.start()
         f.started.wait(5)
+        out.append(f)
+    return out
+
+
+def _wait(app: Any, cond: Any, s: float = 8.0) -> None:
+    from PySide6.QtCore import QElapsedTimer
+
+    t = QElapsedTimer()
+    t.start()
+    while not cond() and t.elapsed() < s * 1000:
+        app.processEvents()
+
+
+def test_a_server_finds_every_copy_with_its_code(tmp_path: Path, monkeypatch: Any) -> None:
+    # one address and code finds each SparkGap there; a copy with another code is reported and
+    # left out of later automatic searches, so a stale code never earns the feed's lockout
+    import backend
+    from PySide6.QtCore import QCoreApplication
+
+    app = QCoreApplication.instance() or QCoreApplication([])
+    feeds = _feeds(["XXXXXX", "XXXXXX", "YYYYYY"], ["lake2", "lake3", "other"])
     try:
-        used = [f.port for f in feeds]
-        closed = next(p for p in range(used[0] + 1, used[0] + 10) if p not in used)
-        monkeypatch.setattr(backend, "SCAN_PORTS", [f.port for f in feeds] + [closed])
+        monkeypatch.setattr(backend, "SCAN_PORTS", [f.port for f in feeds])
         store = QSettings(str(tmp_path / "c.ini"), QSettings.Format.IniFormat)
-        c = backend.Console([], store)
+        c: Any = backend.Console([], store)
         done: list[tuple[bool, str]] = []
-        c.scanDone.connect(lambda added, text: (done.append((added, text)), app.quit()))
-        assert c.findFeeds(-1, "127.0.0.1", "xxx-xxx") == ""
-        assert c.findFeeds(-1, "127.0.0.1", "XXXXXX") == "already searching"
-        QTimer.singleShot(8000, app.quit)
-        app.exec()
-        ok = sorted(f.port for f in feeds[:2])
-        assert done and done[0][0]
-        assert sorted(url_parts(u)[1] for u, _ in load_feeds(store)) == ok
-        assert all(t == "XXXXXX" for _, t in load_feeds(store))
-        assert f"Different join code on {feeds[2].port}." in done[0][1]
+        c.scanDone.connect(lambda added, text: done.append((added, text)))
+        assert c.saveServer(-1, "127.0.0.1", "xxx-xxx") == ""
+        _wait(app, lambda: bool(done))
+        assert done == [(True, "Found 2 SparkGaps. Different join code on 1.")]
+        assert load_servers(store) == [("127.0.0.1", "XXXXXX")]  # no port, code normalised
+        ports = sorted(url_parts(i.feed[0])[1] for i in c.instances)
+        assert ports == sorted(f.port for f in feeds[:2])
+        assert c._servers[0].refused == {feeds[2].port}
+        assert c.saveServer(-1, "127.0.0.1", "") == "already in the list"
+        c._scan(c._servers[0])  # an automatic search skips the port that refused the code
+        _wait(app, lambda: not c._servers[0].scanning)
         assert len(feeds[2].misses["127.0.0.1"]) == 1
-        for i in c._instances:
-            i.close()
+        c.removeServer(0)
+        assert load_servers(store) == [] and c.current is None
     finally:
         for f in feeds:
             f.stop()
 
 
-def test_edit_without_port_finds_all_and_replaces_stale_codes(tmp_path: Path,
-                                                              monkeypatch: Any) -> None:
-    # a SparkGap restarted with a new code: edit one entry, clear its port, give the new code
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+def test_the_shown_copy_is_followed_by_name(tmp_path: Path, monkeypatch: Any) -> None:
+    # the copies restart in the other order and swap ports: the console still shows the same one
     import backend
-    from PySide6.QtCore import QCoreApplication, QTimer
-
-    import feed_server
+    from PySide6.QtCore import QCoreApplication
 
     app = QCoreApplication.instance() or QCoreApplication([])
-    feeds = [feed_server.FeedServer({"bind": "127.0.0.1", "port": 0, "join_code": "XXXXXX"}, {})
-             for _ in range(2)]
-    for f in feeds:
-        f.start()
-        f.started.wait(5)
+    feeds = _feeds(["XXXXXX", "XXXXXX"], ["lake2", "lake3"])
     try:
         monkeypatch.setattr(backend, "SCAN_PORTS", [f.port for f in feeds])
         store = QSettings(str(tmp_path / "c.ini"), QSettings.Format.IniFormat)
-        c = backend.Console([], store)
+        c: Any = backend.Console([], store)
+        c.saveServer(-1, "127.0.0.1", "XXXXXX")
+        _wait(app, lambda: len(c.instances) == 2 and all(i.name for i in c.instances))
+        c.setCurrent(next(n for n, i in enumerate(c.instances) if i.name == "lake3"))
+        assert store.value("ui/current") == "lake3"
         for f in feeds:
-            assert c.saveFeed(-1, "127.0.0.1", f.port, "YYYYYY") == ""  # the old code
-        done: list[tuple[bool, str]] = []
-        c.scanDone.connect(lambda added, text: (done.append((added, text)), app.quit()))
-        assert c.findFeeds(0, "127.0.0.1", "XXXXXX") == ""
-        QTimer.singleShot(8000, app.quit)
-        app.exec()
-        assert done and done[0][0]
-        saved = load_feeds(store)
-        assert sorted(url_parts(u)[1] for u, _ in saved) == sorted(f.port for f in feeds)
-        assert all(t == "XXXXXX" for _, t in saved)
-        assert f"Join code updated on {feeds[1].port}." in done[0][1]
-        for i in c._instances:
+            f.stop()
+        feeds = _feeds(["XXXXXX", "XXXXXX"], ["lake3", "lake2"])  # lake3 now on the first port
+        monkeypatch.setattr(backend, "SCAN_PORTS", [f.port for f in feeds])
+        c._scan(c._servers[0])
+        first = feeds[0].port
+        _wait(app, lambda: c.current is not None and c.current.name == "lake3"
+              and c.current.state == "live" and url_parts(c.current.feed[0])[1] == first, 15)
+        assert c.current.name == "lake3" and url_parts(c.current.feed[0])[1] == first
+        for i in c.instances:
             i.close()
     finally:
         for f in feeds:

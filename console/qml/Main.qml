@@ -28,7 +28,7 @@ ApplicationWindow {
         if (onScreen) { x = geom.x; y = geom.y }
         visibility = geom.maximized ? Window.Maximized : Window.Windowed
         applyColors()
-        if (console_.instances.length === 0) { settings.open(); conns.edit(-1) }
+        if (console_.servers.length === 0) { settings.open(); conns.edit(-1) }
     }
     onClosing: {
         geom.maximized = visibility === Window.Maximized
@@ -1059,7 +1059,8 @@ ApplicationWindow {
                     }
                     Setting {
                         label: "CONNECTIONS"
-                        // the SparkGap servers this console watches, kept between runs; a click on a row shows that one
+                        // the servers (address and join code) this console watches, kept between runs; each row lists
+                        // the SparkGap copies found there; a click on a row shows its first one
                         ColumnLayout {
                             id: conns
                             width: 444; spacing: 4
@@ -1067,65 +1068,54 @@ ApplicationWindow {
                             property string err: ""
                             property string note: ""  // what the last search for servers found
                             property bool searching: false
-                            property int scanFor: -2  // the form a search was started from
                             function edit(i) {
                                 if (console_.demo) console_.setDemo(false)  // demo goes off when a server is added or edited
-                                const f = i >= 0 ? console_.feedAt(i) : { address: "", port: "", token: "" }  // no port: find them all
-                                addr.text = f.address; port.text = String(f.port); tok.text = f.token
+                                console_.cancelSearch(); searching = false  // a search from another form is dropped
+                                const f = console_.serverAt(i)
+                                addr.text = f.address; tok.text = f.token
                                 err = ""; note = ""; editing = i; addr.forceActiveFocus()
                             }
                             function save() {
-                                if (port.text.trim() === "") {
-                                    const e = console_.findFeeds(editing, addr.text, tok.text)
-                                    if (e) err = e; else { err = ""; searching = true; scanFor = editing }
-                                    return
-                                }
-                                const e = console_.saveFeed(editing, addr.text, parseInt(port.text) || 0, tok.text)
-                                if (e) err = e; else editing = -2
+                                const e = console_.saveServer(editing, addr.text, tok.text)
+                                if (e) err = e; else { err = ""; searching = true }
                             }
+                            function close() { console_.cancelSearch(); searching = false; editing = -2 }
                             Connections {
                                 target: console_
+                                // only the open form's search reports; one from a closed form is dropped
                                 function onScanDone(added, text) {
                                     conns.searching = false
-                                    if (conns.editing !== conns.scanFor) return  // cancelled meanwhile
                                     if (added) { conns.note = text; conns.editing = -2 } else conns.err = text
                                 }
                             }
                             Repeater {
-                                model: console_.instances
+                                model: console_.servers
                                 delegate: Rectangle {
                                     required property int index
                                     required property var modelData
-                                    readonly property bool cur: index === console_.currentIndex
-                                    visible: !modelData.demo  // demo is the toggle above, not a server
                                     Layout.fillWidth: true; height: 34; radius: 8
-                                    color: cur ? t.sunken : rowHov.hovered ? Qt.alpha(t.sunken, 0.5) : "transparent"
-                                    border.color: cur ? t.line : "transparent"
+                                    color: rowHov.hovered ? Qt.alpha(t.sunken, 0.5) : "transparent"
                                     HoverHandler { id: rowHov; cursorShape: Qt.PointingHandCursor }
-                                    TapHandler { onTapped: { if (console_.demo) console_.setDemo(false); console_.setCurrent(index) } }
+                                    TapHandler { onTapped: { if (console_.demo) console_.setDemo(false); console_.showServer(index) } }
                                     RowLayout {
                                         anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 4; spacing: 8
                                         Rectangle {
                                             width: 8; height: 8; radius: 4
-                                            color: modelData.state === "live" ? t.good : modelData.state === "connecting" ? t.accent : t.bad
+                                            color: modelData.live ? t.good : modelData.scanning ? t.accent : t.bad
                                         }
+                                        Text { text: modelData.address; color: t.fg; font.pixelSize: 13 }
                                         Text {
                                             Layout.fillWidth: true; elide: Text.ElideRight
-                                            text: modelData.title; color: t.fg; font.pixelSize: 13
-                                        }
-                                        Text {
-                                            readonly property bool failing: modelData.state !== "live" && !!modelData.error
-                                            text: failing ? modelData.error : modelData.url.replace("ws://", "").replace("wss://", "").replace("/feed", "")
-                                            color: failing ? t.bad : t.muted; font.family: t.mono; font.features: t.zero; font.pixelSize: 11
-                                            Layout.maximumWidth: 170; elide: Text.ElideRight
+                                            text: modelData.copies || (modelData.scanning ? "searching..." : "no SparkGap answering")
+                                            color: modelData.copies ? t.muted : t.bad; font.pixelSize: 11
                                         }
                                         Btn { text: "Edit"; onClicked: conns.edit(index) }
-                                        Btn { text: "✕"; onClicked: { if (console_.demo) console_.setDemo(false); console_.removeFeed(index); conns.editing = -2 } }
+                                        Btn { text: "✕"; onClicked: { if (console_.demo) console_.setDemo(false); console_.removeServer(index); conns.close() } }
                                     }
                                 }
                             }
                             Text {
-                                visible: !console_.instances.some(i => !i.demo) && conns.editing === -2
+                                visible: console_.servers.length === 0 && conns.editing === -2
                                 text: "No servers yet."; color: t.muted; font.pixelSize: 12
                             }
                             Text {
@@ -1136,11 +1126,7 @@ ApplicationWindow {
                             ColumnLayout {
                                 visible: conns.editing > -2
                                 Layout.fillWidth: true; Layout.topMargin: 6; spacing: 6
-                                Field { id: addr; placeholderText: "Address: VPN or local IP address"; onAccepted: conns.save() }
-                                Field {
-                                    id: port; placeholderText: "Port: blank finds every SparkGap on 7320 to 7339"; onAccepted: conns.save()
-                                    validator: IntValidator { bottom: 1; top: 65535 }
-                                }
+                                Field { id: addr; placeholderText: "Address: VPN or local IP address; finds every SparkGap there"; onAccepted: conns.save() }
                                 Field {
                                     id: tok; placeholderText: "Join code, e.g. XXX-XXX"; onAccepted: conns.save()
                                     font.capitalization: Font.AllUppercase
@@ -1152,7 +1138,7 @@ ApplicationWindow {
                                         text: conns.searching ? "Searching..." : conns.editing === -1 ? "Add" : "Save"
                                         enabled: !conns.searching; onClicked: conns.save()
                                     }
-                                    Btn { text: "Cancel"; onClicked: conns.editing = -2 }
+                                    Btn { text: "Cancel"; onClicked: conns.close() }
                                 }
                             }
                             Btn { visible: conns.editing === -2; Layout.topMargin: 4; text: "+ Add server"; onClicked: conns.edit(-1) }

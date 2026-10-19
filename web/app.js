@@ -834,6 +834,7 @@ function checkServer(address, code) {
   const m = address.trim().match(/^([^\s/:#?@]+)(?::(\d+))?$/);
   if (!m) return "address: a VPN or local IP address (host:port only for a feed outside 7320 to 7339)";
   if (m[2] && !(Number(m[2]) > 0 && Number(m[2]) < 65_536)) return "port: 1 to 65535";
+  if (m[2] && SCAN_PORTS.includes(Number(m[2]))) return `leave the port off: ${SCAN_PORTS[0]} to ${SCAN_PORTS[SCAN_PORTS.length - 1]} are searched`;
   const c = normalizeCode(code);
   if (c && (c.length !== CODE_LENGTH || [...c].some(ch => !CODE_ALPHABET.includes(ch)))) {
     return `join code: ${CODE_LENGTH} letters and digits, as SparkGap's log shows it`;

@@ -19,10 +19,11 @@ from pathlib import Path
 from backend import (
     Console,
     feed_url,
-    load_feeds,
-    merge_feeds,
+    load_servers,
+    merge_servers,
     normalize_code,
-    save_feeds,
+    save_servers,
+    servers_from_feeds,
     url_parts,
 )
 from PySide6.QtCore import QSettings
@@ -75,11 +76,11 @@ def main() -> int:
     for f in (ASSETS / "fonts").glob("*.ttf"):
         QFontDatabase.addApplicationFont(str(f))
     store = QSettings()
-    feeds = merge_feeds(load_feeds(store), parse(args))
-    save_feeds(store, feeds)
-    console = Console(feeds, store)
+    servers = merge_servers(load_servers(store), servers_from_feeds(parse(args)))
+    save_servers(store, servers)
+    console = Console(servers, store)
     # no saved servers yet: start in demo
-    console.setDemo(str(store.value("ui/demo", not feeds)).lower() == "true")
+    console.setDemo(str(store.value("ui/demo", not servers)).lower() == "true")
     engine = QQmlApplicationEngine()
     engine.rootContext().setContextProperty("console_", console)
     engine.rootContext().setContextProperty("build_", build_id())
