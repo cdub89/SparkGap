@@ -212,6 +212,11 @@ class FlexIQReceiver:
         self.last_reconnect = None
         self.attempts = 0         # connection attempts, first start and reconnects
         self._last_loss = None    # time.time() of the last lost connection
+        self._bound = False       # attached to another copy's station with client bind
+        self._stale = None        # (stream, slice, pan) a bound copy left when its connection was lost
+        self._stopping = False
+        self._lock = threading.Lock()   # stop() waits for a reconnect in progress
+        self._ptt_warned = False
         self.others = []          # other stations on the radio at the last connect
 
     # -- TCP control channel -------------------------------------------------
@@ -295,6 +300,8 @@ class FlexIQReceiver:
         self._stream_id = self._pan_id = self._slice_id = None
         self.last_packet = None
         self._sent = {}
+        self._handle = ''
+        self._ptt_warned = False
         self.attempts += 1
         log.info("[Flex] Connection attempt %d to %s:%d (%s)", self.attempts, self.ip, self.control_port,
                  "reconnect: %s" % why if why else "first start")
@@ -363,6 +370,11 @@ class FlexIQReceiver:
             self._bound = self._report(f"attached to station {self.station}",
                                        self._cmd(f"client bind client_id={client_id}"))
         self._report(f"UDP port {self.udp_port} for DAX-IQ", self._cmd(f"client udpport {self.udp_port}"))
+        if self._stale and self._bound:    # the station kept them when our connection was lost
+            self._stream_id, self._slice_id, self._pan_id = self._stale
+            self._remove_objects()
+            self._stream_id = self._pan_id = self._slice_id = None
+        self._stale = None
 
         # The radio gives a new GUI client a default pan with a band-default
         # slice (on a 6600: 14.100 MHz, and a further slice on any pan it
@@ -386,7 +398,7 @@ class FlexIQReceiver:
         # A DAX-IQ channel another station's pan holds (Maestro, SmartSDR, DAX) is not ours to take.
         stations = gui_stations(clients)
         num = lambda h: int(h, 16) if h else None   # handles compare as numbers, not text
-        ours = {num(handle)} | {num(g[0]) for g in stations if g[3] == self.station}
+        ours = {num(handle)}    # a pan of our station on this channel is another copy's, or left by a crash
         taken = {p: h for p, h in daxiq_holders(status, self.channel).items() if num(h) not in ours}
         if taken:
             pan, h = sorted(taken.items())[0]
@@ -472,7 +484,7 @@ class FlexIQReceiver:
         self._udp.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
         self._udp.bind(('', self.udp_port))
 
-        self._running = True
+        self._running = not self._stopping
         log.info("[Flex] DAX-IQ streaming at %d Hz on UDP port %d",
                  self.sample_rate, self.udp_port)
         self.state = "live"
@@ -487,6 +499,7 @@ class FlexIQReceiver:
                 self._tcp.sendall(b'\x04')    # FlexLib tells the radio it is leaving before it closes
             except OSError:
                 pass
+        if self._tcp and self._handle:
             log.info("[Flex] Disconnected from %s (client 0x%s, %s)", self.ip, self._handle, reason)
         for name in ('_tcp', '_udp'):
             sock = getattr(self, name)
@@ -518,39 +531,48 @@ class FlexIQReceiver:
             self._log_reply(line)
         for line in clients_gone(lines):
             log.info("[Flex] Radio reports: %s", line.strip()[:200])
-        if ptt_ours(lines):
+        if ptt_ours(lines) and not self._ptt_warned:
+            self._ptt_warned = True
             log.warning("[Flex] The radio's key and PTT jacks now follow the SparkGap station, "
                         "not the operator's: set local PTT in SmartSDR")
         return True
 
-    def _restart(self, why):
+    def _restart(self, why, alive):
         """Drop the connection and set the radio up once more; a second loss within
-        HALT_WINDOW_S, or a failed reconnect, stops SparkGap instead."""
-        now = time.time()
-        if self._last_loss and now - self._last_loss < HALT_WINDOW_S:
-            self._halt("%s, %.0f s after the previous lost connection" % (why, now - self._last_loss))
-            return
-        self._last_loss = now
-        log.error("[Flex] %s: connecting again", why)
-        self.state = "reconnecting"
-        self.reconnects += 1
-        self.last_reconnect = round(now)
-        self._close("reconnecting")
-        self._buf = b''
-        try:
-            self.start(why)
-        except Exception:
-            self._halt("reconnect attempt %d failed" % self.attempts)
-            return
-        log.info("[Flex] Reconnected on attempt %d, %.0f s after reconnecting began",
-                 self.attempts, time.time() - now)
+        HALT_WINDOW_S, or a failed reconnect, stops SparkGap instead.
+        alive: the control connection still works (the stream stalled)."""
+        with self._lock:
+            if self._stopping:
+                return
+            now = time.time()
+            if self._last_loss and now - self._last_loss < HALT_WINDOW_S:
+                self._halt("%s, %.0f s after the previous lost connection" % (why, now - self._last_loss), alive)
+                return
+            self._last_loss = now
+            log.error("[Flex] %s: connecting again", why)
+            self.state = "reconnecting"
+            self.reconnects += 1
+            self.last_reconnect = round(now)
+            if alive:
+                self._remove_objects()
+            elif self._bound:
+                self._stale = (self._stream_id, self._slice_id, self._pan_id)
+            self._close("reconnecting")
+            self._buf = b''
+            try:
+                self.start(why)
+            except Exception:
+                self._halt("reconnect attempt %d failed" % self.attempts)
+                return
+            log.info("[Flex] Reconnected on attempt %d, %.0f s after reconnecting began",
+                     self.attempts, time.time() - now)
 
-    def _halt(self, why):
+    def _halt(self, why, alive=True):
         """Leave the radio alone: remove our objects if still connected, disconnect, and stop SparkGap."""
         log.error("[Flex] %s: stopping SparkGap and leaving the radio alone until it is started again", why)
         self.state = "halted"
         self._running = False
-        if self._tcp:
+        if self._tcp and alive:
             self._remove_objects()
         self._stream_id = self._pan_id = self._slice_id = None
         self._close("halted")
@@ -564,10 +586,13 @@ class FlexIQReceiver:
                 'daxiq_channel': self.channel, 'others': list(self.others)}
 
     def stop(self):
+        self._stopping = True
         self._running = False
         time.sleep(0.25)               # receive() leaves its loop; it reads the same connection
-        self._remove_objects()
-        self._close("stopping")
+        with self._lock:
+            self._running = False
+            self._remove_objects()
+            self._close("stopping")
         log.info("[Flex] Stopped")
 
     def _remove_objects(self):
@@ -623,13 +648,13 @@ class FlexIQReceiver:
                             "and that DAX-IQ channel %d is bound to the pan",
                             other_streams, self.udp_port, self.channel)
             ready = select.select([self._udp, self._tcp], [], [], 0.1)[0]
-            why = None
+            why, alive = None, True
             if self._tcp in ready and not self._read_status():
-                why = self._lost
+                why, alive = self._lost, False
             elif pkt_count and time.time() - last_pkt > STALL_S:
                 why = "No DAX-IQ packets for %d s (last packet %s)" % (STALL_S, utc_hms(self.last_packet))
             if why:
-                self._restart(why)
+                self._restart(why, alive)
                 last_counter = None
                 last_pkt = time.time() + RETRY_S    # time for the new stream to start
                 continue
@@ -666,7 +691,7 @@ class FlexIQReceiver:
                 if gap and pkt_count > 10:
                     lost += gap
                     self.lost += gap
-                    log.info("[Flex] Packet gap: %d missed", gap)
+                    log.debug("[Flex] Packet gap: %d missed", gap)   # the 30 s report counts them
             last_counter = counter
 
             # Parse float32 I/Q pairs into one (n, 2) float64 array (cdub89/SparkGap#16)
