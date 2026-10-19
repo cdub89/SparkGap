@@ -283,7 +283,7 @@ def test_itila2_defaults_to_the_repeat_rule() -> None:
 
     assert sparkgap._spot_rule_name({"cw_decoder": "itila2"}) == "repeat"
     assert sparkgap._spot_rule_name({"cw_decoder": "itila"}) == "off"
-    assert sparkgap._spot_rule_name({}) == "off"
+    assert sparkgap._spot_rule_name({}) == "repeat"  # itila2 is the default decoder
     # an explicit setting wins either way, for comparing the two rules on one decoder
     assert sparkgap._spot_rule_name({"cw_decoder": "itila2", "spot_rule": "off"}) == "off"
     assert sparkgap._spot_rule_name({"cw_decoder": "itila", "spot_rule": "repeat"}) == "repeat"
@@ -620,3 +620,176 @@ def test_validation_rival_reading_lowers_confidence() -> None:
     _feed(rival, ["CQ CQ DE K1ABD", "CQ CQ DE K1ABD"])
     assert _feed(plain, ["CQ CQ DE K1ABC K1ABC K"], t0=120.0) == [("K1ABC", 7019.3)]
     assert _feed(rival, ["CQ CQ DE K1ABC K1ABC K"], t0=120.0) == []
+
+
+def test_validation_off_is_accepted() -> None:
+    from sparkgap import _make_spot_rule
+    assert _make_spot_rule({"spot_validation": "off"}, None).threshold is None
+
+
+def test_doubled_call_counts_twice_only_when_asked() -> None:
+    """doubled: a call sent twice in one CQ group is two copies (hotairfred/SparkGap#43)."""
+    assert runner_calls("CQ CQ DE K8TLJ K8TLJ K", every=True) == ["K8TLJ"]
+    assert runner_calls("CQ CQ DE K8TLJ K8TLJ K", every=True, doubled=True) == ["K8TLJ", "K8TLJ"]
+    assert runner_calls("CQ TEST W6YH TEST", every=True, doubled=True) == ["W6YH"]
+    # a caller being sent the exchange twice is still no runner
+    assert runner_calls("TEST N2MF N2MF 5NN 05", every=True, doubled=True) == []
+    plain = RepeatSpotRule(_tier2, cq_groups=True)
+    dbl = RepeatSpotRule(_tier2, cq_groups=True, doubled=True)
+    assert plain.feed(1, 7030.0, "CQ CQ DE K8TLJ K8TLJ K", 0.0) == []
+    assert dbl.feed(1, 7030.0, "CQ CQ DE K8TLJ K8TLJ K", 0.0) == [("K8TLJ", 7030.0)]
+    lock = RepeatSpotRule(_tier2, cq_groups=True, lockon=True, doubled=True)
+    assert lock.feed(1, 7030.0, "CQ CQ DE K8TLJ K8TLJ K", 0.0) == [("K8TLJ", 7030.0)]
+
+
+def test_doubled_is_off_under_validation() -> None:
+    """Validation scores a doubled call itself (its "doubled" weight); counting each copy too would count it twice."""
+    assert RepeatSpotRule(_tier2, doubled=True).doubled
+    assert not RepeatSpotRule(_tier2, doubled=True, validation="normal").doubled
+
+
+def test_doubled_has_no_effect_with_validation() -> None:
+    """The validation score already weighs a call sent twice; doubled must not add a second
+    copy on top (one CQ CQ DE K1ABC K1ABC K would otherwise spot on its own)."""
+    text = "CQ CQ DE K1ABC K1ABC K"
+    for kw in ({}, {"doubled": True}):
+        r = RepeatSpotRule(_tier2, cq_groups=True, lockon=True, validation="normal", **kw)
+        assert r.feed(1, 7030.0, text, 0.0) == []
+
+
+def test_local_port_validation_and_shared_list(monkeypatch) -> None:
+    import sparkgap
+    from spot_rule import VALIDATION
+    tracker = sparkgap.SpotTracker(set(SCP), set())
+    cfg = {"spot_validation": "normal", "spot_validation_calls": "scp"}
+    assert sparkgap._make_spot_rule(cfg, tracker).threshold == VALIDATION["normal"]
+    # the local port follows the top level unless its block says otherwise
+    assert sparkgap._make_spot_rule(cfg, tracker, local={}).threshold == VALIDATION["normal"]
+    assert sparkgap._make_spot_rule(cfg, tracker, local={"validation": "off"}).threshold is None
+    assert sparkgap._make_spot_rule(cfg, tracker, local={"validation": False}).threshold is None
+    assert sparkgap._make_spot_rule({}, tracker, local={"validation": "permissive"}).threshold == VALIDATION["permissive"]
+    assert sparkgap._make_spot_rule({"spot_validation": "off"}, tracker).threshold is None
+    # one list per kind, built once and shared by both rules
+    monkeypatch.setattr(tracker, "_validation_lists", {}, raising=False)
+    a = sparkgap._validation_list(cfg, tracker, "scp")
+    b = sparkgap._validation_list(cfg, tracker, "scp")
+    assert a is b and a("K0TQ") and not a("ZZ9ZZZ")
+
+
+def test_split_up_counts_tu_call_up_only_when_asked() -> None:
+    """split_up: a DX station working split signs TU <call> UP and may never send CQ
+    (CY0S, 40m, 2026-03-19; hotairfred/SparkGap#48). Off by default, as in CW Skimmer."""
+    text = "W5JMW 5NN TU CY0S UP"
+    assert runner_calls(text, every=True) == []
+    assert runner_calls(text, every=True, split_up=True) == ["CY0S"]
+    # only the call right before UP: the callers he works after it are not runners
+    assert runner_calls("TU CY0S UP KD4JG KD4JG KE3JP 5NN TU CY0S UP", every=True,
+                        split_up=True) == ["CY0S", "CY0S"]
+    assert runner_calls("TU CY0S UP XE1CQ", every=True, split_up=True) == ["CY0S"]
+    # a bare <call> UP or a TU without UP is no sign-off (#43: those let contest junk through)
+    assert runner_calls("CY0S UP", every=True, split_up=True) == []
+    assert runner_calls("TU CY0S 5NN", every=True, split_up=True) == []
+    plain = RepeatSpotRule(_tier2, cq_groups=True, lockon=True)
+    split = RepeatSpotRule(_tier2, cq_groups=True, lockon=True, split_up=True)
+    for rule in (plain, split):
+        for k in range(2):
+            spots = rule.feed(k, 7024.0, "W5JMW 5NN TU CY0S UP", 60.0 * k)
+    assert plain.owner(7024.0, 60.0) is None
+    assert spots == [("CY0S", 7024.0)] and split.owner(7024.0, 60.0) == "CY0S"
+
+
+def test_split_up_by_config_and_local_port() -> None:
+    import sparkgap
+    tracker = sparkgap.SpotTracker(set(SCP), set())
+    assert not sparkgap._make_spot_rule({}, tracker).split_up
+    assert sparkgap._make_spot_rule({"spot_rule_split_up": True}, tracker).split_up
+    # the local port's rule has its own key; the RBN port's stays off
+    cfg = {"local_spot_rule": {"split_up": True}}
+    assert not sparkgap._make_spot_rule(cfg, tracker).split_up
+    assert sparkgap._make_spot_rule(cfg, tracker, local=cfg["local_spot_rule"]).split_up
+    assert not sparkgap._make_spot_rule(cfg, tracker, local={}).split_up
+
+
+def test_contest_words_open_a_group() -> None:
+    """contest_words: CWT, SST or MST right before a call of 4+ characters opens a CQ group (CWT 10-14
+    19Z: K5AX sent CWT K5AX six times in a window and counted once). 3-character pieces do not."""
+    text = "CWT K5AX CWT K5AX CQ CQDE K5AX CWT K5AX"
+    assert runner_calls(text, every=True) == ["K5AX"]
+    assert runner_calls(text, every=True, contest_words=True) == ["K5AX"] * 3   # the CQ closes a group
+    assert runner_calls(text, every=True, contest_words=True, cq_repeats=True) == ["K5AX"] * 4
+    assert runner_calls("CWT N0K E E", every=True, contest_words=True) == []
+    assert runner_calls("MST W6KK MST W6KK", every=True, contest_words=True) == ["W6KK", "W6KK"]
+
+
+def test_cq_repeats_count_back_to_back_cqs() -> None:
+    """cq_repeats: CQ CWT N1DC CQ CWT N1DC is two copies; the second CQ used to close the first group.
+    A different call after the closing CQ is still the next transmission (a caller), not a runner."""
+    assert runner_calls("CQ FD N1DC CQ FD N1DC", every=True) == ["N1DC"]
+    assert runner_calls("CQ FD N1DC CQ FD N1DC", every=True, cq_repeats=True) == ["N1DC", "N1DC"]
+    assert runner_calls("CQ TEST W6YH TEST K1ABC", every=True, cq_repeats=True) == ["W6YH"]
+
+
+def test_contest_words_and_cq_repeats_local_port() -> None:
+    """Top-level keys set both rules; local_spot_rule's own keys override them (contest_words on the local
+    port only, as skimmer1 runs it)."""
+    import sparkgap
+    tracker = sparkgap.SpotTracker(set(SCP), set())
+    cfg = {"spot_rule_cq_repeats": True, "local_spot_rule": {"contest_words": True}}
+    rbn = sparkgap._make_spot_rule(cfg, tracker)
+    loc = sparkgap._make_spot_rule(cfg, tracker, local=cfg["local_spot_rule"])
+    assert rbn.cq_repeats and not rbn.contest_words
+    assert loc.cq_repeats and loc.contest_words
+
+
+def test_fragments_piece_of_a_longer_call_waits() -> None:
+    """fragments 'any': K1V does not spot while K1VUT is heard near the same frequency;
+    'stray': TEST K1V U T gives no copy of K1V (K1VUT split at a letter gap)."""
+    from spot_rule import _fragment, _stray_after, tokens
+    assert _fragment("K1V", "K1VUT") and _fragment("N6T", "N6TQS")
+    assert not _fragment("K1VU", "K1VUT")            # one shorter: the one-edit vote's case
+    assert not _fragment("W1AW", "K1VUT")
+    t = tokens("CQ TEST K1V U T")
+    assert _stray_after(t, 2)
+    assert not _stray_after(tokens("CQ TEST K4TZ E E"), 2)   # noise after a full call
+    assert not _stray_after(tokens("CQ TEST W0UI W 0 UI"), 2)
+    plain = RepeatSpotRule(_tier2, cq_groups=True, lockon=True)
+    frag = RepeatSpotRule(_tier2, cq_groups=True, lockon=True, fragments="any,stray")
+    texts = ["CQ TEST K1VUT K1VUT", "CQ TEST K1V UT", "CQ TEST K1V U T", "CQ TEST K1V UT"]
+    got_plain, got_frag = [], []
+    for k, tx in enumerate(texts):
+        got_plain += plain.feed(k, 14024.0, tx, 60.0 * k)
+        got_frag += frag.feed(k, 14024.0, tx, 60.0 * k)
+    assert ("K1V", 14024.0) in got_plain
+    assert ("K1V", 14024.0) not in got_frag
+    import pytest
+    with pytest.raises(ValueError):
+        RepeatSpotRule(_tier2, fragments="even,any")
+
+
+def test_fragments_short_call_spots_once_the_longer_one_ages_out() -> None:
+    """The wait lasts only while the longer call has copies near the frequency (REPEAT_S): a real short
+    call there (K1V after K1VUT has gone) spots once those copies age out."""
+    from spot_rule import REPEAT_S
+    for opt in ("any", "even"):
+        r = RepeatSpotRule(_tier2, cq_groups=True, fragments=opt)
+        r.feed(0, 14024.0, "CQ TEST K1VUT K1VUT", 0.0)
+        r.feed(1, 14024.0, "CQ TEST K1VUT K1VUT", 60.0)
+        held = r.feed(2, 14024.0, "CQ TEST K1V", 120.0) + r.feed(3, 14024.0, "CQ TEST K1V", 180.0)
+        assert ("K1V", 14024.0) not in held
+        t = 60.0 + REPEAT_S + 1.0
+        got = r.feed(4, 14024.0, "CQ TEST K1V", t) + r.feed(5, 14024.0, "CQ TEST K1V", t + 60.0)
+        assert ("K1V", 14024.0) in got, opt
+
+
+def test_fragments_option_must_be_text() -> None:
+    import pytest
+    with pytest.raises(ValueError, match="fragments takes"):
+        RepeatSpotRule(_tier2, fragments=True)
+
+
+def test_fragments_by_config() -> None:
+    import sparkgap
+    tracker = sparkgap.SpotTracker(set(SCP), set())
+    assert sparkgap._make_spot_rule({}, tracker).fragments is None
+    r = sparkgap._make_spot_rule({"spot_rule_fragments": "any,stray"}, tracker)
+    assert r.fragments == "any" and r.stray

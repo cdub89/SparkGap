@@ -70,7 +70,7 @@ def _gui_settings(cfg, sample_rate):
     repeat = rule == 'repeat'
     eff = {
         'callsign': cfg.get('callsign', ''),
-        'cw_decoder': cfg.get('cw_decoder', 'itila'),
+        'cw_decoder': cfg.get('cw_decoder', 'itila2'),
         'sample_rate': sample_rate,
         'flex_daxiq_channel': cfg.get('flex_daxiq_channel', 1) if cfg.get('sdr_type') == 'flex' else None,
         'telnet_port': cfg.get('telnet_port', 7300),
@@ -98,7 +98,7 @@ def _start_gui_feed(cfg, bands, sample_rate, managers):
     import feed_server
     try:
         _gui_feed = feed_server.FeedServer(cfg['gui_feed'], {
-            'call': cfg.get('callsign', ''), 'decoder': cfg.get('cw_decoder', 'itila'),
+            'call': cfg.get('callsign', ''), 'decoder': cfg.get('cw_decoder', 'itila2'),
             **dict(zip(('config', 'config_defaults', 'config_built_in'),
                        _gui_settings(cfg, sample_rate))),
             'bands': [{'name': n, 'center_khz': c / 1000.0, 'span_khz': sample_rate / 1000.0}
@@ -484,6 +484,7 @@ def _wav_drop_cache(path):
         log.warning("Recording IQ: file cache not dropped for %s: %s", path, e)
 
 PEAK_SCAN_SAMPLES = 8192    # live peak scan FFT; the Python receive path keeps only this much IQ
+RECORD_WAV_MAX_BYTES = 4_000_000_000    # under the WAV format's 2**32 - 1 byte limit
 
 
 class DecoderInstance:
@@ -1789,41 +1790,83 @@ def _select_spot_rule(name):
 def _spot_rule_name(config):
     """spot_rule from the config. Not set: "repeat" with cw_decoder itila2 (measured as one
     chain), "off" with itila."""
-    return config.get('spot_rule') or ('repeat' if config.get('cw_decoder', 'itila') == 'itila2' else 'off')
+    return config.get('spot_rule') or ('repeat' if config.get('cw_decoder', 'itila2') == 'itila2' else 'off')
 
-def _make_spot_rule(config, tracker):
-    """The RepeatSpotRule SparkGap runs with spot_rule "repeat": tiers from patt3ch, lock-on,
-    CQ groups and CQ qualifiers always on (measured on every recording we have), split_runs
-    by config (spot_rule_split_runs, off by default)."""
-    from spot_rule import RepeatSpotRule
-    # spot_validation (off by default): permissive / normal / aggressive confidence score in
-    # place of the tier count; spot_validation_calls adds a call list to the score: "scp"
-    # (MASTER.SCP), "rbn" (RBN known calls, rbn_known.py, refreshed from the archives here) or
-    # "rbn+skcc" (those and SKCC member calls, skcc_roster.py).
-    validation = config.get('spot_validation') or None
-    validation = None if validation == 'off' else validation
-    calls = config.get('spot_validation_calls') if validation else None
-    listed = None
+def _validation_list(config, tracker, calls):
+    """The call list of spot_validation_calls as a predicate, else None. Built once per list
+    and kept on the tracker, so the RBN port and the local port share one download."""
+    if not calls:
+        return None
+    cache = tracker.__dict__.setdefault('_validation_lists', {})
+    if calls in cache:
+        return cache[calls]
     if calls == 'scp':
         listed = lambda c: c in tracker.valid_calls or max(c.split('/'), key=len) in tracker.valid_calls
     elif calls in ('rbn', 'rbn+skcc'):
         import rbn_known
         from pathlib import Path
-        cache = Path(config.get('rbn_known_dir', 'rbn_known'))
-        known = rbn_known.refresh(cache, config.get('callsign', ''),
+        d = Path(config.get('rbn_known_dir', 'rbn_known'))
+        known = rbn_known.refresh(d, config.get('callsign', ''),
                                   int(config.get('rbn_known_days', rbn_known.DAYS)))
         if calls == 'rbn+skcc':
             import skcc_roster
-            known = known | skcc_roster.refresh(cache)
+            known = known | skcc_roster.refresh(d)
         listed = lambda c: rbn_known.base_call(c) in known
-    elif calls:
+    else:
         raise ValueError("spot_validation_calls must be scp, rbn or rbn+skcc, got %r" % calls)
+    cache[calls] = listed
+    return listed
+
+def _make_spot_rule(config, tracker, local=None):
+    """The RepeatSpotRule SparkGap runs with spot_rule "repeat": tiers from patt3ch, lock-on,
+    CQ groups and CQ qualifiers always on (measured on every recording we have), split_runs
+    by config (spot_rule_split_runs, off by default), doubled calls by config
+    (spot_rule_doubled_calls, off by default), split DX sign-offs by config
+    (spot_rule_split_up, off by default: CW Skimmer does not spot TU <call> UP either,
+    hotairfred/SparkGap#48).
+
+    local: the local_spot_rule config block for the rule of the local telnet port, which may
+    be looser than the rule of telnet_port (the port the RBN feeder reads). Its keys:
+    doubled_calls (bool), split_up (bool), fewer_repeats (int: copies taken off each patt3ch tier, never
+    below 2), validation and validation_calls (as spot_validation and spot_validation_calls,
+    for this port only). doubled_calls has no effect while validation is on: the score
+    already weighs a call sent twice."""
+    from spot_rule import RepeatSpotRule
+    # spot_validation (off by default): permissive / normal / aggressive confidence score in
+    # place of the tier count; spot_validation_calls adds a call list to the score: "scp"
+    # (MASTER.SCP), "rbn" (RBN known calls, rbn_known.py, refreshed from the archives here) or
+    # "rbn+skcc" (those and SKCC member calls, skcc_roster.py).
+    # The local port's rule may set its own (validation, validation_calls in local_spot_rule);
+    # otherwise it follows these. "off" and false both mean off.
+    def off(v):
+        return None if v in (None, False, 'off', '') else v
+    validation = off(config.get('spot_validation'))
+    calls = config.get('spot_validation_calls')
+    if local is not None:
+        validation = off(local.get('validation', validation))
+        calls = local.get('validation_calls', calls)
+    calls = calls if validation else None
+    listed = _validation_list(config, tracker, calls)
+    fewer = int(local.get('fewer_repeats', 0)) if local is not None else 0
+    doubled = (local.get('doubled_calls', False) if local is not None
+               else config.get('spot_rule_doubled_calls', False))
+    split_up = (local.get('split_up', False) if local is not None
+                else config.get('spot_rule_split_up', False))
+    # cq_repeats / contest_words: the local rule follows the top-level keys unless it sets its own
+    contest_words = config.get('spot_rule_contest_words', False)
+    cq_repeats = config.get('spot_rule_cq_repeats', False)
+    if local is not None:
+        contest_words = local.get('contest_words', contest_words)
+        cq_repeats = local.get('cq_repeats', cq_repeats)
     return RepeatSpotRule(
-        lambda c: {'active': 2, 'rare': 3}.get(tracker._matches_patt3ch(c), 4),
+        lambda c: max(2, {'active': 2, 'rare': 3}.get(tracker._matches_patt3ch(c), 4) - fewer),
         cq_groups=True, cq_qualifiers=True, lockon=True,
         split_runs=bool(config.get('spot_rule_split_runs', False)),
         window_s=float(config.get('itila_window_sec', 60.0)),
-        validation=validation, listed=listed, listed_by=calls or 'scp')
+        validation=validation, listed=listed, listed_by=calls or 'scp',
+        doubled=bool(doubled), split_up=bool(split_up),
+        contest_words=bool(contest_words), cq_repeats=bool(cq_repeats),
+        fragments=config.get('spot_rule_fragments') or None)
 
 def _get_itila_lib():
     global _itila_lib
@@ -1898,6 +1941,12 @@ def _rtty_calls_match(a, b):
             return True
     return False
 
+
+# RTTY spots give the mark tone's frequency, as RBN's RTTY skimmers do: the upper of the two
+# tones, 85 Hz above the centre for the standard 170 Hz shift. Candidates are found and tuned
+# by their centre; only the reported frequency moves. (JARTS 10-17/18: our centre frequencies
+# read a median 90 Hz below the RBN skimmers' on 2377 matched spots.)
+RTTY_MARK_HZ = 85.0
 
 # RTTY contest sub-bands per band, as offset (Hz) from band center.
 # Centers in our config are 3590/7090/14090/21090/28090 kHz.
@@ -1976,7 +2025,8 @@ def _rtty_scan_band_repeat(skimmer, rtty_lib, bn, band_center_khz, fi, fq, n_sam
         # runner's 100 Hz bin can change between two.
         rule = skimmer._rtty_rule = RepeatSpotRule(
             lambda c: {'active': 2, 'rare': 3}.get(trk._matches_patt3ch(c), 4),
-            cq_groups=True, lockon=True, window_s=30.0)
+            cq_groups=True, lockon=True, window_s=30.0,
+            fragments=skimmer.cfg.get('rtty_spot_rule_fragments') or None)
     iq = fi.astype(np.float64) + 1j * fq.astype(np.float64)
     cands = _rtty_candidates(iq, *rng)[:int(skimmer.cfg.get('rtty_max_candidates', 40))]
     if not cands:
@@ -2011,12 +2061,12 @@ def _rtty_scan_band_repeat(skimmer, rtty_lib, bn, band_center_khz, fi, fq, n_sam
             rtty_lib.rtty_free(h)
         if not text:
             continue
-        rf_khz = (band_center_khz * 1000.0 + off_hz) / 1000.0
+        rf_khz = (band_center_khz * 1000.0 + off_hz + RTTY_MARK_HZ) / 1000.0     # mark tone
         log.info("RTTY %s @ %.1f kHz (%.0f dB): %s", bn, rf_khz, snr_db, text[:80])
         w = rule.window_id(int(round(rf_khz * 10)), int(now // 60), now)
         for call, sf in rule.feed(w, rf_khz, text, now, snr=snr_db):
             log.info("*** RTTY SPOT: %.1f kHz  %-10s  %+d dB  [%s] ***", sf, call, int(snr_db), text[:50])
-            skimmer.telnet.broadcast_spot(freq_khz=skimmer._corrected_freq_khz(sf), dx_call=call,
+            skimmer.broadcast(freq_khz=skimmer._corrected_freq_khz(sf), dx_call=call,
                                           snr=int(snr_db), mode='RTTY', comment=text[:60])
             skimmer.spot_count += 1
             n_spots += 1
@@ -2201,10 +2251,11 @@ def _rtty_scan_band(skimmer, rtty_lib, bn, band_center_khz, fi, fq, n_samples):
                 continue
 
             skimmer._rtty_emitted[key] = now
+            mark_khz = (rf_hz + RTTY_MARK_HZ) / 1000.0
             log.info("*** RTTY SPOT: %.1f kHz  %-10s  %+d dB  [%s] ***",
-                     rf_hz / 1000.0, call, int(snr_db), text[:50])
-            skimmer.telnet.broadcast_spot(
-                freq_khz=skimmer._corrected_freq_khz(rf_hz / 1000.0),
+                     mark_khz, call, int(snr_db), text[:50])
+            skimmer.broadcast(
+                freq_khz=skimmer._corrected_freq_khz(mark_khz),
                 dx_call=call,
                 snr=int(snr_db),
                 mode='RTTY',
@@ -5406,6 +5457,7 @@ class SpotTracker:
         self.blacklist = blacklist
         self.respot_interval = respot_interval
         self.spot_rule = None      # spot_rule.RepeatSpotRule when config spot_rule is "repeat"
+        self.local_rule = None     # the local telnet port's rule (telnet_local_port), else None
         self.clock = time.time     # spot_rule's clock; file mode sets it to audio time
         self.fuzzy_min_cycles = fuzzy_min_cycles
         self.add_calls = add_calls or set()
@@ -6324,12 +6376,17 @@ class SpotTracker:
             if not self.spot_rule:
                 return []
             now = self.clock()
-            w = self.spot_rule.window_id(intent.bin_id, intent.window_id, now)
-            return [{'call': call, 'freq_khz': f, 'snr': intent.snr_db,
-                     'wpm': intent.wpm, 'method': 'repeat'}
-                    for call, f in self.spot_rule.feed(w, intent.freq_khz, intent.window_text, now,
-                                                       intent.snr_db)
-                    if call not in self.blacklist]
+            spots = []
+            for rule, stream in ((self.spot_rule, 'rbn'), (self.local_rule, 'local')):
+                if rule is None:
+                    continue
+                w = rule.window_id(intent.bin_id, intent.window_id, now)
+                spots += [{'call': call, 'freq_khz': f, 'snr': intent.snr_db,
+                           'wpm': intent.wpm, 'method': 'repeat', 'stream': stream}
+                          for call, f in rule.feed(w, intent.freq_khz, intent.window_text, now,
+                                                   intent.snr_db)
+                          if call not in self.blacklist]
+            return spots
         # gate_short_scp_exact: require a second sighting at the same freq
         # for ≤3-char SCP calls coming via the ITILA [exact] path.  The
         # synthetic "CQ <call> " below auto-sets has_context in process(),
@@ -6897,6 +6954,7 @@ class SparkGap:
         self._band_meta = []   # [(name, center_hz, rx_index), ...]
         self.tracker = None
         self.telnet = None
+        self.telnet_local = None   # telnet_local_port, else None
         self.running = False
         self.spot_count = 0
         self.start_time = None
@@ -6910,6 +6968,23 @@ class SparkGap:
         # Replaces a hardware GPSDO until/unless we add the R25/R26
         # mod + Bodnar 125 MHz reference.
         self.ppm_offset = float(self.cfg.get('ppm_offset', 0.0))
+
+    def broadcast(self, stream='all', **spot):
+        """Send a spot to the telnet ports. stream 'all' (FT8, RTTY, CW without spot_rule):
+        both ports. 'rbn' (telnet_port's spot rule): telnet_port, and the local port too when it
+        has no rule of its own. 'local' (the local port's rule): the local port only."""
+        if stream != 'local':
+            self.telnet.broadcast_spot(**spot)
+        if self.telnet_local is not None and (stream != 'rbn' or self.tracker.local_rule is None):
+            self.telnet_local.broadcast_spot(**spot)
+
+    def _feed_takes(self, stream):
+        """Whether the GUI feed shows a spot of this stream. gui_feed "spots": "rbn" (default)
+        follows telnet_port, "local" follows telnet_local_port (the RBN spots when the local
+        port has no rule of its own)."""
+        if str((self.cfg.get('gui_feed') or {}).get('spots', 'rbn')).lower() != 'local':
+            return stream != 'local'
+        return stream != 'rbn' or self.tracker.local_rule is None
 
     def _corrected_freq_khz(self, raw_khz):
         """Apply ppm_offset calibration to a freq emission. No-op when 0."""
@@ -7018,6 +7093,30 @@ class SparkGap:
             skimsrv_version=self.cfg.get('skimsrv_version', '1.6.0.145'),
         )
         await self.telnet.start()
+        # telnet_local_port: a second port for local users, with its own spot rule
+        # (local_spot_rule) that may be looser than telnet_port's, which the RBN feeder reads.
+        if self.cfg.get('telnet_local_port'):
+            self.telnet_local = SpotTelnetServer(
+                host=self.cfg.get('telnet_host', '0.0.0.0'),
+                port=int(self.cfg['telnet_local_port']),
+                callsign=self.cfg.get('callsign', 'WF8Z'),
+                node_call=self.cfg.get('node_call', 'SPARK-2'),
+                skimmer_suffix=self.cfg.get('skimmer_suffix', '-#'),
+                source_tag=self.cfg.get('source_tag', 'SG'),
+                op_name=self.cfg.get('op_name', ''),
+                qth=self.cfg.get('qth', ''),
+                grid=self.cfg.get('grid', ''),
+                validation_level=self.cfg.get('validation_level', 'Normal'),
+                skimsrv_version=self.cfg.get('skimsrv_version', '1.6.0.145'),
+            )
+            await self.telnet_local.start()
+            if self.tracker.spot_rule is not None and 'local_spot_rule' in self.cfg:
+                lr = self.cfg['local_spot_rule']
+                self.tracker.local_rule = _make_spot_rule(self.cfg, self.tracker, local=lr)
+                log.info("Local telnet port %d: own spot rule %s", self.cfg['telnet_local_port'], lr)
+            else:
+                log.info("Local telnet port %d: same spots as port %d",
+                         self.cfg['telnet_local_port'], self.cfg.get('telnet_port', 7300))
 
         # ----------------------------------------------------------------
         # Band configuration — supports single band (legacy) and multi-band
@@ -7044,6 +7143,8 @@ class SparkGap:
              round(center_hz / 1000.0 + half_bw_khz, 1))
             for _, center_hz, _ in self._band_meta
         ]
+        if self.telnet_local is not None:
+            self.telnet_local.bands = self.telnet.bands
 
         rx_sample_rate = self.cfg.get('sample_rate', 48000)
         rates = (192000,) if self.cfg.get('use_pfb_scanner') or self.cfg.get('pfb_scanner_bands') else (48000, 96000, 192000)
@@ -7051,7 +7152,7 @@ class SparkGap:
             log.error("use_itila needs sample_rate in %s, got %d", rates, rx_sample_rate)
             return False
         try:
-            _select_cw_decoder(self.cfg.get('cw_decoder', 'itila'))
+            _select_cw_decoder(self.cfg.get('cw_decoder', 'itila2'))
         except (ValueError, RuntimeError) as e:
             log.error("%s", e)
             return False
@@ -7297,6 +7398,8 @@ class SparkGap:
             mgr.kill_all()
         if self.telnet:
             await self.telnet.stop()
+        if self.telnet_local:
+            await self.telnet_local.stop()
         if self._wav_record:
             self._wav_record.close()
             self._wav_record = None
@@ -7682,8 +7785,9 @@ class SparkGap:
                         spots = self.tracker.process(rf_khz, snr, text, ctx, dec_id,
                                                      dec_type=dec_type, wpm=wpm)
                     for spot in spots:
-                        self.spot_count += 1
-                        self.telnet.broadcast_spot(
+                        stream = spot.get('stream', 'all')
+                        self.broadcast(
+                            stream,
                             freq_khz=self._corrected_freq_khz(spot['freq_khz']),
                             dx_call=spot['call'],
                             snr=spot['snr'],
@@ -7691,8 +7795,14 @@ class SparkGap:
                         )
                         method   = spot.get('method', 'exact')
                         spot_wpm = spot.get('wpm', 0)
-                        if _gui_feed:
+                        if _gui_feed and self._feed_takes(stream):
                             _gui_feed.publish_spot(spot['freq_khz'], spot['call'], spot['snr'], spot_wpm)
+                        if stream == 'local':
+                            # Not "*** SPOT:": log scorers count those as the RBN stream.
+                            log.info("*** LOCAL SPOT: %10.1f  %-12s  %d dB  %d WPM ***",
+                                     spot['freq_khz'], spot['call'], spot['snr'], spot_wpm)
+                            continue
+                        self.spot_count += 1
                         log.info("*** SPOT: %10.1f  %-12s  %d dB  %d WPM  [%s] ***",
                                  spot['freq_khz'], spot['call'], spot['snr'],
                                  spot_wpm, method)
@@ -8113,7 +8223,7 @@ class SparkGap:
                                         total += 1
                                         skimmer.spot_count += 1
                                         rf_khz_corr = skimmer._corrected_freq_khz(rf_khz)
-                                        skimmer.telnet.broadcast_spot(
+                                        skimmer.broadcast(
                                             freq_khz=rf_khz_corr, dx_call=ft8_call,
                                             snr=snr, mode='FT8',
                                             comment=msg)
@@ -8335,7 +8445,7 @@ def run_file_mode(args, config):
     if config.get('use_itila') and file_rate not in rates:
         sys.exit(f"use_itila needs a recording at {rates} Hz, got {file_rate}")
     try:
-        _select_cw_decoder(config.get('cw_decoder', 'itila'))
+        _select_cw_decoder(config.get('cw_decoder', 'itila2'))
     except (ValueError, RuntimeError) as e:
         sys.exit(str(e))
 
@@ -8694,6 +8804,8 @@ def main():
     parser.add_argument('--ip', help='SDR IP override')
     parser.add_argument('--band', help='Band override (e.g., 20m)')
     parser.add_argument('--port', type=int, help='Telnet port override')
+    parser.add_argument('--local-port', type=int,
+                        help='Local telnet port override (telnet_local_port; turns the port on)')
     parser.add_argument('--file', help='WAV file for offline testing (IQ recording)')
     parser.add_argument('--start-min', type=float, default=0, help='Start minute in file')
     parser.add_argument('--end-min', type=float, default=0, help='End minute in file (0=end)')
@@ -8720,6 +8832,8 @@ def main():
         config['bands'] = [args.band]
     if args.port:
         config['telnet_port'] = args.port
+    if args.local_port:
+        config['telnet_local_port'] = args.local_port
     if config.get('use_itila') and float(config.get('itila_window_sec', 60.0)) > 75:
         sys.exit("itila_window_sec must be <= 75 (ITILA decode buffer); set it in the config")
 
