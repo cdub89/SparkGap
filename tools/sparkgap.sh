@@ -168,7 +168,9 @@ update() {
   done
   d=$(awk '!/^#/ && NF {print $2; exit}' "$R/instances")  # the root's copy of this script follows the code
   if [ -f "$d/tools/sparkgap.sh" ] && ! cmp -s "$d/tools/sparkgap.sh" "$R/sparkgap.sh"; then
-    cp "$d/tools/sparkgap.sh" "$R/sparkgap.sh" && echo "$R/sparkgap.sh: updated from $d"
+    # a new file renamed into place: bash keeps reading the old one it is running
+    cp "$d/tools/sparkgap.sh" "$R/sparkgap.sh.new" && mv "$R/sparkgap.sh.new" "$R/sparkgap.sh" &&
+      echo "$R/sparkgap.sh: updated from $d"
   fi
   [ -n "$changed" ] || return 0
   local running=""
