@@ -59,6 +59,13 @@
 #define SC_CAND_AVG_HZ         25.0    /* hits averaged into the new bin's frequency */
 
 #include "itila_fir_coeffs.h"
+/* Hot loops built twice, AVX2/FMA and baseline, chosen at load time: portable builds keep
+ * running on older CPUs and get the native speed on newer ones (cdub89/SparkGap#19 A4). */
+#if defined(__GNUC__) && !defined(__clang__) && defined(__x86_64__)
+#define HOT_CLONES __attribute__((target_clones("arch=x86-64-v3", "default")))
+#else
+#define HOT_CLONES
+#endif
 
 #define SC_HANN_MS     40.0  /* Hann window on the 100 Hz path, at 2 kHz */
 #define SC_HANN_LEN    80    /* SC_HANN_MS x 2 taps */
@@ -151,7 +158,7 @@ static void fft_plan_free(FftPlan *p)
     p->rev = NULL; p->wr = p->wi = NULL;
 }
 
-static void fft_exec(const FftPlan *p, double *re, double *im)
+HOT_CLONES static void fft_exec(const FftPlan *p, double *re, double *im)
 {
     int n = p->n;
     for (int i = 0; i < n; i++) {
@@ -376,7 +383,7 @@ static double snr_take(ScBin *b)
 }
 
 /* ---- energy scan ---- */
-static void run_scan(ItilaSc *sc, const double *seg_i, const double *seg_q)
+HOT_CLONES static void run_scan(ItilaSc *sc, const double *seg_i, const double *seg_q)
 {
     int N = sc->energy_win;
     double *re = sc->scan_re, *im = sc->scan_im, *psd = sc->scan_psd;
@@ -678,7 +685,7 @@ static int bin_push_12k(const ItilaSc *sc, ScBin *b, double s1_i, double s1_q)
 }
 
 /* ---- per-bin DSP: all-FIR linear-phase chain ---- */
-static int process_bin(ItilaSc *sc, ScBin *b, const double *i_full, const double *q_full, int n)
+HOT_CLONES static int process_bin(ItilaSc *sc, ScBin *b, const double *i_full, const double *q_full, int n)
 {
     int drops = 0;
     {
@@ -726,7 +733,7 @@ static int process_bin(ItilaSc *sc, ScBin *b, const double *i_full, const double
  * mixes by k0 FFT bins relative to blk_start, so a phase term makes the mix continuous from
  * block to block; the residual (under half an FFT bin) is mixed out at 12 kHz by the bin's
  * oscillator, after the mask, which is flat far beyond it. */
-static int process_bin_fft(ItilaSc *sc, ScBin *b, int slot, double *yr, double *yi)
+HOT_CLONES static int process_bin_fft(ItilaSc *sc, ScBin *b, int slot, double *yr, double *yi)
 {
     const double *xr = sc->ring_re[slot], *xi = sc->ring_im[slot];
     int N = sc->fN, Nd = sc->fNd;
