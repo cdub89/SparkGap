@@ -625,3 +625,52 @@ def test_validation_rival_reading_lowers_confidence() -> None:
 def test_validation_off_is_accepted() -> None:
     from sparkgap import _make_spot_rule
     assert _make_spot_rule({"spot_validation": "off"}, None).threshold is None
+
+
+def test_doubled_call_counts_twice_only_when_asked() -> None:
+    """doubled: a call sent twice in one CQ group is two copies (hotairfred/SparkGap#43)."""
+    assert runner_calls("CQ CQ DE K8TLJ K8TLJ K", every=True) == ["K8TLJ"]
+    assert runner_calls("CQ CQ DE K8TLJ K8TLJ K", every=True, doubled=True) == ["K8TLJ", "K8TLJ"]
+    assert runner_calls("CQ TEST W6YH TEST", every=True, doubled=True) == ["W6YH"]
+    # a caller being sent the exchange twice is still no runner
+    assert runner_calls("TEST N2MF N2MF 5NN 05", every=True, doubled=True) == []
+    plain = RepeatSpotRule(_tier2, cq_groups=True)
+    dbl = RepeatSpotRule(_tier2, cq_groups=True, doubled=True)
+    assert plain.feed(1, 7030.0, "CQ CQ DE K8TLJ K8TLJ K", 0.0) == []
+    assert dbl.feed(1, 7030.0, "CQ CQ DE K8TLJ K8TLJ K", 0.0) == [("K8TLJ", 7030.0)]
+    lock = RepeatSpotRule(_tier2, cq_groups=True, lockon=True, doubled=True)
+    assert lock.feed(1, 7030.0, "CQ CQ DE K8TLJ K8TLJ K", 0.0) == [("K8TLJ", 7030.0)]
+
+
+def test_doubled_is_off_under_validation() -> None:
+    """Validation scores a doubled call itself (its "doubled" weight); counting each copy too would count it twice."""
+    assert RepeatSpotRule(_tier2, doubled=True).doubled
+    assert not RepeatSpotRule(_tier2, doubled=True, validation="normal").doubled
+
+
+def test_doubled_has_no_effect_with_validation() -> None:
+    """The validation score already weighs a call sent twice; doubled must not add a second
+    copy on top (one CQ CQ DE K1ABC K1ABC K would otherwise spot on its own)."""
+    text = "CQ CQ DE K1ABC K1ABC K"
+    for kw in ({}, {"doubled": True}):
+        r = RepeatSpotRule(_tier2, cq_groups=True, lockon=True, validation="normal", **kw)
+        assert r.feed(1, 7030.0, text, 0.0) == []
+
+
+def test_local_port_validation_and_shared_list(monkeypatch) -> None:
+    import sparkgap
+    from spot_rule import VALIDATION
+    tracker = sparkgap.SpotTracker(set(SCP), set())
+    cfg = {"spot_validation": "normal", "spot_validation_calls": "scp"}
+    assert sparkgap._make_spot_rule(cfg, tracker).threshold == VALIDATION["normal"]
+    # the local port follows the top level unless its block says otherwise
+    assert sparkgap._make_spot_rule(cfg, tracker, local={}).threshold == VALIDATION["normal"]
+    assert sparkgap._make_spot_rule(cfg, tracker, local={"validation": "off"}).threshold is None
+    assert sparkgap._make_spot_rule(cfg, tracker, local={"validation": False}).threshold is None
+    assert sparkgap._make_spot_rule({}, tracker, local={"validation": "permissive"}).threshold == VALIDATION["permissive"]
+    assert sparkgap._make_spot_rule({"spot_validation": "off"}, tracker).threshold is None
+    # one list per kind, built once and shared by both rules
+    monkeypatch.setattr(tracker, "_validation_lists", {}, raising=False)
+    a = sparkgap._validation_list(cfg, tracker, "scp")
+    b = sparkgap._validation_list(cfg, tracker, "scp")
+    assert a is b and a("K0TQ") and not a("ZZ9ZZZ")

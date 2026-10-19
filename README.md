@@ -243,6 +243,23 @@ Connect to the spot stream:
 telnet localhost 7300
 ```
 
+Port 7300 (`telnet_port`) carries the RBN-grade spots, the same stream
+`rbn_feeder.py` uploads. Anyone can connect to it. If you want your
+own spots filtered differently, for example a looser spot rule for your
+cluster or logger, add a second port with its own rule:
+
+```json
+"telnet_local_port": 7301,
+"local_spot_rule": {"doubled_calls": true, "fewer_repeats": 0}
+```
+
+Both port numbers are yours to pick (`--port` and `--local-port` on the
+command line override them). Tweaks to `local_spot_rule` change only the
+local port; what goes to RBN stays the same. Without `local_spot_rule`, 7301 carries the same spots
+as 7300. FT8 and RTTY go to both ports. The local rule can also have its own
+`validation` and `validation_calls` (as `spot_validation` and `spot_validation_calls`, for the
+local port only); without them it follows the top-level ones.
+
 ## Quick start (macOS)
 
 Should work with light Makefile tweaks ... `-shared` produces `.dylib`
