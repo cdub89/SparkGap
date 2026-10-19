@@ -24,8 +24,9 @@ version 13):
   server echoes only `sparkgap.v1`.
 - A feed without a join code accepts a request with an `Origin` header only
   when that origin is a loopback address (`localhost`, `127.0.0.1`, `::1`) on
-  the feed's own port, so a web page from elsewhere cannot read a feed on this
-  machine, even through a name that resolves to 127.0.0.1.
+  the feed's own port or on 7320-7339 (another copy's page, which lists this
+  copy too), so a web page from elsewhere cannot read a feed on this machine,
+  even through a name that resolves to 127.0.0.1.
 
 The server refuses a connection with a plain HTTP reply and closes it:
 
@@ -33,7 +34,7 @@ The server refuses a connection with a plain HTTP reply and closes it:
 | --- | --- |
 | 400 | Not a WebSocket upgrade, or not version 13 |
 | 401 | Wrong or missing join code |
-| 403 | No join code, and the `Origin` is not loopback on this port |
+| 403 | No join code, and the `Origin` is not an allowed loopback page |
 | 404 | Path is not `/feed` |
 | 405 | Not a `GET` |
 | 429 | This address gave 5 wrong codes in the last 10 minutes |
@@ -177,7 +178,8 @@ Process and decoding:
   that cannot be read.
 - `bins`: decoder bins open across all bands; `bins_peak`: the most since start.
 - `decode_khz`: each band's decode window `[low, high]` in kHz, in `bands` order;
-  `null` until the band's first IQ arrives.
+  `null` until the band's first IQ arrives, and for a band not on the ITILA
+  scanner.
 - `spots`: spots since start; `spots_hour`: in the last hour; `calls`: distinct
   calls spotted since start.
 - `windows`: decoded windows since start.
