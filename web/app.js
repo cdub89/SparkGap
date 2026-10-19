@@ -303,7 +303,7 @@ class Instance {
     this.on("hello");
   }
 
-  // a config named after its instance (lakehouse1.local.json) names the server, else the host
+  // a config named <instance>.local.json names the server after the instance, else the host
   get name() {
     const cfg = String((this.hello.run || {}).config || "").split("/").pop().match(/^(.+)\.local\.json$/);
     return cfg ? cfg[1] : this.hello.host;

@@ -158,7 +158,7 @@ def test_sent_commands_are_logged_at_info(caplog: Caplog) -> None:
 
 
 DALLAS_INFO = ('R1|0|model="FLEX-6400M",chassis_serial="0520-0945-6401-3114",name="Dallas",'
-               'callsign="WX7V",gps="Not Present",atu_present=1,num_scu=1')
+               'callsign="N0CALL",gps="Not Present",atu_present=1,num_scu=1')
 
 
 def test_station_is_named_after_the_radio_nickname() -> None:
@@ -208,7 +208,7 @@ def _setup_commands(monkeypatch: Monkey, listed: list[str], station: str | None 
         rx._seq += 1
         sent.append(c)
         if c == "info":
-            return [f'R{rx._seq}|0|model="FLEX-6600",name="{nickname}",callsign="WX7V"']
+            return [f'R{rx._seq}|0|model="FLEX-6600",name="{nickname}",callsign="N0CALL"']
         return (listed if c == "sub client all" else []) + [f"R{rx._seq}|0|"]
 
     monkeypatch.setattr(flex_iq.socket, "socket", lambda *_: _Sock())
@@ -283,7 +283,7 @@ def _setup_to_pan(monkeypatch: Monkey, channel: int, clients: list[str],
         rx._seq += 1
         sent.append(c)
         if c == "info":
-            return [f'R{rx._seq}|0|model="FLEX-6600",name="Lake",callsign="WX7V"']
+            return [f'R{rx._seq}|0|model="FLEX-6600",name="Lake",callsign="N0CALL"']
         status = {"sub client all": clients, "sub pan all": pans}.get(c, [])
         return status + [f"R{rx._seq}|0|"]
 
