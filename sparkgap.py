@@ -1845,7 +1845,8 @@ def _make_spot_rule(config, tracker, local=None):
         window_s=float(config.get('itila_window_sec', 60.0)),
         validation=validation, listed=listed, listed_by=calls or 'scp',
         doubled=bool(doubled), split_up=bool(split_up),
-        contest_words=bool(contest_words), cq_repeats=bool(cq_repeats))
+        contest_words=bool(contest_words), cq_repeats=bool(cq_repeats),
+        fragments=config.get('spot_rule_fragments') or None)
 
 def _get_itila_lib():
     global _itila_lib
@@ -2004,7 +2005,8 @@ def _rtty_scan_band_repeat(skimmer, rtty_lib, bn, band_center_khz, fi, fq, n_sam
         # runner's 100 Hz bin can change between two.
         rule = skimmer._rtty_rule = RepeatSpotRule(
             lambda c: {'active': 2, 'rare': 3}.get(trk._matches_patt3ch(c), 4),
-            cq_groups=True, lockon=True, window_s=30.0)
+            cq_groups=True, lockon=True, window_s=30.0,
+            fragments=skimmer.cfg.get('rtty_spot_rule_fragments') or None)
     iq = fi.astype(np.float64) + 1j * fq.astype(np.float64)
     cands = _rtty_candidates(iq, *rng)[:int(skimmer.cfg.get('rtty_max_candidates', 40))]
     if not cands:
