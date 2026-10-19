@@ -13,7 +13,7 @@ sparkgap.sh: run the SparkGap instances on this machine.
 
   sparkgap.sh status [name ...]    each instance: running or stopped (with the last error), commit, uptime,
                                    CPU, memory, band, GUI feed address and join code, telnet port, recording,
-                                   spots, errors, IQ trimmed, top calls and its log
+                                   spots, errors, warnings, reconnects, IQ trimmed, top calls and its log
   sparkgap.sh start [name ...]     start in the background and wait until it is live;
                                    the log goes to logs/<name>_<band>_<UTC>.log (UTC to the second, as recordings)
   sparkgap.sh stop [name ...]      stop cleanly (as Ctrl-C would) and wait up to ${STOP_WAIT_S} s
@@ -111,10 +111,14 @@ print(f"   telnet {c.get('telnet_port', 7300)}, recording {'on' if c.get('record
 PY
   [ -n "$log" ] || return 0
   spots=$(grep -c 'SPOT:' "$log")
-  local line trim errs
+  local line trim errs warns recon
   errs=$(errors_in "$log" | wc -l)
   [ "$errs" -gt 0 ] && errs="$RED$errs$OFF"
-  line="   spots $spots, errors $errs"
+  warns=$(grep -c '^[0-9:]* WARNING ' "$log")
+  [ "$warns" -gt 0 ] && warns="$YELLOW$warns$OFF"
+  recon=$(grep -c 'connecting again' "$log")
+  [ "$recon" -gt 0 ] && recon="$YELLOW$recon$OFF"
+  line="   spots $spots, errors $errs, warnings $warns, reconnects $recon"
   trim=$(grep -h 'IQ trimmed' "$log" | tail -1 | sed 's/.*INFO //')
   [[ -n $trim && ! $trim =~ :\ 0(\.0)?s ]] && trim="$RED$trim$OFF"
   [ -n "$trim" ] && line="$line, $trim"

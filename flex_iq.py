@@ -28,7 +28,7 @@ import uuid
 
 import numpy as np
 
-log = logging.getLogger(__name__)
+log = logging.getLogger("sparkgap.flex")  # under "sparkgap", so the console counts its warnings and errors
 
 # VITA-49 DAX-IQ packet layout
 VITA_HEADER_SIZE = 28
