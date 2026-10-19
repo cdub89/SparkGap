@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import collections
 import json
+import logging
 import os
 import socket
 import struct
@@ -400,6 +401,20 @@ def test_misses_kept_only_for_failures() -> None:
     assert set(f.misses) == {"100.64.0.4"}  # the stale address is pruned
 
 
+def test_problems_count_errors_only() -> None:
+    log = logging.getLogger("sparkgap.test_problems")
+    problems = feed_server.ProblemLog()
+    log.addHandler(problems)
+    try:
+        log.warning("[Flex] <<< R1|10000002|unknown client program")
+        log.error("[Flex] The radio closed the control connection")
+    finally:
+        log.removeHandler(problems)
+    s = problems.summary()
+    assert s["errors"] == 1 and "warnings" not in s
+    assert [e["level"] for e in s["last"]] == ["ERROR"]
+
+
 @pytest.mark.parametrize("frames", [
     [(OP_CONT, b"x", True)],                       # continuation with nothing to continue
     [(OP_TEXT, b"{", False), (OP_TEXT, b"}", True)],  # new message inside a fragmented one
@@ -510,6 +525,9 @@ def test_origin_checked_without_join_code(feed: FeedServer) -> None:
     assert WS(port, extra=[f"Origin: http://127.0.0.1:{port + 1}"]).status == 403
     assert WS(port, extra=[f"Origin: http://127.0.0.1:{port}"]).status == 101
     assert WS(port, extra=[f"Origin: http://localhost:{port}"]).status == 101
+    # another copy's page on this machine lists this copy too; just outside the range it may not
+    assert WS(port, extra=["Origin: http://127.0.0.1:7321"]).status == 101
+    assert WS(port, extra=["Origin: http://127.0.0.1:7340"]).status == 403
 
 
 def test_dns_rebinding_refused(feed: FeedServer) -> None:
@@ -593,3 +611,51 @@ def test_status_cpu_is_a_minute_average(monkeypatch: pytest.MonkeyPatch) -> None
     clock["t"] += 2.0
     clock["cpu"] += 2.0
     assert stats.sample()["cpu"] < 15  # one more busy 2 s moves it a little, not to 100
+
+
+def _free_pair() -> int:
+    """A port p with p and p + 1 both free on loopback."""
+    for _ in range(50):
+        with socket.socket() as a:
+            a.bind(("127.0.0.1", 0))
+            p = a.getsockname()[1]
+        try:
+            with socket.socket() as a, socket.socket() as b:
+                a.bind(("127.0.0.1", p))
+                b.bind(("127.0.0.1", p + 1))
+                return p
+        except OSError:
+            continue
+    raise RuntimeError("no two free ports in a row")
+
+
+def test_auto_port_takes_the_first_free_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    p = _free_pair()
+    monkeypatch.setattr(feed_server, "AUTO_PORTS", range(p, p + 2))
+    with socket.socket() as busy:
+        busy.bind(("127.0.0.1", p))
+        busy.listen()
+        f = FeedServer({"bind": "127.0.0.1", "port": "auto"}, HELLO)
+        f.start()
+        try:
+            assert f.server is not None and f.port == p + 1
+        finally:
+            f.stop()
+
+
+def test_auto_port_says_when_none_is_free(monkeypatch: pytest.MonkeyPatch,
+                                          caplog: pytest.LogCaptureFixture) -> None:
+    p = _free_pair()
+    monkeypatch.setattr(feed_server, "AUTO_PORTS", range(p, p + 2))
+    with socket.socket() as a, socket.socket() as b:
+        for s, port in ((a, p), (b, p + 1)):
+            s.bind(("127.0.0.1", port))
+            s.listen()
+        f = FeedServer({"bind": "127.0.0.1", "port": "auto"}, HELLO)
+        with caplog.at_level(logging.ERROR):
+            f.start()
+        try:
+            assert f.server is None
+            assert f"no free port in {p}-{p + 1}" in caplog.text
+        finally:
+            f.stop()
