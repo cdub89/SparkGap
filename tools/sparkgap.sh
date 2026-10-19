@@ -74,8 +74,9 @@ start() {
   local i=$1 p t log
   if p=$(pid "$i"); then echo "$i: already running (pid $p)"; return; fi
   t=$(date -u +%Y%m%d_%H%M%SZ); log="$R/logs/${i}_$(band "$i")_$t.log"
-  (cd "$(dir "$i")" && setsid bash -c 'echo $$ > "$1"; exec "$2" sparkgap.py --config "$3" > "$4" 2>&1 < /dev/null' \
-     _ "$R/logs/$i.pid" "$(field "$i" 4)" "$(cfg "$i")" "$log" &)
+  # exec: the subshell becomes the copy, so no sparkgap.sh is left holding the caller's output
+  (cd "$(dir "$i")" && exec setsid bash -c 'echo $$ > "$1"; exec "$2" sparkgap.py --config "$3" > "$4" 2>&1' \
+     _ "$R/logs/$i.pid" "$(field "$i" 4)" "$(cfg "$i")" "$log" < /dev/null > /dev/null 2>&1 &)
   for _ in $(seq 1 "$START_WAIT_S"); do
     sleep 1
     grep -q "SparkGap LIVE:" "$log" 2>/dev/null && { echo "$i: live (pid $(pid "$i")), log $log"; return; }
