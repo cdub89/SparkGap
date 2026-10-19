@@ -249,3 +249,68 @@ def test_client_id_is_the_same_for_every_copy_and_start(monkeypatch: Monkey) -> 
     a, b, other = gui_id(2, "Lake"), gui_id(3, "Lake"), gui_id(2, "Dallas")
     assert a == b != other
     assert a == a.upper() and len(a) == 36
+
+
+MAESTRO = ("S0|client 0x28B5BE40 connected client_id=CCCC-3 program=SmartSDR-Maestro "
+           "station=MaestroC")
+LAKE_GUI = "S0|client 0x79D60253 connected client_id=AAAA-1 program=SparkGap station=SparkGap-Lake"
+LAKE_PANS = [  # Lake 6600, 2026-10-19: Maestro's pan holds DAX-IQ 1, SparkGap-Lake's hold 2 and 3
+    "S46CAE6B4|display pan 0x40000000 client_handle=0x28B5BE40 wnb=0 center=7.074000",
+    "S46CAE6B4|display pan 0x40000000 daxiq_channel=1 ",
+    "S46CAE6B4|display pan 0x40000001 client_handle=0x79D60253 wnb=0 center=14.038400",
+    "S46CAE6B4|display pan 0x40000001 daxiq_channel=2 ",
+    "S46CAE6B4|display pan 0x40000002 client_handle=0x79D60253 wnb=0 center=10.138400",
+    "S46CAE6B4|display pan 0x40000002 daxiq_channel=3 ",
+]
+
+
+def test_daxiq_holders_reads_pan_status() -> None:
+    assert flex_iq.daxiq_holders(LAKE_PANS, 1) == {"0x40000000": "0X28B5BE40"}
+    assert flex_iq.daxiq_holders(LAKE_PANS, 3) == {"0x40000002": "0X79D60253"}
+    assert flex_iq.daxiq_holders(LAKE_PANS, 4) == {}
+    assert flex_iq.daxiq_holders(["S0|display pan 0x40000003 daxiq_channel=0 "], 0) == {}
+
+
+def _setup_to_pan(monkeypatch: Monkey, channel: int, clients: list[str],
+                  pans: list[str]) -> list[str]:
+    """Commands _setup sends until it creates or sets a pan, on the Lake radio."""
+    rx = FlexIQReceiver("192.0.2.1", sample_rate=96_000, daxiq_channel=channel)
+    sent: list[str] = []
+
+    def cmd(c: str, timeout: float = 2.0, settle: float = 0.0) -> list[str]:
+        if c.startswith("display pan"):
+            raise _Stop
+        rx._seq += 1
+        sent.append(c)
+        if c == "info":
+            return [f'R{rx._seq}|0|model="FLEX-6600",name="Lake",callsign="WX7V"']
+        status = {"sub client all": clients, "sub pan all": pans}.get(c, [])
+        return status + [f"R{rx._seq}|0|"]
+
+    monkeypatch.setattr(flex_iq.socket, "socket", lambda *_: _Sock())
+    monkeypatch.setattr(rx, "_drain", lambda *_: ["V1.4.0.0", "H7F19D8AE"])
+    monkeypatch.setattr(rx, "_cmd", cmd)
+    with pytest.raises(_Stop):
+        rx._setup()
+    return sent
+
+
+def test_a_channel_another_station_holds_is_refused(monkeypatch: Monkey) -> None:
+    with pytest.raises(RuntimeError, match=r"DAX-IQ 1 is in use by MaestroC \(SmartSDR-Maestro\) "
+                                           r"on pan 0x40000000"):
+        _setup_to_pan(monkeypatch, 1, [MAESTRO, LAKE_GUI], LAKE_PANS)
+
+
+def test_a_channel_our_station_holds_is_ours(monkeypatch: Monkey) -> None:
+    sent = _setup_to_pan(monkeypatch, 3, [MAESTRO, LAKE_GUI], LAKE_PANS)
+    assert "client bind client_id=AAAA-1" in sent
+
+
+def test_a_free_channel_goes_ahead(monkeypatch: Monkey) -> None:
+    sent = _setup_to_pan(monkeypatch, 4, [MAESTRO, LAKE_GUI], LAKE_PANS)
+    assert "sub pan all" in sent
+
+
+def test_an_unknown_owner_is_named_by_handle(monkeypatch: Monkey) -> None:
+    with pytest.raises(RuntimeError, match=r"DAX-IQ 1 is in use by client 0X28B5BE40 on pan 0x40000000"):
+        _setup_to_pan(monkeypatch, 1, [LAKE_GUI], LAKE_PANS)

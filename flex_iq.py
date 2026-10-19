@@ -91,6 +91,23 @@ def gui_stations(lines):
     return out
 
 
+def daxiq_holders(lines, channel):
+    """Pans bound to DAX-IQ `channel` in pan status lines: {pan id: owner client handle}.
+    The radio sends daxiq_channel and client_handle on separate lines; the latest wins."""
+    chan, owner = {}, {}
+    for line in lines:
+        m = re.search(r'\|display pan (0x[0-9A-F]+) (.*)', line, re.I)
+        if not m:
+            continue
+        kv = dict(p.split('=', 1) for p in m.group(2).split() if '=' in p)
+        pan = m.group(1).lower()
+        if 'daxiq_channel' in kv:
+            chan[pan] = kv['daxiq_channel']
+        if 'client_handle' in kv:
+            owner[pan] = kv['client_handle'].upper()
+    return {p: owner.get(p, '') for p, c in chan.items() if c == str(channel) and c != '0'}
+
+
 def radio_nickname(lines):
     """The radio's nickname from its reply to "info" (name="Dallas"), or '' when it has none."""
     for line in lines:
@@ -366,6 +383,16 @@ class FlexIQReceiver:
         if not pans:
             status += self._drain(1.0)     # the default pan's status can lag
             slices, pans = owned_objects(status, handle)
+        # A DAX-IQ channel another station's pan holds (Maestro, SmartSDR, DAX) is not ours to take.
+        stations = gui_stations(clients)
+        num = lambda h: int(h, 16) if h else None   # handles compare as numbers, not text
+        ours = {num(handle)} | {num(g[0]) for g in stations if g[3] == self.station}
+        taken = {p: h for p, h in daxiq_holders(status, self.channel).items() if num(h) not in ours}
+        if taken:
+            pan, h = sorted(taken.items())[0]
+            who = next((f"{g[3]} ({g[2]})" for g in stations if num(g[0]) == num(h)), f"client {h}")
+            raise RuntimeError(f"[Flex] DAX-IQ {self.channel} is in use by {who} on pan {pan}; "
+                               "set another flex_daxiq_channel or free it there")
         bw_mhz = self.sample_rate / 1e6
         if pans:
             on_pan = slice_pans(status, handle)
