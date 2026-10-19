@@ -68,7 +68,7 @@ CLIENT_QUEUE_MAX = 5_000  # text messages queued for one client before it is dro
 MAX_CLIENTS = 16
 MAX_PENDING = 32  # connections still sending their request; more are closed at once
 TLS_HANDSHAKE = b"\x16"  # first byte of every TLS connection
-PROBLEMS_KEPT = 5  # last warnings and errors shown on the status page
+PROBLEMS_KEPT = 5  # last errors shown on the status page
 PROBLEM_CHARS = 200
 CLOCK_CHECK_S = 60.0
 CPU_AVG_S = 60.0  # status CPU averaged this long: decoding is bursty, a 2 s sample swings
@@ -823,19 +823,15 @@ class SpectrumTap:
 
 
 class ProblemLog(logging.Handler):
-    """Counts SparkGap's warnings and errors and keeps the last few, for the status page."""
+    """Counts SparkGap's errors and keeps the last few, for the status page (warnings stay in the log)."""
 
     def __init__(self) -> None:
-        super().__init__(logging.WARNING)
-        self.warnings = 0
+        super().__init__(logging.ERROR)
         self.errors = 0
         self.last: collections.deque[dict[str, Any]] = collections.deque(maxlen=PROBLEMS_KEPT)
 
     def emit(self, record: logging.LogRecord) -> None:
-        if record.levelno >= logging.ERROR:
-            self.errors += 1
-        else:
-            self.warnings += 1
+        self.errors += 1
         try:
             text = record.getMessage()[:PROBLEM_CHARS]
         except Exception:  # a bad format string must not break logging
@@ -843,7 +839,7 @@ class ProblemLog(logging.Handler):
         self.last.append({"utc": round(record.created), "level": record.levelname, "msg": text})
 
     def summary(self) -> dict[str, Any]:
-        return {"warnings": self.warnings, "errors": self.errors, "last": list(self.last)}
+        return {"errors": self.errors, "last": list(self.last)}
 
 
 def log_file() -> str | None:

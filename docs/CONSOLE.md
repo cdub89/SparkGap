@@ -87,7 +87,8 @@ open decoder bins, connected consoles, decoder, build and uptime.
 - **SPOT OUTPUT**: the telnet port and how many clients are on it.
 - **CONSOLES**: this console, and every console connected to this SparkGap by
   host name (from reverse DNS) with its address and connect time.
-- **PROBLEMS**: warnings and errors since start, with the last five.
+- **PROBLEMS**: errors since start, with the last five; warnings are in the
+  log only.
 - **Footer**: SparkGap's build and whether its clock is NTP synchronised.
 
 Selecting text holds the page still until the selection is cleared, so it can

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import collections
 import json
+import logging
 import os
 import socket
 import struct
@@ -398,6 +399,20 @@ def test_misses_kept_only_for_failures() -> None:
     f.misses["100.64.0.3"] = collections.deque([time.monotonic() - LOCKOUT_S - 1])
     assert f._code_ok("100.64.0.4", "YYYYYY") is False
     assert set(f.misses) == {"100.64.0.4"}  # the stale address is pruned
+
+
+def test_problems_count_errors_only() -> None:
+    log = logging.getLogger("sparkgap.test_problems")
+    problems = feed_server.ProblemLog()
+    log.addHandler(problems)
+    try:
+        log.warning("[Flex] <<< R1|10000002|unknown client program")
+        log.error("[Flex] The radio closed the control connection")
+    finally:
+        log.removeHandler(problems)
+    s = problems.summary()
+    assert s["errors"] == 1 and "warnings" not in s
+    assert [e["level"] for e in s["last"]] == ["ERROR"]
 
 
 @pytest.mark.parametrize("frames", [

@@ -1072,10 +1072,9 @@ function renderStatusPage() {
     ...(s.clients || []).map(c => row(c.name || c.peer, `${num(c.dropped)} dropped`, { mono: true, sub: `${c.name ? `${c.peer}, ` : ""}since ${utcTime(c.since)}`, key: true, bad: c.dropped > 600 }))];
 
   const p = s.problems || {};
-  const probs = [`<div class="srow"><span class="k">Since start</span><span class="v"><span class="mono${p.errors ? " bad" : ""}">${num(p.errors)}</span> errors, `
-    + `<span class="mono">${num(p.warnings)}</span> warnings</span></div>`,
+  const probs = [`<div class="srow"><span class="k">Since start</span><span class="v"><span class="mono${p.errors ? " bad" : ""}">${num(p.errors)}</span> errors</span></div>`,
     ...(p.last || []).slice().reverse().map(e => `<div class="prob"><span class="mono t">${utcTime(e.utc)}</span>`
-      + `<span class="pill ${e.level === "WARNING" ? "warnlvl" : "warn"}">${esc(e.level)}</span><span class="m">${esc(e.msg)}</span></div>`)];
+      + `<span class="pill warn">${esc(e.level)}</span><span class="m">${esc(e.msg)}</span></div>`)];
 
   // health at a glance: what needs attention, worst first
   const issues = [];
@@ -1087,13 +1086,12 @@ function renderStatusPage() {
   if (lossy) issues.push(["warn", `${num(r.lost)} packets lost (${(100 * r.lost / r.packets).toFixed(2)}%)`]);
   if (near) issues.push(["warn", "Recording near the 4 GiB limit"]);
   for (const c of s.clients || []) if (c.dropped > 600) issues.push(["warn", `Console ${c.name || c.peer} falling behind`]);
-  if (p.warnings > 0) issues.push(["warn", `${num(p.warnings)} warnings since start`]);
   const worst = issues.some(x => x[0] === "bad") ? "bad" : issues.length ? "warn" : "ok";
   const banner = `<div class="health ${worst}">${issues.length ? issues.map(([lv, t]) => `<span class="${lv}">${esc(t)}</span>`).join("")
     : "<span>Healthy: radio live, decoding keeping up, no errors</span>"}</div>`;
   const tagRadio = r.state ? pill(String(r.state).toUpperCase(), live ? (r.reconnects || lossy ? "warnlvl" : "ok") : "warn") : "";
   const tagSg = s.clock_synced === false ? pill("CLOCK OFF", "warn") : s.clock_synced ? pill("CLOCK OK", "ok") : "";
-  const tagProb = p.errors ? pill(`${num(p.errors)} ERRORS`, "warn") : p.warnings ? pill(`${num(p.warnings)} WARNINGS`, "warnlvl") : pill("NONE", "ok");
+  const tagProb = p.errors ? pill(`${num(p.errors)} ERRORS`, "warn") : pill("NONE", "ok");
 
   $("statusBody").innerHTML = banner + `<div class="stats stiles">${tiles.join("")}</div><div class="scards">`
     + card("RADIO", radio, false, tagRadio) + card("SPARKGAP", sg, false, tagSg) + card("SPOT OUTPUT", out) + card("CONSOLES", cons)

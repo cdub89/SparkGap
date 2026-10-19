@@ -166,7 +166,7 @@ Every 2 seconds.
  "windows": 72823, "calls": 97, "spots_hour": 41, "bins_peak": 52,
  "clients": [{"peer": "192.168.1.31:61718", "name": "shack",
               "since": 1792018739, "dropped": 12}],
- "problems": {"warnings": 2, "errors": 8,
+ "problems": {"errors": 8,
               "last": [{"utc": 1792019013, "level": "ERROR",
                         "msg": "[Flex] The radio closed the control connection"}]}}
 ```
@@ -203,7 +203,7 @@ The feed itself:
 - `clients`: each connected console: address, host name from reverse DNS
   (`null` when it has none), connected since (UTC seconds),
   spectrum rows dropped because it fell behind.
-- `problems`: SparkGap's warnings and errors since start, with the last five
+- `problems`: SparkGap's errors since start, with the last five
   (UTC seconds, level, message).
 
 ### Spectrum rows (binary)
