@@ -8677,10 +8677,43 @@ def read_24bit_iq_chunk(filename, start_sec, duration_sec, rate=192000):
     return i_ch, q_ch
 
 
+_file_audio_t = 0.0  # file mode: audio position (s) that log lines are stamped with
+
+
+def _wav_start_utc(path):
+    """UTC start (epoch s) of a recording from its name: record_wav's (lake3_14038_20261021_183854Z.wav)
+    or iq_recorder's (20261014_125900Z_7090kHz_192000_24bit.wav). A _pN part adds the earlier parts.
+    None if unknown."""
+    m = re.search(r'(\d{8}_\d{6})Z', os.path.basename(path))
+    if not m:
+        return None
+    t = datetime.strptime(m.group(1), '%Y%m%d_%H%M%S').replace(tzinfo=timezone.utc).timestamp()
+    part = re.search(r'_p(\d+)\.wav$', path)
+    stem = path[:part.start()] if part else path[:-len('.wav')]
+    import wave
+    for n in range(1, int(part.group(1)) if part else 1):
+        try:
+            w = wave.open(stem + ('.wav' if n == 1 else '_p%d.wav' % n), 'rb')
+        except (OSError, EOFError, wave.Error):
+            return None
+        t += w.getnframes() / w.getframerate()
+        w.close()
+    return t
+
+
 def run_file_mode(args, config):
     """Offline file mode — process a WAV recording and output spots."""
+    # Log times follow the audio, as live logs follow the clock: the recording's start from its name, else 00:00:00
+    global _file_audio_t
+    t0 = _wav_start_utc(args.file)
+    if t0 is None:
+        logging.Formatter.converter = staticmethod(lambda _t: time.gmtime(_file_audio_t))
+    else:
+        logging.Formatter.converter = staticmethod(lambda _t: time.localtime(t0 + _file_audio_t))
     log.info("File mode: %s (%.1f-%s min)", args.file, args.start_min,
              "%.1f" % args.end_min if args.end_min else 'end')
+    log.info("Log times are audio time, from %s",
+             datetime.fromtimestamp(t0, timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ') if t0 is not None else 'the file start (no UTC start in its name)')
 
     calls, blacklist, add_calls = load_callsign_db(
         config.get('master_scp', 'MASTER.SCP'),
@@ -8855,6 +8888,7 @@ def run_file_mode(args, config):
 
     # Feed continuous audio chunks — same decoder instances for entire recording
     for t_start in np.arange(start_sec, end_sec, chunk_sec):
+        _file_audio_t = float(t_start)
         t_end = min(t_start + chunk_sec, end_sec)
         dur = t_end - t_start
         # Reset hallucination filter each chunk — mirrors live-mode scan interval.
@@ -8948,6 +8982,7 @@ def run_file_mode(args, config):
                                         {'radio': {'type': 'file', 'address': os.path.abspath(args.file),
                                                    'state': 'replaying',
                                                    'position_s': round(audio_t)}})
+            _file_audio_t = t_start + pos / file_rate
             manager.feed_all_iq(i_block, q_block)
             if _spot_rule_on:
                 audio_now[0] = t_start + pos / file_rate
