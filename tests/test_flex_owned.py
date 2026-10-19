@@ -115,7 +115,8 @@ def test_read_status_empties_the_connection_and_sees_it_close() -> None:
     assert rx._read_status()                 # nothing waiting: still connected
     radio.close()
     assert not rx._read_status()
-    rx._close()
+    assert rx._lost == "The radio closed the control connection"
+    rx._close("stopping")
     assert rx._tcp is None
 
 

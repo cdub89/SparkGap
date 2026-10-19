@@ -93,6 +93,22 @@ def clients_gone(lines):
     return [l for l in lines if re.search(r'\|client 0x[0-9A-F]+ disconnected', l, re.I)]
 
 
+def reply_log(line, sent):
+    """(level, message) for a command reply R<seq>|<code>|<text>, naming the command from
+    `sent` (seq -> command); None for any other line.  A non-zero code means refused."""
+    m = re.match(r'R(\d+)\|([0-9A-Fa-f]+)\|', line)
+    if not m:
+        return None
+    cmd = sent.pop(int(m.group(1)), '?')
+    level = logging.INFO if int(m.group(2), 16) == 0 else logging.WARNING
+    return level, "[Flex] <<< %s (%s)" % (line[:200], cmd)
+
+
+def utc_hms(t):
+    """time.time() as HH:MM:SSZ, or 'none since connecting' for None."""
+    return time.strftime('%H:%M:%SZ', time.gmtime(t)) if t else 'none since connecting'
+
+
 def ptt_ours(lines):
     """Status lines in which the radio gives a SparkGap station the key and PTT jacks."""
     return [l for l in lines if f'program={STATION_NAME} ' in l
@@ -138,7 +154,11 @@ class FlexIQReceiver:
         self.frequencies = [freq_hz]  # match HPSDRReceiver interface
 
         self._tcp = None
+        self._handle = ''          # client handle of the open connection, for the disconnect line
+        self._lost = None          # why _read_status found the connection gone
+        self.last_packet = None    # time.time() of the newest DAX-IQ packet since the last connect
         self._seq = 0
+        self._sent = {}            # seq -> command, until its reply arrives
         self._buf = b''
         self._stream_id = None
         self._pan_id = None
@@ -153,6 +173,7 @@ class FlexIQReceiver:
         self.lost = 0
         self.reconnects = 0
         self.last_reconnect = None
+        self.attempts = 0         # connection attempts, first start and reconnects
         self.others = []          # other stations on the radio at the last connect
 
     # -- TCP control channel -------------------------------------------------
@@ -170,7 +191,13 @@ class FlexIQReceiver:
         idx = self._buf.index(b'\n')
         line = self._buf[:idx].decode('utf-8', errors='replace').strip()
         self._buf = self._buf[idx + 1:]
+        self._log_reply(line)
         return line
+
+    def _log_reply(self, line):
+        r = reply_log(line, self._sent)
+        if r:
+            log.log(*r)
 
     def _drain(self, timeout=2.0):
         """Read all available lines within timeout, log interesting ones."""
@@ -181,15 +208,16 @@ class FlexIQReceiver:
             if not line:
                 break
             lines.append(line)
-            if line.startswith('R') or 'daxiq' in line.lower():
+            if 'daxiq' in line.lower():
                 log.debug("[Flex] <<< %s", line[:200])
         return lines
 
     def _send(self, cmd):
         self._seq += 1
         line = f"C{self._seq}|{cmd}\n"
+        self._sent[self._seq] = cmd
         self._tcp.sendall(line.encode())
-        log.debug("[Flex] >>> C%d|%s", self._seq, cmd)
+        log.info("[Flex] >>> C%d|%s", self._seq, cmd)
         return self._seq
 
     def _cmd(self, cmd, timeout=2.0, settle=0.0):
@@ -219,25 +247,30 @@ class FlexIQReceiver:
         if code == '0':
             log.info("[Flex] OK %s", what)
             return True
-        log.warning("[Flex] FAILED %s: radio error %s", what, code)
+        log.info("[Flex] FAILED %s: radio error %s", what, code)   # the reply line above is the warning
         return False
 
     # -- lifecycle -----------------------------------------------------------
 
-    def start(self):
-        """Connect to the radio, register as GUI, set up DAX-IQ stream."""
+    def start(self, why=None):
+        """Connect to the radio, register as GUI, set up DAX-IQ stream.  `why`: the reason for a reconnect."""
         self._stream_id = self._pan_id = self._slice_id = None
+        self.last_packet = None
+        self._sent = {}
+        self.attempts += 1
+        log.info("[Flex] Connection attempt %d to %s:%d (%s)", self.attempts, self.ip, self.control_port,
+                 "reconnect: %s" % why if why else "first start")
         try:
             self._setup()
-        except Exception:
+        except Exception as e:
+            log.error("[Flex] Connection attempt %d failed: %s", self.attempts, e)
             # a copy that joined another station leaves its pan to that station,
             # which the radio keeps after we disconnect (2026-10-18)
             self._remove_objects()
-            self._close()
+            self._close("failed start")
             raise
 
     def _setup(self):
-        log.info("[Flex] Connecting to %s:%d", self.ip, self.control_port)
         self._tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._tcp.settimeout(10)
         self._tcp.connect((self.ip, self.control_port))
@@ -247,6 +280,7 @@ class FlexIQReceiver:
         handle = next((l[1:].strip().upper() for l in hello if l.startswith('H')), '')
         version = next((l[1:].strip() for l in hello if l.startswith('V')), '?')
         log.info("[Flex] Connected to %s, API %s, client handle 0x%s", self.ip, version, handle)
+        self._handle = handle
 
         # Same order FlexLib uses: program, then gui, then station name.  The
         # name waits for the reply to "client gui": sent before the radio has
@@ -383,7 +417,9 @@ class FlexIQReceiver:
                  self.station, handle, self._pan_id, self.freq_mhz, bw_mhz, self._slice_id,
                  self.channel, self._stream_id, self.sample_rate, self.udp_port)
 
-    def _close(self):
+    def _close(self, reason):
+        if self._tcp:
+            log.info("[Flex] Disconnected from %s (client 0x%s, %s)", self.ip, self._handle, reason)
         for name in ('_tcp', '_udp'):
             sock = getattr(self, name)
             if sock:
@@ -397,17 +433,21 @@ class FlexIQReceiver:
         """Read what the radio has sent on the control connection.  Unread, its
         status messages (many while the operator transmits) fill the socket
         buffer and the radio drops the station: 2026-10-13, 14 h into a run.
-        Returns False when the radio has closed the connection."""
+        Returns False when the connection is gone, with the cause in self._lost."""
         try:
             chunk = self._tcp.recv(65536, socket.MSG_DONTWAIT)
         except (BlockingIOError, InterruptedError, TimeoutError):
             return True
-        except OSError:
+        except OSError as e:
+            self._lost = "Control connection error: %s" % e
             return False
         if not chunk:
+            self._lost = "The radio closed the control connection"
             return False
         *lines, self._buf = (self._buf + chunk).split(b'\n')
         lines = [l.decode('utf-8', errors='replace') for l in lines]
+        for line in lines:
+            self._log_reply(line)
         for line in clients_gone(lines):
             log.info("[Flex] Radio reports: %s", line.strip()[:200])
         if ptt_ours(lines):
@@ -421,14 +461,17 @@ class FlexIQReceiver:
         self.state = "reconnecting"
         self.reconnects += 1
         self.last_reconnect = round(time.time())
+        began = time.time()
         while self._running:
-            self._close()
+            self._close("reconnecting")
             self._buf = b''
             try:
-                self.start()
+                self.start(why)
+                log.info("[Flex] Reconnected on attempt %d, %.0f s after reconnecting began",
+                         self.attempts, time.time() - began)
                 return
-            except Exception as e:
-                log.error("[Flex] Could not set the radio up again (%s); next try in %d s", e, RETRY_S)
+            except Exception:
+                log.info("[Flex] Next connection attempt in %d s", RETRY_S)
             end = time.time() + RETRY_S
             while self._running and time.time() < end:
                 time.sleep(0.2)
@@ -444,7 +487,7 @@ class FlexIQReceiver:
         self._running = False
         time.sleep(0.25)               # receive() leaves its loop; it reads the same connection
         self._remove_objects()
-        self._close()
+        self._close("stopping")
         log.info("[Flex] Stopped")
 
     def _remove_objects(self):
@@ -502,9 +545,9 @@ class FlexIQReceiver:
             ready = select.select([self._udp, self._tcp], [], [], 0.1)[0]
             why = None
             if self._tcp in ready and not self._read_status():
-                why = "The radio closed the control connection"
+                why = self._lost
             elif pkt_count and time.time() - last_pkt > STALL_S:
-                why = "No DAX-IQ packets for %d s" % STALL_S
+                why = "No DAX-IQ packets for %d s (last packet %s)" % (STALL_S, utc_hms(self.last_packet))
             if why:
                 self._restart(why)
                 last_counter = None
@@ -543,7 +586,7 @@ class FlexIQReceiver:
                 if gap and pkt_count > 10:
                     lost += gap
                     self.lost += gap
-                    log.debug("[Flex] Packet gap: %d missed", gap)
+                    log.info("[Flex] Packet gap: %d missed", gap)
             last_counter = counter
 
             # Parse float32 I/Q pairs into one (n, 2) float64 array (cdub89/SparkGap#16)
@@ -557,7 +600,7 @@ class FlexIQReceiver:
                          time.time() - start, n_samples, stream_id)
             pkt_count += 1
             self.packets += 1
-            now = last_pkt = time.time()
+            now = last_pkt = self.last_packet = time.time()
             if now - last_report >= 30:
                 elapsed = now - start
                 log.info("[Flex] %d packets in %.0fs (%.0f pkt/s, %d samp/pkt, %d lost)",
