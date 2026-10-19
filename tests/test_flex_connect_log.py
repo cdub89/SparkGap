@@ -174,3 +174,49 @@ def test_close_says_goodbye_first() -> None:
     radio.settimeout(1.0)
     assert radio.recv(16) == b"\x04"
     radio.close()
+
+
+class _Sock:
+    def settimeout(self, *_: object) -> None:
+        pass
+
+    def connect(self, *_: object) -> None:
+        pass
+
+
+class _Stop(Exception):
+    pass
+
+
+def _setup_commands(monkeypatch: Monkey, listed: list[str]) -> list[str]:
+    """Commands _setup sends up to "client udpport", with `listed` as the radio's client status."""
+    rx = FlexIQReceiver("192.0.2.1", sample_rate=96_000, daxiq_channel=1, station="SparkGap-1")
+    sent: list[str] = []
+
+    def cmd(c: str, timeout: float = 2.0, settle: float = 0.0) -> list[str]:
+        if c.startswith("client udpport"):
+            raise _Stop
+        rx._seq += 1
+        sent.append(c)
+        return (listed if c == "sub client all" else []) + [f"R{rx._seq}|0|"]
+
+    monkeypatch.setattr(flex_iq.socket, "socket", lambda *_: _Sock())
+    monkeypatch.setattr(rx, "_drain", lambda *_: ["V1.4.0.0", "H7F19D8AE"])
+    monkeypatch.setattr(rx, "_cmd", cmd)
+    with pytest.raises(_Stop):
+        rx._setup()
+    return sent
+
+
+def test_second_copy_binds_to_its_station_and_never_claims_the_gui(monkeypatch: Monkey) -> None:
+    other = "S0|client 0x4F8B82DB connected client_id=AAAA-1 program=SparkGap station=SparkGap-1"
+    sent = _setup_commands(monkeypatch, [other])
+    assert "client bind client_id=AAAA-1" in sent
+    assert not any(c.startswith("client gui") for c in sent)
+
+
+def test_first_copy_claims_the_gui(monkeypatch: Monkey) -> None:
+    smartsdr = "S0|client 0x2004D85C connected client_id=BBBB-2 program=SmartSDR-Win station=SUPER"
+    sent = _setup_commands(monkeypatch, [smartsdr])
+    assert any(c.startswith("client gui ") for c in sent)
+    assert not any(c.startswith("client bind") for c in sent)

@@ -302,8 +302,15 @@ class FlexIQReceiver:
             log.info("[Flex] OK program name %s (radio notes it as an unknown program)", STATION_NAME)
         else:
             self._report("program name " + STATION_NAME, resp)
+        # As FlexLib, pick the role first: a station that already has its GUI client
+        # is joined with "client bind"; "client gui" with the station's ID evicts it.
+        joined = [g for g in gui_stations(self._cmd("sub client all", settle=0.5))
+                  if g[2] == STATION_NAME and g[3] == self.station]
         self._bound = False
-        if self._report("GUI client", self._cmd(f"client gui {self.client_id}", timeout=5.0)):
+        if joined:
+            self._bound = self._report(f"attached to station {self.station}",
+                                       self._cmd(f"client bind client_id={joined[0][1]}"))
+        elif self._report("GUI client", self._cmd(f"client gui {self.client_id}", timeout=5.0)):
             self._report("station name " + self.station, self._cmd(f"client station {self.station}"))
         else:
             listed = self._cmd("sub client all", settle=0.5)
