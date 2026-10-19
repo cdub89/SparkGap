@@ -35,6 +35,11 @@
 
 /* ---- compile-time limits ---- */
 #define SC_MAX_BINS   512
+/* A window's SNR is the median of the bin's scan readings over the window (one scan every ~21 ms).
+ * The last reading alone was low and erratic against CW Skimmer on the same receiver (median
+ * -4 dB, middle half 13 dB wide, 40m CWT replay 2026-10-08); the median: +0.3 dB, 6.6 dB wide. */
+#define SNR_HIST_DB   0.5
+#define SNR_HIST_N    160            /* 0 to 80 dB */
 #define SC_DEC1       16      /* max stage-1 decimation: 192 kHz → 12 kHz (8 at 96k, 4 at 48k) */
 #define SC_DEC2       6       /* 12 kHz → 2 kHz    (FIR stage 2) */
 #define SC_DEC3       10      /* 2 kHz → 200 Hz    (FIR stage 3) */
@@ -210,6 +215,8 @@ typedef struct {
     int64_t created_sample;           /* 12 kHz units; int64 so long runs never wrap */
     int64_t last_evidence;
     double snr_db;
+    uint16_t snr_hist[SNR_HIST_N];    /* scan SNR readings since the last window, in SNR_HIST_DB steps */
+    int    snr_n;
 
     /* ITILA decoder handles - created lazily, one per LPF path */
     void  *h100;
@@ -341,6 +348,33 @@ static int cmp_peak_desc(const void *a, const void *b)
     return da > db ? -1 : da < db ? 1 : 0;
 }
 
+/* ---- window SNR: the median of a bin's scan readings ---- */
+static void snr_note(ScBin *b, double snr)
+{
+    int k = (int)(snr / SNR_HIST_DB);
+    if (k < 0) k = 0;
+    if (k >= SNR_HIST_N) k = SNR_HIST_N - 1;
+    if (b->snr_hist[k] < UINT16_MAX) b->snr_hist[k]++;
+    b->snr_n++;
+}
+
+/* The window's median SNR, and a fresh count for the next window.  A window without readings
+ * keeps the bin's current SNR rather than an older window's. */
+static double snr_take(ScBin *b)
+{
+    double snr = b->snr_db;
+    if (b->snr_n > 0) {
+        int half = (b->snr_n + 1) / 2, sum = 0;
+        for (int k = 0; k < SNR_HIST_N; k++) {
+            sum += b->snr_hist[k];
+            if (sum >= half) { snr = (k + 0.5) * SNR_HIST_DB; break; }
+        }
+    }
+    memset(b->snr_hist, 0, sizeof(b->snr_hist));
+    b->snr_n = 0;
+    return snr;
+}
+
 /* ---- energy scan ---- */
 static void run_scan(ItilaSc *sc, const double *seg_i, const double *seg_q)
 {
@@ -464,6 +498,7 @@ static void run_scan(ItilaSc *sc, const double *seg_i, const double *seg_q)
         for (int b = 0; b < SC_MAX_BINS; b++) {
             if (sc->bins[b].active && fabs(sc->bins[b].f_hz - peaks[i].f_exact) <= cluster_hz) {
                 sc->bins[b].snr_db = peaks[i].snr;
+                snr_note(&sc->bins[b], peaks[i].snr);
                 found = 1; break;
             }
         }
@@ -562,6 +597,7 @@ static void run_scan(ItilaSc *sc, const double *seg_i, const double *seg_q)
         bin->c_phase = 1.0;
         bin->s_phase = 0.0;
         bin->snr_db  = peaks[i].snr;
+        snr_note(bin, peaks[i].snr);
         bin->need_preroll = 1;
         bin->start_in = sc->in_fed - sc->pre_len;     /* as the per-bin path: the 1 s before this feed */
         sc->preroll_pending = 1;
@@ -1048,6 +1084,22 @@ double itila_sc_get_snr(ItilaSc *sc, double f_hz)
     return 0.0;
 }
 
+/* SNR for the window just drained at f_hz (median of its scan readings, see SNR_HIST_N). */
+double itila_sc_take_snr(ItilaSc *sc, double f_hz)
+{
+    double snr = 0.0;
+    pthread_mutex_lock(&sc->lock);
+    for (int i = 0; i < SC_MAX_BINS; i++) {
+        ScBin *b = &sc->bins[i];
+        if (b->active && fabs(b->f_hz - f_hz) < 1.0) {
+            snr = snr_take(b);
+            break;
+        }
+    }
+    pthread_mutex_unlock(&sc->lock);
+    return snr;
+}
+
 void itila_sc_mark_evidence(ItilaSc *sc, double f_hz)
 {
     for (int i = 0; i < SC_MAX_BINS; i++) {
@@ -1289,7 +1341,7 @@ int itila_sc_decode_ready(ItilaSc *sc, int window_samples,
              * mutates b->f_hz mid-iteration (e.g. fine-tuning toward
              * carrier offset).  Squelch caught this latent inconsistency
              * in pre-deploy review 2026-05-24. */
-            double snr_local = b->snr_db;
+            double snr_local = snr_take(b);
             double f_hz_local = b->f_hz;
             double f_khz = f_hz_local / 1000.0;
             void *handles[2] = { b->h100, b->h200 };
