@@ -2,7 +2,7 @@
 """Write a SparkGap config template from skimmer_flex.example.json and what a FlexRadio reports.
 
 Read-only towards the radio: it listens for the radio's discovery broadcast (UDP 4992) and
-connects as a plain client that sends only "info", "sub radio all" and "sub daxiq all",
+connects as a plain client that sends only "info",
 as FlexLib's own clients do before they register. No GUI client, pan, slice or stream is made.
 
 Usage: flex_template.py --example <example json> --out <template json> --root <run root>
@@ -20,7 +20,7 @@ from pathlib import Path
 
 PORT = 4992  # discovery (UDP) and commands (TCP) share it
 DISCOVERY_S = 5.0  # a radio broadcasts about once a second
-STATUS_S = 1.0  # time for the radio's status lines after a subscription
+GREETING_S = 1.0  # time for the radio's greeting after connecting
 DAXIQ_CHANNELS = 4  # DAX-IQ channels 1 to 4 on every 6000 and 8000 series radio
 
 KV = re.compile(r'([A-Za-z_0-9]+)=("[^"]*"|\S*)')
@@ -50,16 +50,6 @@ def parse_info(lines: list[str]) -> dict[str, str]:
     return {}
 
 
-def parse_radio_status(lines: list[str]) -> dict[str, str]:
-    """Fields of the radio's "radio ..." status lines; a later line's value wins."""
-    out: dict[str, str] = {}
-    for line in lines:
-        m = re.search(r"\|radio (.*)", line)
-        if m:
-            out.update(pairs(m.group(1)))
-    return out
-
-
 def num(v: str | None) -> int | None:
     return int(v) if v is not None and v.isdigit() else None
 
@@ -74,7 +64,6 @@ class Radio:
     max_slices: int | None
     max_panadapters: int | None
     licensed_clients: int | None
-    daxiq_capacity: int | None
     scu: int | None
     sources: str
 
@@ -91,15 +80,13 @@ class Radio:
             f"Made by sparkgap.sh template {when} from {self.model} '{self.nickname}' "
             f"({self.callsign}) "
             f"at {self.address}, software {self.software}: {d(self.max_slices, 'slices')}, "
-            f"{d(self.max_panadapters, 'pans')}, {d(self.licensed_clients, 'GUI clients')}, "
-            f"{d(self.daxiq_capacity, 'DAX-IQ streams')}; room for {self.limit()} SparkGap copies. "
+            f"{d(self.max_panadapters, 'pans')}, {d(self.licensed_clients, 'GUI clients')}; "
+            f"room for {self.limit()} SparkGap copies. "
             f"From {self.sources}."
         )
 
 
-def radio_from(
-    disc: dict[str, str] | None, info: dict[str, str], status: dict[str, str], address: str
-) -> Radio:
+def radio_from(disc: dict[str, str] | None, info: dict[str, str], address: str) -> Radio:
     disc = disc or {}
     return Radio(
         address=address,
@@ -110,7 +97,6 @@ def radio_from(
         max_slices=num(disc.get("max_slices")) or num(info.get("num_slice")),
         max_panadapters=num(disc.get("max_panadapters")),
         licensed_clients=num(disc.get("licensed_clients")),
-        daxiq_capacity=num(status.get("daxiq_capacity")),
         scu=num(info.get("num_scu")),
         sources="discovery and info" if disc else "info (no discovery heard)",
     )
@@ -128,7 +114,6 @@ def build(example: dict, radio: Radio, root: str, when: str) -> dict:
             "max_slices": radio.max_slices,
             "max_panadapters": radio.max_panadapters,
             "licensed_clients": radio.licensed_clients,
-            "daxiq_capacity": radio.daxiq_capacity,
             "scu": radio.scu,
             "limit": radio.limit(),
             "asked": when,
@@ -167,9 +152,8 @@ def discover(seconds: float) -> dict[str, dict[str, str]] | None:
     return heard
 
 
-def ask(address: str) -> tuple[list[str], list[str]]:
-    """The radio's reply to "info", and its status lines (the greeting's and those after the
-    subscriptions), over a plain client connection."""
+def ask(address: str) -> list[str]:
+    """The radio's reply to "info", over a plain client connection."""
     with socket.create_connection((address, PORT), timeout=10) as s:
         s.settimeout(0.3)
         buf = b""
@@ -191,15 +175,11 @@ def ask(address: str) -> tuple[list[str], list[str]]:
                     break
             return got
 
-        status = read(None, STATUS_S)  # version, handle and the radio's status
+        read(None, GREETING_S)  # version, handle and the radio's status
         s.sendall(b"C1|info\n")
         info = read("R1|", 5.0)
-        s.sendall(b"C2|sub radio all\n")
-        status += read(None, STATUS_S)
-        s.sendall(b"C3|sub daxiq all\n")
-        status += read(None, STATUS_S)
         s.sendall(b"\x04")  # FlexLib tells the radio it is leaving before it closes
-    return info, status
+    return info
 
 
 def main() -> int:
@@ -229,7 +209,7 @@ def main() -> int:
         print(f"{what}: give the radio's address.")
         return 2
     try:
-        info, status = ask(address)
+        info = ask(address)
     except OSError as e:
         print(f"No answer from {address}:{PORT}: {e}")
         return 2
@@ -238,7 +218,7 @@ def main() -> int:
         print(f"{address} did not answer info like a FlexRadio")
         return 2
     when = time.strftime("%Y-%m-%d %H:%MZ", time.gmtime())
-    radio = radio_from((heard or {}).get(address), fields, parse_radio_status(status), address)
+    radio = radio_from((heard or {}).get(address), fields, address)
     tpl = build(json.loads(a.example.read_text()), radio, a.root, when)
     if a.out.exists():  # kept, never overwritten
         old = a.out.with_name(f"{a.out.name}.{time.strftime('%Y%m%d_%H%M%SZ', time.gmtime())}")

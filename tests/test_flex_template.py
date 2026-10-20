@@ -1,4 +1,4 @@
-"""tools/flex_template.py reads a FlexRadio's discovery, info and status as the radios send them."""
+"""tools/flex_template.py reads a FlexRadio's discovery and info as the radios send them."""
 
 import sys
 from pathlib import Path
@@ -23,11 +23,6 @@ INFO_6600 = [
         'atu_present=1,num_scu=2,num_slice=4,num_tx=1,software_ver=4.2.20.41343,ip=192.0.2.101,location="",options="None"'
     )
 ]
-STATUS = [
-    "S2170867C|radio slices=0 panadapters=0 lineout_gain=5 nickname=Dallas callsign=WX7V",
-    "S2170867C|radio daxiq_capacity=16 daxiq_available=8",
-    "S0|interlock state=RECEIVE",
-]
 
 
 def test_discovery_payload_is_read_past_the_vita_header() -> None:
@@ -42,7 +37,7 @@ def test_discovery_payload_is_read_past_the_vita_header() -> None:
     assert ft.parse_discovery(b"\x00" * 28 + b"something else") is None
 
 
-def test_info_and_status_fields() -> None:
+def test_info_fields() -> None:
     info = ft.parse_info(["S0|radio slices=1", *INFO_6600])
     assert (info["model"], info["name"], info["num_slice"], info["location"]) == (
         "FLEX-6600",
@@ -50,12 +45,10 @@ def test_info_and_status_fields() -> None:
         "4",
         "",
     )
-    st = ft.parse_radio_status(STATUS)
-    assert (st["daxiq_capacity"], st["slices"]) == ("16", "0")
 
 
 def test_info_only_radio_has_no_pan_or_client_counts() -> None:
-    r = ft.radio_from(None, ft.parse_info(INFO_6600), ft.parse_radio_status(STATUS), "192.0.2.101")
+    r = ft.radio_from(None, ft.parse_info(INFO_6600), "192.0.2.101")
     assert (r.model, r.nickname, r.max_slices, r.max_panadapters, r.licensed_clients) == (
         "FLEX-6600",
         "Lake",
@@ -71,13 +64,10 @@ def test_discovery_supplies_the_limits() -> None:
     info = ft.parse_info(
         ['R1|0|model="FLEX-6400M",name="Dallas",callsign="wx7v",num_slice=2,software_ver=4.3.16']
     )
-    r = ft.radio_from(
-        ft.parse_discovery(DISCOVERY), info, ft.parse_radio_status(STATUS), "192.0.2.134"
-    )
-    assert (r.max_panadapters, r.licensed_clients, r.daxiq_capacity, r.callsign, r.limit()) == (
+    r = ft.radio_from(ft.parse_discovery(DISCOVERY), info, "192.0.2.134")
+    assert (r.max_panadapters, r.licensed_clients, r.callsign, r.limit()) == (
         2,
         2,
-        16,
         "WX7V",
         2,
     )
@@ -92,7 +82,7 @@ def test_template_takes_the_radio_and_keeps_the_example() -> None:
         "telnet_port": 7300,
         "enable_ft8": False,
     }
-    r = ft.radio_from(None, ft.parse_info(INFO_6600), {}, "192.0.2.101")
+    r = ft.radio_from(None, ft.parse_info(INFO_6600), "192.0.2.101")
     t = ft.build(example, r, "/run/root", "2026-10-20 15:00Z")
     assert list(t)[:2] == ["_comment_radio", "_radio"]
     assert (t["sdr_ip"], t["callsign"], t["rbn_known_dir"]) == (
