@@ -301,9 +301,24 @@ def test_a_channel_another_station_holds_is_refused(monkeypatch: Monkey) -> None
         _setup_to_pan(monkeypatch, 1, [MAESTRO, LAKE_GUI], LAKE_PANS)
 
 
-def test_a_channel_another_copy_of_our_station_holds_is_refused(monkeypatch: Monkey) -> None:
+def test_a_channel_another_copy_of_our_station_streams_is_refused(monkeypatch: Monkey) -> None:
+    live = LAKE_PANS + ["S79D60253|stream 0x20000011 type=dax_iq daxiq_channel=3 pan=0x40000002 "
+                        "client_handle=0x79D60253 active=1"]
     with pytest.raises(RuntimeError, match=r"DAX-IQ 3 is in use by SparkGap-Lake \(SparkGap\)"):
-        _setup_to_pan(monkeypatch, 3, [MAESTRO, LAKE_GUI], LAKE_PANS)
+        _setup_to_pan(monkeypatch, 3, [MAESTRO, LAKE_GUI], live)
+
+
+def test_a_channel_a_bound_copy_streams_names_its_station_and_pan(monkeypatch: Monkey) -> None:
+    # Dallas, 2026-10-20 22:20Z: the bound copy's stream has its own handle; the station is its GUI handle
+    live = LAKE_PANS + ["S6B976AE3|stream 0x20000011 type=dax_iq daxiq_channel=3 pan=0x40000002 "
+                        "client_handle=0x6B976AE3 client_gui_handle=0x79D60253 active=1"]
+    with pytest.raises(RuntimeError, match=r"DAX-IQ 3 is in use by SparkGap-Lake \(SparkGap\) on pan 0x40000002;"):
+        _setup_to_pan(monkeypatch, 3, [MAESTRO, LAKE_GUI], live)
+
+def test_our_station_pan_saved_on_our_channel_is_taken_back(monkeypatch: Monkey) -> None:
+    # X, 2026-10-20 11:19Z: the radio restored the station's pan on channel 3 with nobody streaming it
+    sent = _setup_to_pan(monkeypatch, 3, [MAESTRO, LAKE_GUI], LAKE_PANS)
+    assert "display pan create x=1 y=1" not in sent and sent[-1] == "sub daxiq all"
 
 
 def test_a_channel_this_client_holds_is_ours(monkeypatch: Monkey) -> None:
@@ -322,3 +337,108 @@ def test_an_unknown_owner_is_named_by_handle(monkeypatch: Monkey) -> None:
     with pytest.raises(RuntimeError,
                        match=r"DAX-IQ 1 is in use by client 0X28B5BE40 on pan 0x40000000"):
         _setup_to_pan(monkeypatch, 1, [LAKE_GUI], LAKE_PANS)
+
+
+Y_STREAM = [  # Y.log 2026-10-20: the owner left, the stream lost its pan, then a restored pan took it
+    "S1A13B591|stream 0x20000011 type=dax_iq daxiq_channel=4 pan=0x0 slice=0x0 endpoint_type=Not Assigned "
+    "daxiq_rate=96000 client_handle=0x5F91167C client_gui_handle=0x1A13B591 active=1 ip=192.168.0.100",
+    "S303A65A4|stream 0x20000011 type=dax_iq daxiq_channel=4 pan=0x40000001 slice=0x0 endpoint_type=Display "
+    "daxiq_rate=96000 client_handle=0x5F91167C client_gui_handle=0x303A65A4 active=1 ip=192.168.0.100",
+    "S493016BC|stream 0x20000000 type=dax_iq active=0 ",
+    "S493016BC|stream 0x2000000A removed ",
+]
+
+
+def test_daxiq_streams_reads_stream_status() -> None:
+    streams = flex_iq.daxiq_streams(Y_STREAM)
+    assert streams == {0x2000_0011: {"channel": "4", "pan": 0x4000_0001, "client": 0x5F91_167C, "gui": 0x303A_65A4}}
+    assert flex_iq.daxiq_streams(Y_STREAM + ["S5F91167C|stream 0x20000011 removed "]) == {}
+    assert flex_iq.daxiq_users(streams, 4, 0x5F91_167C) == set()
+    assert flex_iq.daxiq_users(streams, 4, 0x7F19_D8AE) == {0x5F91_167C}
+
+
+def test_an_inactive_daxiq_stream_still_holds_its_channel() -> None:
+    # Maestro's DAX keeps its channel 1 streams with active=0 between uses (O1.log 2026-10-20)
+    line = ("S1FCCB95D|stream 0x20000004 type=dax_iq daxiq_channel=1 pan=0x40000000 slice=0x0 "
+            "endpoint_type=Display daxiq_rate=48000 client_handle=0x493016BC active=0")
+    assert flex_iq.daxiq_users(flex_iq.daxiq_streams([line]), 1, 0x7F19_D8AE) == {0x4930_16BC}
+
+
+def test_pan_status_keeps_saved_channels_and_drops_removed_pans() -> None:
+    lines = LAKE_PANS + ["S0|display pan 0x40000003 center=7.038400", "S0|display pan 0x40000001 removed"]
+    assert flex_iq.pan_status(lines) == {0x4000_0000: "1", 0x4000_0002: "3", 0x4000_0003: None}
+
+
+def _setup_refused(monkeypatch: Monkey, refused: str) -> list[str]:
+    """Run _setup on a radio that accepts everything except commands starting with `refused`."""
+    rx = FlexIQReceiver("192.0.2.1", sample_rate=96_000, daxiq_channel=4)
+    sent: list[str] = []
+    ids = {"display pan create": "0x40000003,0x42000003", "slice create": "3",
+           "stream create": "0x20000011"}
+
+    def cmd(c: str, timeout: float = 2.0, settle: float = 0.0) -> list[str]:
+        rx._seq += 1
+        sent.append(c)
+        if c.startswith(refused):
+            return [f"R{rx._seq}|50000029|"]
+        if c == "info":
+            return [f'R{rx._seq}|0|model="FLEX-6600",name="Lake"']
+        if c == "sub client all":
+            return [MAESTRO, f"R{rx._seq}|0|"]
+        if c == "sub slice all":   # the radio's default slice on the new pan
+            return ["S0|slice 3 in_use=1 pan=0x40000003 client_handle=0x7F19D8AE", f"R{rx._seq}|0|"]
+        made = next((v for k, v in ids.items() if c.startswith(k)), "")
+        return [f"R{rx._seq}|0|{made}"]
+
+    monkeypatch.setattr(flex_iq.socket, "socket", lambda *_: _Sock())
+    monkeypatch.setattr(rx, "_drain", lambda *_: ["V1.4.0.0", "H7F19D8AE"])
+    monkeypatch.setattr(rx, "_cmd", cmd)
+    with pytest.raises(RuntimeError, match="refused"):
+        rx._setup()
+    assert rx.state != "live" and not rx._pan_bound
+    return sent
+
+
+def test_a_refused_pan_centre_fails_the_start(monkeypatch: Monkey) -> None:
+    sent = _setup_refused(monkeypatch, "display pan set 0x40000003 center=")
+    assert not any(c.startswith("stream create") for c in sent)
+
+
+def test_a_refused_slice_tune_fails_the_start(monkeypatch: Monkey) -> None:
+    _setup_refused(monkeypatch, "slice tune")
+
+
+def test_a_refused_daxiq_bind_fails_the_start(monkeypatch: Monkey) -> None:
+    sent = _setup_refused(monkeypatch, "display pan set 0x40000003 daxiq_channel=")
+    assert not any(c.startswith("stream set") for c in sent)
+
+
+def test_the_owner_leaves_pans_other_copies_stream(monkeypatch: Monkey) -> None:
+    # O2, 2026-10-20 11:21Z: restored pans on channels 3 and 4; Y's live stream feeds the channel 4 one
+    rx = FlexIQReceiver("192.0.2.1", sample_rate=96_000, daxiq_channel=2)
+    sent: list[str] = []
+    own = "client_handle=0x7F19D8AE"
+    pans = [f"S0|display pan 0x40000001 {own} center=7.038400", "S0|display pan 0x40000001 daxiq_channel=4 ",
+            f"S0|display pan 0x40000002 {own} center=7.038400", "S0|display pan 0x40000002 daxiq_channel=2 ",
+            f"S0|display pan 0x40000003 {own} center=3.538400", "S0|display pan 0x40000003 daxiq_channel=3 ",
+            f"S0|display pan 0x40000004 {own} center=14.100000"]    # a copy still starting: no stream yet
+    slices = [f"S0|slice {n} in_use=1 pan=0x4000000{n} {own}" for n in (1, 2, 3, 4)]
+
+    def cmd(c: str, timeout: float = 2.0, settle: float = 0.0) -> list[str]:
+        if c.startswith("stream create"):
+            raise _Stop
+        rx._seq += 1
+        sent.append(c)
+        if c == "info":
+            return [f'R{rx._seq}|0|model="FLEX-6600",name="Lake"']
+        status = {"sub client all": [MAESTRO], "sub pan all": pans, "sub slice all": slices,
+                  "sub daxiq all": Y_STREAM}.get(c, [])
+        return status + [f"R{rx._seq}|0|"]
+
+    monkeypatch.setattr(flex_iq.socket, "socket", lambda *_: _Sock())
+    monkeypatch.setattr(rx, "_drain", lambda *_: ["V1.4.0.0", "H7F19D8AE"])
+    monkeypatch.setattr(rx, "_cmd", cmd)
+    with pytest.raises(_Stop):
+        rx._setup()
+    assert rx._pan_id == 0x4000_0002 and rx._slice_id == 2    # its own saved pan back
+    assert [c for c in sent if "remove" in c] == ["display pan remove 0x40000003"]   # its slice goes with it
