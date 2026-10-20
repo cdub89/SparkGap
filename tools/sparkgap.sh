@@ -27,6 +27,9 @@ sparkgap.sh: run the SparkGap instances on this machine.
                                    7320 when it starts (an existing config/<name>.local.json is reused);
                                    not started
   sparkgap.sh remove <name>        take a stopped instance out: its worktree goes, its config stays in config/
+  sparkgap.sh rename <old> <new>   rename a stopped instance, keeping its digit (the DAX-IQ channel):
+                                   its folder, config/<new>.local.json and recording names follow;
+                                   logs keep the old name
   sparkgap.sh update               pull each code folder in instances, rebuild the native libraries
                                    where C code changed, restart what was running from it, and
                                    refresh this script in the root from tools/sparkgap.sh
@@ -282,11 +285,44 @@ update() {
   for i in $running; do start "$i"; done
 }
 
+rename() {
+  local o=$1 n=$2 d nd f nf
+  d=$(dir "$o"); f=$(cfg "$o")
+  [[ $n =~ ^[a-z]+([1-9])$ ]] || die "name must be letters and one digit 1 to 9, the DAX-IQ channel (e.g. lake4)"
+  [ "${n: -1}" = "${o: -1}" ] || die "keep the digit ${o: -1}: it is the DAX-IQ channel"
+  [ -z "$(field "$n" 1)" ] || die "$n is already in instances"
+  pid "$o" > /dev/null && die "$o is running; stop it first"
+  nf=$R/config/$n.local.json; [ ! -e "$nf" ] || die "$nf already exists"
+  nd=$d; [ "$d" = "$R/$o" ] && nd=$R/$n   # a code folder outside the root keeps its place
+  [ "$nd" = "$d" ] || [ ! -e "$nd" ] || die "$nd already exists"
+  if [ "$nd" != "$d" ]; then
+    if [ -f "$d/.git" ]; then
+      git -C "$(clone_of "$d")" worktree move "$d" "$nd" || die "git kept $d; nothing renamed"
+    else  # the clone: its worktrees find it again with repair
+      mv "$d" "$nd" && git -C "$nd" worktree repair 2> /dev/null || die "moved $d to $nd, but git worktree repair failed there"
+    fi
+  fi
+  mv "$f" "$nf"
+  python3 - "$nf" "$R/rec/${o}_" "$R/rec/${n}_" <<'PY'
+import json, re, sys
+f, old, new = sys.argv[1:4]
+text = open(f).read()
+c = json.loads(text)
+if str(c.get("record_wav", "")).startswith(old):
+    c["record_wav"] = new + c["record_wav"][len(old):]
+    m = re.search(r'\n([ \t]+)"', text)
+    open(f, "w").write(json.dumps(c, indent=m.group(1) if m else 2) + "\n")
+PY
+  awk -v o="$o" -v n="$n" -v d="$nd" '$1 == o {$1 = n; $2 = d; $3 = n ".local.json"} {print}' "$R/instances" \
+    > "$R/instances.new" && mv "$R/instances.new" "$R/instances"
+  echo "$o: renamed $n, code in $nd, config $nf"
+}
+
 [ $# -gt 0 ] || { usage; exit 0; }
 cmd=$1; shift
 case $cmd in help|-h|--help) usage; exit 0 ;; esac
 case $cmd in
-  status|start|stop|restart|band|rec|update|add|remove) ;;
+  status|start|stop|restart|band|rec|update|add|remove|rename) ;;
   *) echo "sparkgap.sh: unknown command '$cmd'" >&2; echo >&2; usage >&2; exit 2 ;;
 esac
 for a in "$@"; do [[ $a == -h || $a == --help ]] && { cmd_usage "$cmd"; exit 0; }; done
@@ -307,4 +343,5 @@ case $cmd in
   update) [ $# -eq 0 ] || { cmd_usage update; exit 2; }; update ;;
   add) [ $# -eq 2 ] || { cmd_usage add; exit 2; }; add "$1" "$2" ;;
   remove) [ $# -eq 1 ] || { cmd_usage remove; exit 2; }; remove "$1" ;;
+  rename) [ $# -eq 2 ] || { cmd_usage rename; exit 2; }; rename "$1" "$2" ;;
 esac
