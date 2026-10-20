@@ -108,6 +108,28 @@ def daxiq_holders(lines, channel):
     return {p: owner.get(p, '') for p, c in chan.items() if c == str(channel) and c != '0'}
 
 
+def pan_ours(lines, pan_id, channel, bound):
+    """Whether pan `pan_id` is still this copy's in pan status lines.  Copies bound to one
+    station share its owner and the radio hands a dropped pan's id to the next copy
+    (2026-10-20), so the DAX-IQ channel decides: once bound, ours only while bound to
+    `channel`; before that, ours while bound to no other channel."""
+    seen, chan = False, None
+    for line in lines:
+        m = re.search(r'\|display pan (0x[0-9A-F]+)( .*|$)', line, re.I)
+        if not m or int(m.group(1), 16) != pan_id:
+            continue
+        rest = m.group(2).split()
+        if 'removed' in rest:
+            seen, chan = False, None
+            continue
+        seen = True
+        kv = dict(p.split('=', 1) for p in rest if '=' in p)
+        chan = kv.get('daxiq_channel', chan)
+    if bound:
+        return seen and chan == str(channel)
+    return seen and chan in (None, '0', str(channel))
+
+
 def radio_nickname(lines):
     """The radio's nickname from its reply to "info" (name="Dallas"), or '' when it has none."""
     for line in lines:
@@ -214,6 +236,7 @@ class FlexIQReceiver:
         self._last_loss = None    # time.time() of the last lost connection
         self._bound = False       # attached to another copy's station with client bind
         self._stale = None        # (stream, slice, pan) a bound copy left when its connection was lost
+        self._pan_bound = False   # our pan carries our DAX-IQ channel
         self._stopping = False
         self._lock = threading.Lock()   # stop() waits for a reconnect in progress
         self._ptt_warned = False
@@ -298,6 +321,7 @@ class FlexIQReceiver:
     def start(self, why=None):
         """Connect to the radio, register as GUI, set up DAX-IQ stream.  `why`: the reason for a reconnect."""
         self._stream_id = self._pan_id = self._slice_id = None
+        self._pan_bound = False
         self.last_packet = None
         self._sent = {}
         self._handle = ''
@@ -372,8 +396,10 @@ class FlexIQReceiver:
         self._report(f"UDP port {self.udp_port} for DAX-IQ", self._cmd(f"client udpport {self.udp_port}"))
         if self._stale and self._bound:    # the station kept them when our connection was lost
             self._stream_id, self._slice_id, self._pan_id = self._stale
+            self._pan_bound = True
             self._remove_objects()
             self._stream_id = self._pan_id = self._slice_id = None
+            self._pan_bound = False
         self._stale = None
 
         # The radio gives a new GUI client a default pan with a band-default
@@ -424,16 +450,18 @@ class FlexIQReceiver:
             slices, _ = owned_objects(status, handle)
             if self._bound:                # the station owns the slice the radio put on our pan
                 slices = pan_slices(status, self._pan_id)
-        self._report(f"pan 0x{self._pan_id:08x} center {self.freq_mhz:.6f} MHz, bandwidth {bw_mhz:.3f} MHz",
-                     self._cmd(f"display pan set 0x{self._pan_id:08x} "
-                               f"center={self.freq_mhz:.6f} bandwidth={bw_mhz:.6f}"))
+        if not self._report(f"pan 0x{self._pan_id:08x} center {self.freq_mhz:.6f} MHz, bandwidth {bw_mhz:.3f} MHz",
+                            self._cmd(f"display pan set 0x{self._pan_id:08x} "
+                                      f"center={self.freq_mhz:.6f} bandwidth={bw_mhz:.6f}")):
+            raise RuntimeError(f"[Flex] The radio refused to set pan 0x{self._pan_id:08x}")
 
         # One slice keeps the RF path live (without one the Flex streams zeros).
         # dax=0: the default slice comes with a DAX audio channel; we need none.
         self._slice_id = min(slices) if slices else None
         if self._slice_id is not None:
-            self._report(f"slice {self._slice_id} tuned to {self.freq_mhz:.6f} MHz",
-                         self._cmd(f"slice tune {self._slice_id} {self.freq_mhz:.6f}"))
+            if not self._report(f"slice {self._slice_id} tuned to {self.freq_mhz:.6f} MHz",
+                                self._cmd(f"slice tune {self._slice_id} {self.freq_mhz:.6f}")):
+                raise RuntimeError(f"[Flex] The radio refused to tune slice {self._slice_id}")
             self._report(f"slice {self._slice_id} mode CW",          # one field per command,
                          self._cmd(f"slice set {self._slice_id} mode=CW"))   # as FlexLib sends them
             self._report(f"slice {self._slice_id} DAX audio off",
@@ -469,8 +497,10 @@ class FlexIQReceiver:
         log.info("[Flex] DAX-IQ stream: 0x%08x", self._stream_id)
 
         # Bind DAX-IQ to the panadapter — THE critical step
-        self._report(f"DAX-IQ channel {self.channel} bound to pan 0x{self._pan_id:08x}",
-                     self._cmd(f"display pan set 0x{self._pan_id:08x} daxiq_channel={self.channel}"))
+        if not self._report(f"DAX-IQ channel {self.channel} bound to pan 0x{self._pan_id:08x}",
+                            self._cmd(f"display pan set 0x{self._pan_id:08x} daxiq_channel={self.channel}")):
+            raise RuntimeError(f"[Flex] The radio refused DAX-IQ channel {self.channel} on pan 0x{self._pan_id:08x}")
+        self._pan_bound = True
 
         # Set sample rate after binding; newer firmware rejects it on an unbound stream
         resp = self._cmd(f"stream set 0x{self._stream_id:08x} "
@@ -596,8 +626,18 @@ class FlexIQReceiver:
         log.info("[Flex] Stopped")
 
     def _remove_objects(self):
-        """Remove our DAX-IQ stream, slice and pan from the radio."""
+        """Remove our DAX-IQ stream, slice and pan from the radio, while the radio still has them as ours."""
         try:
+            if self._pan_id:
+                status = self._cmd("sub pan all", settle=0.5) + self._cmd("sub slice all", settle=0.3)
+                if not pan_ours(status, self._pan_id, self.channel, self._pan_bound):
+                    log.warning("[Flex] Pan 0x%08x is no longer ours (dropped, or its id given to another "
+                                "copy): leaving it and its slice alone", self._pan_id)
+                    self._pan_id = self._slice_id = None
+                    if self._pan_bound:    # a stream made in this start is still ours
+                        self._stream_id = None
+                if self._slice_id is not None and self._slice_id not in pan_slices(status, self._pan_id):
+                    self._slice_id = None
             if self._stream_id:
                 self._report(f"DAX-IQ stream 0x{self._stream_id:08x} removed",
                              self._cmd(f"stream remove 0x{self._stream_id:08x}", timeout=1))

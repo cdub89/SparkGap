@@ -322,3 +322,59 @@ def test_an_unknown_owner_is_named_by_handle(monkeypatch: Monkey) -> None:
     with pytest.raises(RuntimeError,
                        match=r"DAX-IQ 1 is in use by client 0X28B5BE40 on pan 0x40000000"):
         _setup_to_pan(monkeypatch, 1, [LAKE_GUI], LAKE_PANS)
+
+
+def test_pan_ours_follows_the_daxiq_channel() -> None:
+    bound4 = ["S0|display pan 0x40000002 client_handle=0x79D60253", "S0|display pan 0x40000002 daxiq_channel=4 "]
+    assert flex_iq.pan_ours(bound4, 0x4000_0002, 4, bound=True)
+    assert not flex_iq.pan_ours(bound4, 0x4000_0002, 3, bound=True)     # its id went to another copy
+    assert not flex_iq.pan_ours(LAKE_PANS, 0x4000_0003, 4, bound=True)  # dropped by the radio
+    assert not flex_iq.pan_ours(bound4 + ["S0|display pan 0x40000002 removed"], 0x4000_0002, 4, bound=True)
+    fresh = ["S0|display pan 0x40000003 client_handle=0x79D60253 center=7.038400"]
+    assert flex_iq.pan_ours(fresh, 0x4000_0003, 4, bound=False)         # made, not bound yet
+    assert not flex_iq.pan_ours(fresh, 0x4000_0003, 4, bound=True)      # ours was bound: this is a new one
+    assert not flex_iq.pan_ours(bound4, 0x4000_0002, 3, bound=False)
+
+
+def _setup_refused(monkeypatch: Monkey, refused: str) -> list[str]:
+    """Run _setup on a radio that accepts everything except commands starting with `refused`."""
+    rx = FlexIQReceiver("192.0.2.1", sample_rate=96_000, daxiq_channel=4)
+    sent: list[str] = []
+    ids = {"display pan create": "0x40000003,0x42000003", "slice create": "3",
+           "stream create": "0x20000011"}
+
+    def cmd(c: str, timeout: float = 2.0, settle: float = 0.0) -> list[str]:
+        rx._seq += 1
+        sent.append(c)
+        if c.startswith(refused):
+            return [f"R{rx._seq}|50000029|"]
+        if c == "info":
+            return [f'R{rx._seq}|0|model="FLEX-6600",name="Lake"']
+        if c == "sub client all":
+            return [MAESTRO, f"R{rx._seq}|0|"]
+        if c == "sub slice all":   # the radio's default slice on the new pan
+            return ["S0|slice 3 in_use=1 pan=0x40000003 client_handle=0x7F19D8AE", f"R{rx._seq}|0|"]
+        made = next((v for k, v in ids.items() if c.startswith(k)), "")
+        return [f"R{rx._seq}|0|{made}"]
+
+    monkeypatch.setattr(flex_iq.socket, "socket", lambda *_: _Sock())
+    monkeypatch.setattr(rx, "_drain", lambda *_: ["V1.4.0.0", "H7F19D8AE"])
+    monkeypatch.setattr(rx, "_cmd", cmd)
+    with pytest.raises(RuntimeError, match="refused"):
+        rx._setup()
+    assert rx.state != "live" and not rx._pan_bound
+    return sent
+
+
+def test_a_refused_pan_centre_fails_the_start(monkeypatch: Monkey) -> None:
+    sent = _setup_refused(monkeypatch, "display pan set 0x40000003 center=")
+    assert not any(c.startswith("stream create") for c in sent)
+
+
+def test_a_refused_slice_tune_fails_the_start(monkeypatch: Monkey) -> None:
+    _setup_refused(monkeypatch, "slice tune")
+
+
+def test_a_refused_daxiq_bind_fails_the_start(monkeypatch: Monkey) -> None:
+    sent = _setup_refused(monkeypatch, "display pan set 0x40000003 daxiq_channel=")
+    assert not any(c.startswith("stream set") for c in sent)

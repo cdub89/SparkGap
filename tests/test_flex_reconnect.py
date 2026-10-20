@@ -41,11 +41,12 @@ def _live(monkeypatch: Monkey) -> tuple[FlexIQReceiver, list[str]]:
     rx = FlexIQReceiver("192.0.2.1", sample_rate=96_000)
     rx._tcp, rx._udp, rx._handle = _Tcp(), _Udp(), "7F19D8AE"  # pyright: ignore[reportAttributeAccessIssue]
     rx._stream_id, rx._slice_id, rx._pan_id, rx._running = STREAM, 2, 0x4000_0001, True
+    rx._pan_bound = True
     events: list[str] = []
 
     def cmd(c: str, timeout: float = 2.0, settle: float = 0.0) -> list[str]:
         events.append(c)
-        return [f"R{rx._seq}|0|"]
+        return OURS.get(c, []) + [f"R{rx._seq}|0|"]
 
     def close(reason: str) -> None:
         events.append(f"close {reason}")
@@ -58,7 +59,11 @@ def _live(monkeypatch: Monkey) -> tuple[FlexIQReceiver, list[str]]:
     return rx, events
 
 
-REMOVE = ["stream remove 0x20000000", "slice remove 2", "display pan remove 0x40000001"]
+OURS = {"sub pan all": ["S0|display pan 0x40000001 client_handle=0x7F19D8AE center=14.038400",
+                        "S0|display pan 0x40000001 daxiq_channel=1 "],
+        "sub slice all": ["S0|slice 2 in_use=1 pan=0x40000001 client_handle=0x7F19D8AE"]}
+CHECK = ["sub pan all", "sub slice all"]
+REMOVE = CHECK + ["stream remove 0x20000000", "slice remove 2", "display pan remove 0x40000001"]
 
 
 def test_a_stall_removes_our_objects_before_reconnecting(monkeypatch: Monkey) -> None:
@@ -120,15 +125,19 @@ def test_a_bound_copy_removes_what_it_left_after_reattaching(monkeypatch: Monkey
     rx = FlexIQReceiver("192.0.2.1", sample_rate=96_000, daxiq_channel=3)
     rx._stale = (STREAM, 2, 0x4000_0002)
     sent: list[str] = []
+    left = {"sub pan all": ["S0|display pan 0x40000002 client_handle=0x79D60253",
+                            "S0|display pan 0x40000002 daxiq_channel=3 "],
+            "sub slice all": ["S0|slice 2 in_use=1 pan=0x40000002 client_handle=0x79D60253"]}
 
     def cmd(c: str, timeout: float = 2.0, settle: float = 0.0) -> list[str]:
-        if c == "sub pan all":
+        if c == "sub pan all" and "sub pan all" in sent:
             raise _Stop
         rx._seq += 1
         sent.append(c)
         if c == "info":
             return [f'R{rx._seq}|0|model="FLEX-6600",name="Lake"']
-        return ([LAKE_GUI] if c == "sub client all" else []) + [f"R{rx._seq}|0|"]
+        status = [LAKE_GUI] if c == "sub client all" else left.get(c, [])
+        return status + [f"R{rx._seq}|0|"]
 
     monkeypatch.setattr(flex_iq.socket, "socket", lambda *_: _Sock())
     monkeypatch.setattr(rx, "_drain", lambda *_: ["V1.4.0.0", "H7F19D8AE"])
@@ -136,8 +145,8 @@ def test_a_bound_copy_removes_what_it_left_after_reattaching(monkeypatch: Monkey
     with pytest.raises(_Stop):
         rx._setup()
     at = sent.index("client udpport 7791")
-    assert sent[at + 1:at + 4] == ["stream remove 0x20000000", "slice remove 2",
-                                   "display pan remove 0x40000002"]
+    assert sent[at + 1:at + 6] == CHECK + ["stream remove 0x20000000", "slice remove 2",
+                                           "display pan remove 0x40000002"]
     assert rx._stale is None and rx._pan_id is None
 
 
@@ -195,3 +204,31 @@ def test_no_disconnect_line_when_never_connected(caplog: pytest.LogCaptureFixtur
     with caplog.at_level(logging.INFO, logger="sparkgap.flex"):
         rx._close("failed start")
     assert not caplog.records and rx._tcp is None
+
+
+def test_a_pan_given_to_another_copy_is_left_alone(monkeypatch: Monkey) -> None:
+    rx, events = _live(monkeypatch)
+    OURS_NOW = {"sub pan all": ["S0|display pan 0x40000001 client_handle=0x7F19D8AE",
+                                "S0|display pan 0x40000001 daxiq_channel=4 "]}
+    monkeypatch.setattr(rx, "_cmd", lambda c, timeout=2.0, settle=0.0:
+                        events.append(c) or OURS_NOW.get(c, []) + [f"R{rx._seq}|0|"])
+    rx._restart("No DAX-IQ packets for 10 s", True)
+    assert events == CHECK + ["close reconnecting", "start"]
+
+
+def test_a_dropped_pan_is_left_alone(monkeypatch: Monkey) -> None:
+    rx, events = _live(monkeypatch)
+    monkeypatch.setattr(rx, "_cmd", lambda c, timeout=2.0, settle=0.0:
+                        events.append(c) or [f"R{rx._seq}|0|"])
+    monkeypatch.setattr(flex_iq.time, "sleep", lambda _s: None)
+    rx.stop()
+    assert events == CHECK + ["close stopping"]
+
+
+def test_a_failed_start_removes_its_new_stream_even_when_its_pan_is_gone(monkeypatch: Monkey) -> None:
+    rx, events = _live(monkeypatch)
+    rx._pan_bound = False
+    monkeypatch.setattr(rx, "_cmd", lambda c, timeout=2.0, settle=0.0:
+                        events.append(c) or [f"R{rx._seq}|0|"])
+    rx._remove_objects()
+    assert events == CHECK + ["stream remove 0x20000000"]
