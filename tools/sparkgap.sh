@@ -35,13 +35,19 @@ sparkgap.sh: run the SparkGap instances on this machine.
   sparkgap.sh update               pull code/, stop the copies whose code moves, move each code folder
                                    to it and rebuild its native libraries, start them again, and
                                    refresh this script in the root from tools/sparkgap.sh
-  sparkgap.sh init <repository> <branch> <radio address> <callsign>
-                                   set up a new root: code/ cloned from the repository, a template
-                                   from skimmer_flex.example.json and an empty instances; makes only
-                                   what is missing
+  sparkgap.sh init <repository> <branch> [radio address]
+                                   set up a new root: code/ cloned from the repository, an empty
+                                   instances and the template (as template below); makes only what is
+                                   missing
+  sparkgap.sh template [radio address]
+                                   config/template.json from skimmer_flex.example.json and the radio:
+                                   its address and callsign, and in comments its model, nickname,
+                                   software and limits; the radio is found by discovery unless an
+                                   address is given (needed on Windows, where SmartSDR holds the
+                                   discovery port); an old template is kept as template.json.<UTC>
   sparkgap.sh migrate              an older root, where the first instance holds the clone: that clone
-                                   becomes code/ and the instance a worktree of it; its config becomes
-                                   the template; every instance stopped first
+                                   becomes code/ and the instance a worktree of it; every instance
+                                   stopped first; rerun it to finish one that stopped partway
   sparkgap.sh help                 this list; -h or --help after any command shows that command
 
 With no name, start, stop, restart and status act on every instance.
@@ -187,7 +193,9 @@ add() {
   d=$R/$n; [ ! -e "$d" ] || die "$d already exists"
   top=$(source_clone 2>/dev/null); [ -n "$top" ] || die "no code/ clone and no instance to copy (run sparkgap.sh init)"
   [[ " $(bands_in "$top") " == *" $b "* ]] || die "band must be one of: $(bands_in "$top")"
-  if [ -f "$TEMPLATE" ]; then tpl=$TEMPLATE; else tpl=$(cfg "${ALL%% *}"); fi
+  if [ -f "$TEMPLATE" ]; then tpl=$TEMPLATE
+  elif [ -n "$ALL" ]; then tpl=$(cfg "${ALL%% *}")
+  else die "no $TEMPLATE and no instance to copy (run sparkgap.sh init)"; fi
   conf=$R/config/$n.local.json
   py=$(field "${ALL%% *}" 4); [ -n "$py" ] || py=$R/.venv/bin/python; [ -x "$py" ] || py=$(command -v python3)
   # check and write the config before touching git, so a refusal leaves nothing behind
@@ -237,63 +245,76 @@ open(conf + ".new", "w").write(json.dumps(c, indent=m.group(1) if m else 2) + "\
 g = c.get("gui_feed", {})
 print(f"{name}: DAX-IQ {num}, {band}, telnet {c.get('telnet_port')}, feed {g.get('port', 'off')}, "
       f"UDP {c.get('flex_udp_port')}, config {conf}")
+limit = (c.get("_radio") or json.load(open(tpl)).get("_radio") or {}).get("limit")
+if limit and len(cs) + 1 > limit:
+    print(f"warning: {len(cs) + 1} instances, but the {c['_radio'].get('model') if c.get('_radio') else 'radio'} "
+          f"holds {limit} SparkGap copies (a pan, a slice and a DAX-IQ channel each), fewer while SmartSDR uses some")
 PY
   git -C "$top" worktree add -q --detach "$d" HEAD || { rm -f "$conf.new"; exit 2; }
-  so_native "$d" || { git -C "$top" worktree remove --force "$d"; rm -f "$conf.new"; exit 2; }
+  so_native "$d"   # a failed build leaves the portable libraries, which run
   mv "$conf.new" "$conf"
   echo "$n $d $n.local.json $py" >> "$R/instances"
   echo "start with: sparkgap.sh start $n"
 }
 
-init() {  # init <repository> <branch> <radio address> <callsign>: what is missing, nothing replaced
-  local repo=$1 br=$2 ip=$3 call=$4
+template() {  # template [radio address]: config/template.json from the example and what the radio reports
+  local top
+  top=$(source_clone 2>/dev/null); [ -n "$top" ] || die "no code/ clone (run sparkgap.sh init)"
+  mkdir -p "$R/config" || die "cannot make $R/config"
+  python3 "$top/tools/flex_template.py" --example "$top/skimmer_flex.example.json" --out "$TEMPLATE" \
+    --root "$R" ${1:+--address "$1"} || exit 2
+  echo "edit $TEMPLATE for this station (spot rule, feed, validation) before add"
+}
+
+init() {  # init <repository> <branch> [radio address]: what is missing, nothing replaced
+  local repo=$1 br=$2
   mkdir -p "$R/config" "$R/logs" "$R/rec" || die "cannot make $R"
   if [ -d "$CODE/.git" ]; then echo "$CODE: already there"
   elif [ -e "$CODE" ]; then die "$CODE exists but is not a git clone"
   elif [ -f "$R/instances" ] && [ -n "$ALL" ]; then die "instances already run here: use sparkgap.sh migrate"
   else git clone -q --branch "$br" "$repo" "$CODE" || die "clone of $repo ($br) failed"; echo "$CODE: cloned $br"
   fi
-  if [ -f "$TEMPLATE" ]; then echo "$TEMPLATE: already there"
-  else
-    python3 - "$CODE/skimmer_flex.example.json" "$TEMPLATE" "$ip" "$call" "$R" <<'PY' || die "no template written"
-import json, sys
-src, out, ip, call, root = sys.argv[1:]
-c = {k: v for k, v in json.load(open(src)).items() if not k.startswith("_")}
-c.update(sdr_type="flex", sdr_ip=ip, callsign=call.upper(), rbn_known_dir=f"{root}/rbn_known")
-open(out + ".new", "w").write(json.dumps(c, indent=2) + "\n")
-PY
-    mv "$TEMPLATE.new" "$TEMPLATE" && echo "$TEMPLATE: from skimmer_flex.example.json, radio $ip, ${call^^} (edit it before add)"
-  fi
   [ -f "$R/instances" ] || { echo "# name code-dir config python" > "$R/instances"; echo "$R/instances: made"; }
+  if [ -f "$TEMPLATE" ]; then echo "$TEMPLATE: already there (sparkgap.sh template makes a new one)"
+  else template "${3:-}"; fi
   echo "next: sparkgap.sh add <name> <band>"
 }
 
-migrate() {  # the first instance's clone becomes code/, the instance a worktree of it
+migrate() {  # the first instance's clone becomes code/, the instance a worktree of it; rerun to finish a stopped one
   local d0 n0 head i d w
-  [ ! -e "$CODE" ] || die "$CODE already exists"
   n0=${ALL%% *}; [ -n "$n0" ] || die "no instances to migrate (use sparkgap.sh init)"
-  d0=$(dir "$n0"); [ -d "$d0/.git" ] || die "$d0 is not the clone; nothing to migrate"
+  dir "$n0" > /dev/null; d0=$(dir "$n0")
   for i in $ALL; do pid "$i" > /dev/null && die "$i is running; stop every instance first"; done
   pgrep -f "[s]parkgap.py --config $R/config/" > /dev/null && die "a SparkGap from $R/config is running outside sparkgap.sh"
-  for d in $(awk '!/^#/ && NF {print $2}' "$R/instances" | sort -u); do
-    git -C "$d" status > /dev/null 2>&1 || die "$d: git cannot read it; nothing changed"
-    [ -z "$(git -C "$d" status --porcelain --untracked-files=no | grep -v '\.so$')" ] || die "$d has local changes; nothing changed"
-  done
-  head=$(git -C "$d0" rev-parse HEAD)
-  [ -f "$TEMPLATE" ] || { cp "$(cfg "$n0")" "$TEMPLATE" && echo "$TEMPLATE: from $(field "$n0" 3)"; }
-  mv "$d0" "$CODE" && git -C "$CODE" worktree repair 2> /dev/null || die "moved $d0 to $CODE, but git worktree repair failed there"
+  if [ -d "$CODE/.git" ]; then  # moved already: make what is missing
+    [ -e "$d0" ] && [ ! -f "$d0/.git" ] && die "$CODE and $d0 both exist and $d0 is not a worktree; fix by hand"
+  else
+    [ ! -e "$CODE" ] || die "$CODE exists but is not a git clone"
+    [ -d "$d0/.git" ] || die "$d0 is not the clone; nothing to migrate"
+    for d in $(awk '!/^#/ && NF {print $2}' "$R/instances" | sort -u); do
+      git -C "$d" status > /dev/null 2>&1 || die "$d: git cannot read it; nothing changed"
+      [ -z "$(git -C "$d" status --porcelain --untracked-files=no | grep -v '\.so$')" ] || die "$d has local changes; nothing changed"
+    done
+    git -C "$d0" rev-parse HEAD > "$R/logs/migrate.head"
+    mv "$d0" "$CODE" || die "$d0 not moved; nothing changed"
+    git -C "$CODE" worktree repair 2> /dev/null || die "moved $d0 to $CODE, but git worktree repair failed; rerun migrate"
+  fi
   for w in $(git -C "$CODE" worktree list --porcelain | awk '/^worktree / {print $2}'); do
-    git -C "$w" status > /dev/null 2>&1 || die "$w: lost its link to $CODE (run git -C $CODE worktree repair $w)"
+    git -C "$w" status > /dev/null 2>&1 || die "$w: lost its link to $CODE (git -C $CODE worktree repair $w, then rerun migrate)"
   done
   so_portable "$CODE"
-  git -C "$CODE" worktree add -q --detach "$d0" "$head" || die "$CODE: worktree $d0 not made"
-  so_native "$d0" || return 1
-  echo "$CODE: the clone; $n0 is now a worktree of it in $d0. Start with: sparkgap.sh start"
+  if [ ! -e "$d0" ]; then
+    head=$(cat "$R/logs/migrate.head" 2>/dev/null || git -C "$CODE" rev-parse HEAD)
+    git -C "$CODE" worktree add -q --detach "$d0" "$head" || die "$CODE: worktree $d0 not made; rerun migrate"
+    so_native "$d0"
+  fi
+  rm -f "$R/logs/migrate.head"
+  echo "$CODE: the clone; $n0 is a worktree of it in $d0. Start with: sparkgap.sh start"
 }
 
 remove() {
   local n=$1 d f
-  d=$(dir "$n"); f=$(field "$n" 3)
+  dir "$n" > /dev/null; d=$(dir "$n"); f=$(field "$n" 3)
   pid "$n" > /dev/null && die "$n is running; stop it first"
   [ -f "$d/.git" ] || die "$d is the clone the other instances share; only a worktree can be removed"
   git -C "$(clone_of "$d")" worktree remove "$d" || die "git kept $d (changes in it?); nothing removed"
@@ -310,79 +331,90 @@ so_portable() {  # put the tracked portable builds back, so git can move the fol
   git -C "$1" checkout -q -- '*.so'
 }
 
-so_native() {  # rebuild the native libraries and keep git from counting them as changes
-  (cd "$1" && make -B native ARCH=native > "$R/logs/make_native.log" 2>&1) \
-    || { echo "$1: native build failed, see logs/make_native.log"; return 1; }
-  git -C "$1" ls-files '*.so' | (cd "$1" && xargs -r git update-index --assume-unchanged)
-  echo "$1: native libraries rebuilt"
+so_native() {  # rebuild the native libraries; on a failed build keep the portable ones, which run (slower)
+  if (cd "$1" && make -B native ARCH=native > "$R/logs/make_native.log" 2>&1); then
+    git -C "$1" ls-files '*.so' | (cd "$1" && xargs -r git update-index --assume-unchanged)
+    echo "$1: native libraries rebuilt"
+  else
+    git -C "$1" checkout -q -- '*.so'
+    echo "$1: native build failed (logs/make_native.log); running on the portable libraries"; return 1
+  fi
 }
 
+
 update() {
-  local src new d i changed="" running=""
+  local src new d i h changed="" running="" failed="" stuck=""
   src=$(source_clone); [ -n "$src" ] || die "no clone on a branch to update from"
   git -C "$src" fetch -q || die "$src: fetch failed"
   new=$(git -C "$src" rev-parse '@{u}') || die "$src: its branch follows no upstream"
   # everything is checked before anything stops: a refusal leaves every copy running
-  [ -z "$(git -C "$src" status --porcelain --untracked-files=no | grep -v '\.so$')" ] \
-    || die "$src has local changes; nothing updated"
   git -C "$src" merge-base --is-ancestor HEAD "$new" || die "$src has commits $new lacks; nothing updated"
-  for d in $(awk '!/^#/ && NF {print $2}' "$R/instances" | sort -u); do
-    if [ "$(git -C "$d" rev-parse HEAD)" = "$new" ]; then echo "$d: already at $(git -C "$d" log --oneline -1)"
-    else changed="$changed $d"; fi
+  for d in $( (echo "$src"; awk '!/^#/ && NF {print $2}' "$R/instances") | sort -u); do
+    h=$(git -C "$d" rev-parse HEAD 2> /dev/null) || die "$d: git cannot read it; nothing updated"
+    [ -z "$(git -C "$d" status --porcelain --untracked-files=no | grep -v '\.so$')" ] \
+      || die "$d has local changes; nothing updated"
+    [ "$d" = "$src" ] && [ "$src" = "$CODE" ] && continue
+    if [ "$h" = "$new" ]; then echo "$d: already at $(git -C "$d" log --oneline -1)"; else changed="$changed $d"; fi
   done
   for i in $ALL; do  # stopped before their code moves: a running copy loads some libraries late
     [[ " $changed " == *" $(dir "$i") "* ]] && pid "$i" >/dev/null && running="$running $i"
   done
   for i in $running; do stop "$i" || die "$i did not stop; nothing more updated"; done
   if [ "$src" = "$CODE" ] && [ "$(git -C "$src" rev-parse HEAD)" != "$new" ]; then
-    git -C "$src" merge -q --ff-only "$new" || die "$src: update to $new failed"
-    echo "$src: $(git -C "$src" log --oneline -1)"
+    git -C "$src" merge -q --ff-only "$new" && echo "$src: $(git -C "$src" log --oneline -1)" \
+      || { echo "$src: update to $new failed; every code folder left as it was"; failed=1; stuck=1; }
   fi
-  for d in $changed; do
+  for d in $changed; do  # a folder that fails stays runnable: its old code, or the new one on portable libraries
+    [ -n "$stuck" ] && break
     so_portable "$d"
     if [ "$d" = "$src" ]; then git -C "$d" merge -q --ff-only "$new"; else git -C "$d" checkout -q --detach "$new"; fi \
-      || { echo "$d: update to $new failed"; return 1; }
+      || { echo "$d: update to $new failed; left at $(git -C "$d" log --oneline -1)"; so_native "$d"; failed=1; continue; }
     echo "$d: $(git -C "$d" log --oneline -1)"
-    so_native "$d" || return 1
+    so_native "$d" || failed=1
   done
   if [ -f "$src/tools/sparkgap.sh" ] && ! cmp -s "$src/tools/sparkgap.sh" "$R/sparkgap.sh"; then
     # a new file renamed into place: bash keeps reading the old one it is running
     cp "$src/tools/sparkgap.sh" "$R/sparkgap.sh.new" && mv "$R/sparkgap.sh.new" "$R/sparkgap.sh" &&
       echo "$R/sparkgap.sh: updated from $src"
   fi
-  for i in $running; do start "$i"; done
+  for i in $running; do start "$i"; done   # always: what ran before runs again
+  [ -z "$failed" ] || { echo "sparkgap.sh: update incomplete, see above; run it again once fixed"; return 1; }
 }
 
 rename() {
   local o=$1 n=$2 d nd f nf
-  d=$(dir "$o"); f=$(cfg "$o")
+  dir "$o" > /dev/null; d=$(dir "$o"); f=$(cfg "$o")
   [[ $n =~ ^[a-z]+([1-9])$ ]] || die "name must be letters and one digit 1 to 9, the DAX-IQ channel (e.g. lake4)"
   [ "${n: -1}" = "${o: -1}" ] || die "keep the digit ${o: -1}: it is the DAX-IQ channel"
   [ -z "$(field "$n" 1)" ] || die "$n is already in instances"
   pid "$o" > /dev/null && die "$o is running; stop it first"
+  [ -r "$f" ] || die "$f is missing; nothing renamed"
   nf=$R/config/$n.local.json; [ ! -e "$nf" ] || die "$nf already exists"
   nd=$d; [ "$d" = "$R/$o" ] && nd=$R/$n   # a code folder outside the root keeps its place
   [ "$nd" = "$d" ] || [ ! -e "$nd" ] || die "$nd already exists"
-  if [ "$nd" != "$d" ]; then
-    if [ -f "$d/.git" ]; then
-      git -C "$(clone_of "$d")" worktree move "$d" "$nd" || die "git kept $d; nothing renamed"
-    else  # the clone: its worktrees find it again with repair
-      mv "$d" "$nd" && git -C "$nd" worktree repair 2> /dev/null || die "moved $d to $nd, but git worktree repair failed there"
-    fi
-  fi
-  mv "$f" "$nf"
-  python3 - "$nf" "$R/rec/${o}_" "$R/rec/${n}_" <<'PY'
+  # the new config first: a failed move below leaves only it to delete
+  python3 - "$f" "$nf" "$R/rec/${o}_" "$R/rec/${n}_" <<'PY' || die "$nf not written; nothing renamed"
 import json, re, sys
-f, old, new = sys.argv[1:4]
+f, nf, old, new = sys.argv[1:5]
 text = open(f).read()
 c = json.loads(text)
 if str(c.get("record_wav", "")).startswith(old):
     c["record_wav"] = new + c["record_wav"][len(old):]
     m = re.search(r'\n([ \t]+)"', text)
-    open(f, "w").write(json.dumps(c, indent=m.group(1) if m else 2) + "\n")
+    text = json.dumps(c, indent=m.group(1) if m else 2) + "\n"
+open(nf, "w").write(text)
 PY
+  if [ "$nd" != "$d" ]; then
+    if [ -f "$d/.git" ]; then
+      git -C "$(clone_of "$d")" worktree move "$d" "$nd" || { rm -f "$nf"; die "git kept $d; nothing renamed"; }
+    else  # the clone: its worktrees find it again with repair
+      mv "$d" "$nd" || { rm -f "$nf"; die "$d not moved; nothing renamed"; }
+      git -C "$nd" worktree repair 2> /dev/null || echo "sparkgap.sh: git worktree repair failed in $nd; run it by hand"
+    fi
+  fi
   awk -v o="$o" -v n="$n" -v d="$nd" '$1 == o {$1 = n; $2 = d; $3 = n ".local.json"} {print}' "$R/instances" \
-    > "$R/instances.new" && mv "$R/instances.new" "$R/instances"
+    > "$R/instances.new" && mv "$R/instances.new" "$R/instances" || die "instances not updated: $o is now in $nd, config $nf"
+  rm -f "$f"
   echo "$o: renamed $n, code in $nd, config $nf"
 }
 
@@ -390,7 +422,7 @@ PY
 cmd=$1; shift
 case $cmd in help|-h|--help) usage; exit 0 ;; esac
 case $cmd in
-  status|start|stop|restart|band|rec|update|add|remove|rename|init|migrate) ;;
+  status|start|stop|restart|band|rec|update|add|remove|rename|init|migrate|template) ;;
   *) echo "sparkgap.sh: unknown command '$cmd'" >&2; echo >&2; usage >&2; exit 2 ;;
 esac
 for a in "$@"; do [[ $a == -h || $a == --help ]] && { cmd_usage "$cmd"; exit 0; }; done
@@ -412,6 +444,7 @@ case $cmd in
   add) [ $# -eq 2 ] || { cmd_usage add; exit 2; }; add "$1" "$2" ;;
   remove) [ $# -eq 1 ] || { cmd_usage remove; exit 2; }; remove "$1" ;;
   rename) [ $# -eq 2 ] || { cmd_usage rename; exit 2; }; rename "$1" "$2" ;;
-  init) [ $# -eq 4 ] || { cmd_usage init; exit 2; }; init "$@" ;;
+  init) [ $# -eq 2 ] || [ $# -eq 3 ] || { cmd_usage init; exit 2; }; init "$@" ;;
+  template) [ $# -le 1 ] || { cmd_usage template; exit 2; }; template "${1:-}" ;;
   migrate) [ $# -eq 0 ] || { cmd_usage migrate; exit 2; }; migrate ;;
 esac
