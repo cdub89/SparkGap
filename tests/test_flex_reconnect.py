@@ -41,7 +41,7 @@ def _live(monkeypatch: Monkey) -> tuple[FlexIQReceiver, list[str]]:
     rx = FlexIQReceiver("192.0.2.1", sample_rate=96_000)
     rx._tcp, rx._udp, rx._handle = _Tcp(), _Udp(), "7F19D8AE"  # pyright: ignore[reportAttributeAccessIssue]
     rx._stream_id, rx._slice_id, rx._pan_id, rx._running = STREAM, 2, 0x4000_0001, True
-    rx._pan_bound = True
+    rx._pan_bound, rx._stream_handle = True, 0x7F19_D8AE
     events: list[str] = []
 
     def cmd(c: str, timeout: float = 2.0, settle: float = 0.0) -> list[str]:
@@ -59,10 +59,17 @@ def _live(monkeypatch: Monkey) -> tuple[FlexIQReceiver, list[str]]:
     return rx, events
 
 
-OURS = {"sub pan all": ["S0|display pan 0x40000001 client_handle=0x7F19D8AE center=14.038400",
+def _stream(pan: int, client: int = 0x7F19_D8AE, sid: int = STREAM) -> str:
+    """A stream status line as the radio sends it (Y.log, 2026-10-20)."""
+    return (f"S{client:08X}|stream 0x{sid:08X} type=dax_iq daxiq_channel=1 pan=0x{pan:08X} slice=0x0 "
+            f"endpoint_type=Display daxiq_rate=96000 client_handle=0x{client:08X} active=1")
+
+
+OURS = {"sub daxiq all": [_stream(0x4000_0001)],
+        "sub pan all": ["S0|display pan 0x40000001 client_handle=0x7F19D8AE center=14.038400",
                         "S0|display pan 0x40000001 daxiq_channel=1 "],
         "sub slice all": ["S0|slice 2 in_use=1 pan=0x40000001 client_handle=0x7F19D8AE"]}
-CHECK = ["sub pan all", "sub slice all"]
+CHECK = ["sub daxiq all", "sub pan all", "sub slice all"]
 REMOVE = CHECK + ["stream remove 0x20000000", "slice remove 2", "display pan remove 0x40000001"]
 
 
@@ -82,7 +89,7 @@ def test_a_bound_copy_remembers_what_its_station_keeps(monkeypatch: Monkey) -> N
     rx, _ = _live(monkeypatch)
     rx._bound = True
     rx._restart("The radio closed the control connection", False)
-    assert rx._stale == (STREAM, 2, 0x4000_0001)
+    assert rx._stale == (STREAM, 2, 0x4000_0001, 0x7F19_D8AE)
 
 
 def test_a_second_lost_connection_halts_without_commands(monkeypatch: Monkey) -> None:
@@ -123,14 +130,15 @@ class _Sock:
 
 def test_a_bound_copy_removes_what_it_left_after_reattaching(monkeypatch: Monkey) -> None:
     rx = FlexIQReceiver("192.0.2.1", sample_rate=96_000, daxiq_channel=3)
-    rx._stale = (STREAM, 2, 0x4000_0002)
+    rx._stale = (STREAM, 2, 0x4000_0002, 0x5F91_167C)   # made by our previous connection
     sent: list[str] = []
-    left = {"sub pan all": ["S0|display pan 0x40000002 client_handle=0x79D60253",
+    left = {"sub daxiq all": [_stream(0x4000_0002, 0x5F91_167C)],
+            "sub pan all": ["S0|display pan 0x40000002 client_handle=0x79D60253",
                             "S0|display pan 0x40000002 daxiq_channel=3 "],
             "sub slice all": ["S0|slice 2 in_use=1 pan=0x40000002 client_handle=0x79D60253"]}
 
     def cmd(c: str, timeout: float = 2.0, settle: float = 0.0) -> list[str]:
-        if c == "sub pan all" and "sub pan all" in sent:
+        if c == "sub daxiq all" and "sub daxiq all" in sent:
             raise _Stop
         rx._seq += 1
         sent.append(c)
@@ -145,7 +153,7 @@ def test_a_bound_copy_removes_what_it_left_after_reattaching(monkeypatch: Monkey
     with pytest.raises(_Stop):
         rx._setup()
     at = sent.index("client udpport 7791")
-    assert sent[at + 1:at + 6] == CHECK + ["stream remove 0x20000000", "slice remove 2",
+    assert sent[at + 1:at + 7] == CHECK + ["stream remove 0x20000000", "slice remove 2",
                                            "display pan remove 0x40000002"]
     assert rx._stale is None and rx._pan_id is None
 
@@ -206,29 +214,62 @@ def test_no_disconnect_line_when_never_connected(caplog: pytest.LogCaptureFixtur
     assert not caplog.records and rx._tcp is None
 
 
-def test_a_pan_given_to_another_copy_is_left_alone(monkeypatch: Monkey) -> None:
-    rx, events = _live(monkeypatch)
-    OURS_NOW = {"sub pan all": ["S0|display pan 0x40000001 client_handle=0x7F19D8AE",
-                                "S0|display pan 0x40000001 daxiq_channel=4 "]}
+def _status(rx: FlexIQReceiver, events: list[str], monkeypatch: Monkey, now: dict[str, list[str]]) -> None:
     monkeypatch.setattr(rx, "_cmd", lambda c, timeout=2.0, settle=0.0:
-                        events.append(c) or OURS_NOW.get(c, []) + [f"R{rx._seq}|0|"])
+                        events.append(c) or now.get(c, []) + [f"R{rx._seq}|0|"])
+
+
+def test_after_the_owner_leaves_our_stream_goes_and_the_pan_stays(monkeypatch: Monkey) -> None:
+    rx, events = _live(monkeypatch)    # Y, 2026-10-20 11:21Z: the owner left, the radio dropped our pan
+    _status(rx, events, monkeypatch, {"sub daxiq all": [_stream(0)]})
     rx._restart("No DAX-IQ packets for 10 s", True)
-    assert events == CHECK + ["close reconnecting", "start"]
+    assert events == CHECK + ["stream remove 0x20000000", "close reconnecting", "start"]
 
 
-def test_a_dropped_pan_is_left_alone(monkeypatch: Monkey) -> None:
-    rx, events = _live(monkeypatch)
-    monkeypatch.setattr(rx, "_cmd", lambda c, timeout=2.0, settle=0.0:
-                        events.append(c) or [f"R{rx._seq}|0|"])
+def test_a_stream_id_another_client_now_has_is_left_alone(monkeypatch: Monkey) -> None:
+    rx, events = _live(monkeypatch)    # the radio reuses ids: O2 got 0x2000000B after O1 removed it
+    _status(rx, events, monkeypatch, {**OURS, "sub daxiq all": [_stream(0x4000_0001, 0x303A_65A4)]})
     monkeypatch.setattr(flex_iq.time, "sleep", lambda _s: None)
     rx.stop()
     assert events == CHECK + ["close stopping"]
 
 
-def test_a_failed_start_removes_its_new_stream_even_when_its_pan_is_gone(monkeypatch: Monkey) -> None:
-    rx, events = _live(monkeypatch)
-    rx._pan_bound = False
-    monkeypatch.setattr(rx, "_cmd", lambda c, timeout=2.0, settle=0.0:
-                        events.append(c) or [f"R{rx._seq}|0|"])
+def test_a_failed_start_removes_the_pan_it_made_before_the_bind(monkeypatch: Monkey) -> None:
+    rx, events = _live(monkeypatch)    # Qch5: the new pan came with a saved channel 2, still ours
+    rx._stream_id, rx._pan_bound = None, False
+    _status(rx, events, monkeypatch, {"sub pan all": ["S0|display pan 0x40000001 client_handle=0x7F19D8AE",
+                                                      "S0|display pan 0x40000001 daxiq_channel=2 "],
+                                      "sub slice all": OURS["sub slice all"]})
     rx._remove_objects()
-    assert events == CHECK + ["stream remove 0x20000000"]
+    assert events == CHECK + ["slice remove 2", "display pan remove 0x40000001"]
+
+
+def test_a_pan_another_stream_feeds_is_left_alone(monkeypatch: Monkey) -> None:
+    rx, events = _live(monkeypatch)
+    rx._stream_id, rx._pan_bound = None, False
+    _status(rx, events, monkeypatch, {**OURS, "sub daxiq all": [_stream(0x4000_0001, 0x5F91_167C, 0x2000_0011)]})
+    rx._remove_objects()
+    assert events == CHECK
+
+
+def test_a_copy_back_as_owner_still_removes_what_it_left(monkeypatch: Monkey) -> None:
+    rx = FlexIQReceiver("192.0.2.1", sample_rate=96_000, daxiq_channel=3)
+    rx._stale = (STREAM, None, None, 0x5F91_167C)   # was bound; the station's owner has gone since
+    sent: list[str] = []
+
+    def cmd(c: str, timeout: float = 2.0, settle: float = 0.0) -> list[str]:
+        if c == "sub client all" and "sub daxiq all" in sent:
+            raise _Stop
+        rx._seq += 1
+        sent.append(c)
+        if c == "info":
+            return [f'R{rx._seq}|0|model="FLEX-6600",name="Lake"']
+        status = [_stream(0, 0x5F91_167C)] if c == "sub daxiq all" else []
+        return status + [f"R{rx._seq}|0|"]
+
+    monkeypatch.setattr(flex_iq.socket, "socket", lambda *_: _Sock())
+    monkeypatch.setattr(rx, "_drain", lambda *_: ["V1.4.0.0", "H7F19D8AE"])
+    monkeypatch.setattr(rx, "_cmd", cmd)
+    with pytest.raises(_Stop):
+        rx._setup()
+    assert not rx._bound and "stream remove 0x20000000" in sent and rx._stale is None

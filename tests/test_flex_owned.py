@@ -141,7 +141,7 @@ def test_failed_start_removes_what_it_made() -> None:
         rx.start()
     except RuntimeError:
         pass
-    assert sent == ["sub pan all", "sub slice all", "slice remove 1", "display pan remove 0x40000001"]
+    assert sent == ["sub daxiq all", "sub pan all", "sub slice all", "slice remove 1", "display pan remove 0x40000001"]
 
 
 def test_start_forgets_objects_from_a_dropped_connection() -> None:
