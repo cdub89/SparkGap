@@ -4,6 +4,7 @@ set -u
 R=${SPARKGAP_ROOT:-$HOME/sparkgap}
 CODE=$R/code                  # the clone every instance is a worktree of
 TEMPLATE=$R/config/template.json   # what add copies
+REC_MIN_GB=5                  # rec on refuses below this much free space in rec/
 START_WAIT_S=45   # longest a copy takes to reach the radio and go live
 STOP_WAIT_S=30
 CPU_SAMPLE_S=2    # status measures each copy's CPU over this long
@@ -124,8 +125,8 @@ status() {
     echo "$BOLD$i$OFF: ${RED}stopped$OFF, $(git -C "$(dir "$i")" describe --always --dirty), $(bandlabel "$i")"
     [ -n "$log" ] && last=$(errors_in "$log" | tail -1) && [ -n "$last" ] && echo "   ${RED}last error: $last$OFF"
   fi
-  python3 - "$(cfg "$i")" "$BOLD$YELLOW" "$OFF" "$([ -n "$p" ] && echo "$log")" <<'PY'
-import json, re, socket, sys
+  python3 - "$(cfg "$i")" "$BOLD$YELLOW" "$OFF" "$([ -n "$p" ] && echo "$log")" "$REC_MIN_GB" <<'PY'
+import json, os, re, shutil, socket, sys
 c = json.load(open(sys.argv[1]))
 g = c.get("gui_feed")
 if g:
@@ -139,7 +140,12 @@ if g:
     print(f"   feed {host}:{port}, join code {(sys.argv[2] + g['join_code'] + sys.argv[3]) if g.get('join_code') else 'none (local only)'}{web}")
 else:
     print("   feed off")
-print(f"   telnet {c.get('telnet_port', 7300)}, recording {'on' if c.get('record_wav') else 'off'}")
+rec = c.get("record_wav")
+if rec:
+    gb = shutil.disk_usage(os.path.dirname(rec) or ".").free // 2**30
+    low = gb < int(sys.argv[5])
+    rec = f"on, {sys.argv[2] if low else ''}{gb} GB free{' (rec on needs ' + sys.argv[5] + ')' + sys.argv[3] if low else ''}"
+print(f"   telnet {c.get('telnet_port', 7300)}, recording {rec or 'off'}")
 PY
   [ -n "$log" ] || return 0
   spots=$(grep -c 'SPOT:' "$log")
@@ -161,8 +167,8 @@ PY
 }
 
 setcfg() {  # setcfg <name> <key> <json value or null>; keeps the file's own indentation
-  python3 - "$(cfg "$1")" "$2" "$3" <<'PY'
-import json, re, sys
+  python3 - "$(cfg "$1")" "$2" "$3" <<'PY' || { rm -f "$(cfg "$1").new"; die "$(cfg "$1") not changed"; }
+import json, os, re, sys
 f, k, v = sys.argv[1:4]
 text = open(f).read()
 m = re.search(r'\n([ \t]+)"', text)
@@ -173,9 +179,16 @@ if v is None:
     c.pop(k, None)
 else:
     c[k] = v
-open(f, "w").write(json.dumps(c, indent=indent) + "\n")
+try:  # a full disk fails here and leaves the config as it was
+    with open(f + ".new", "w") as out:
+        out.write(json.dumps(c, indent=indent) + "\n")
+except OSError as e:
+    sys.exit(e.strerror)
+os.replace(f + ".new", f)
 PY
 }
+
+free_gb() { df -BG --output=avail "$R/rec" | tail -1 | tr -dc 0-9; }
 
 reconfigure() {  # restart after a config change, only if it was running
   if pid "$1" >/dev/null; then stop "$1" && start "$1"; fi
@@ -241,7 +254,8 @@ else:
         c["record_wav"] = f"{root}/rec/{name}_{{band}}_{{ts}}.wav"
 c["bands"] = [band]
 m = re.search(r'\n([ \t]+)"', text)
-open(conf + ".new", "w").write(json.dumps(c, indent=m.group(1) if m else 2) + "\n")
+with open(conf + ".new", "w") as out:
+    out.write(json.dumps(c, indent=m.group(1) if m else 2) + "\n")
 g = c.get("gui_feed", {})
 print(f"{name}: DAX-IQ {num}, {band}, telnet {c.get('telnet_port')}, feed {g.get('port', 'off')}, "
       f"UDP {c.get('flex_udp_port')}, config {conf}")
@@ -402,7 +416,8 @@ if str(c.get("record_wav", "")).startswith(old):
     c["record_wav"] = new + c["record_wav"][len(old):]
     m = re.search(r'\n([ \t]+)"', text)
     text = json.dumps(c, indent=m.group(1) if m else 2) + "\n"
-open(nf, "w").write(text)
+with open(nf, "w") as out:
+    out.write(text)
 PY
   if [ "$nd" != "$d" ]; then
     if [ -f "$d/.git" ]; then
@@ -438,6 +453,7 @@ case $cmd in
   rec)
     [ $# -eq 2 ] && [[ $2 == on || $2 == off ]] || { cmd_usage rec; exit 2; }
     dir "$1" > /dev/null
+    [ "$2" = off ] || [ "$(free_gb)" -ge "$REC_MIN_GB" ] || die "only $(free_gb) GB free in $R/rec (rec on needs $REC_MIN_GB)"
     if [ "$2" = on ]; then setcfg "$1" record_wav "\"$R/rec/${1}_{band}_{ts}.wav\""; else setcfg "$1" record_wav null; fi
     echo "$1: recording $2 ($(df -h --output=avail "$R/rec" | tail -1 | tr -d ' ') free in rec/)"; reconfigure "$1" ;;
   update) [ $# -eq 0 ] || { cmd_usage update; exit 2; }; update ;;
