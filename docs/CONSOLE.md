@@ -69,7 +69,7 @@ button steps through Full, Half and Quarter of the span), **Span** is the range
 on screen, and **SNR** is the waterfall's colour scale.
 
 **Bottom bar**: SparkGap's load (percent of one core, a 60 s average), memory,
-open decoder bins, connected consoles, decoder, build and uptime.
+open decoder bins, connected consoles, decoder, server build and uptime.
 
 ## The status page
 
@@ -89,7 +89,8 @@ open decoder bins, connected consoles, decoder, build and uptime.
   host name (from reverse DNS) with its address and connect time.
 - **PROBLEMS**: errors since start, with the last five; warnings are in the
   log only.
-- **Footer**: SparkGap's build and whether its clock is NTP synchronised.
+- **Footer**: the server build, the console build (desktop console only), and
+  whether SparkGap's clock is NTP synchronised.
 
 Selecting text holds the page still until the selection is cleared, so it can
 be copied.
@@ -105,7 +106,7 @@ be copied.
   one to show it; Edit or ✕ to change or remove it.
 - **SPOT RULE, VALIDATION, CALL SOURCE**: read-only, from the selected server's
   config.
-- Help, a link to this guide, and the console's build, at the bottom.
+- Help, a link to this guide, at the bottom.
 
 The desktop console keeps its window size, position and theme between runs. A
 browser keeps the server list, theme and demo setting for each address the page
@@ -234,7 +235,7 @@ Shared, and kept the same:
   status page, and the zoom panel (Zoom, Span and SNR rows).
 - Settings: demo, decoded readings, connections (a server added without a port
   is searched for on ports 7320 to 7339), the read-only spot rule, validation and
-  call source (shown when the server reports them), the build, at 480 px.
+  call source (shown when the server reports them), at 480 px.
 - Demo mode: the same made-up signals; turning it on only switches the view.
 - Scroll bars: thin, with small arrows, the same on the waterfall and the
   decoded text.
