@@ -123,7 +123,7 @@ status() {
     echo "$BOLD$i$OFF: ${GREEN}running$OFF, $(git -C "$(dir "$i")" describe --always --dirty), pid $p, $(procinfo "$p"), $(bandlabel "$i")"
   else
     echo "$BOLD$i$OFF: ${RED}stopped$OFF, $(git -C "$(dir "$i")" describe --always --dirty), $(bandlabel "$i")"
-    [ -n "$log" ] && last=$(errors_in "$log" | tail -1) && [ -n "$last" ] && echo "   ${RED}last error: $last$OFF"
+    [ -n "$log" ] && last=$(errors_in "$log" | tail -1) && [ -n "$last" ] && echo "   ${RED}last error $(date -u -r "$log" +"%m-%d %H:%MZ"): $last$OFF"
   fi
   python3 - "$(cfg "$i")" "$BOLD$YELLOW" "$OFF" "$([ -n "$p" ] && echo "$log")" "$REC_MIN_GB" <<'PY'
 import json, os, re, shutil, socket, sys
