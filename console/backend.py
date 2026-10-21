@@ -581,7 +581,7 @@ class Instance(QObject):
         v = float(q) if re.fullmatch(r"\d+\.?\d*|\.\d+", q) else None
         if v is not None:
             khz = v * 1000 if v < 100 else v
-            return [{"call": "", "khz": khz, "ago": "", "spot": False, "label": f"{khz:.1f} kHz"}]
+            return [{"call": "", "khz": khz, "ago": "", "spot": False, "label": f"{khz:.2f} kHz"}]
         found: dict[str, dict[str, Any]] = {}
         for call, s in self.spots.items():
             if q in call:

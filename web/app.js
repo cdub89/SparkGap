@@ -386,7 +386,7 @@ class Instance {
     const v = Number(q);
     if (Number.isFinite(v) && /^[\d.]+$/.test(q)) {
       const khz = v < 100 ? v * 1000 : v;
-      return [{ call: "", khz, ago: "", spot: false, label: `${khz.toFixed(1)} kHz` }];
+      return [{ call: "", khz, ago: "", spot: false, label: `${khz.toFixed(2)} kHz` }];
     }
     const found = new Map();
     for (const [call, s] of this.spots) if (call.includes(q)) found.set(call, { call, khz: s.khz, utc: s.utc, spot: true });
@@ -1288,7 +1288,7 @@ function renderLadder() {
     const chip = document.createElement("div");
     chip.className = "chip" + (it.spot ? " spot" : "") + (it.call ? " call" : "") + (Math.abs(app.selectedKhz - it.khz) < 0.05 ? " sel" : "");
     chip.style.top = (y - 11) + "px";
-    chip.innerHTML = `<span class="cd"></span><span class="cc">${esc(it.call || it.khz.toFixed(1))}</span><span class="cw">${it.wpm ? Math.round(it.wpm) : ""}</span>`;
+    chip.innerHTML = `<span class="cd"></span><span class="cc">${esc(it.call || it.khz.toFixed(2))}</span><span class="cw">${it.wpm ? Math.round(it.wpm) : ""}</span>`;
     chip.onclick = () => pick(it.khz, it.call);
     box.appendChild(chip);
   }
@@ -1344,11 +1344,11 @@ function readings(r, mode) {
 
 function renderDetail() {
   const i = inst(), d = i && app.selectedKhz > 0 ? i.detail : null;
-  $("dTitle").textContent = d ? d.call || d.khz.toFixed(1) : "Pick a signal";
+  $("dTitle").textContent = d ? d.call || d.khz.toFixed(2) : "Pick a signal";
   const pill = $("dPill");
   pill.hidden = !d;
   if (d) { pill.textContent = d.spotted ? "SPOTTED" : "HEARD"; pill.className = "pill" + (d.spotted ? " spot" : ""); }
-  $("dKhz").textContent = d ? (d.spotKhz !== null ? d.spotKhz.toFixed(1) : d.khz.toFixed(2)) : "-";  // a spot as spotted
+  $("dKhz").textContent = d ? d.khz.toFixed(2) : "-";
   $("dWpm").textContent = d && d.wpm ? Math.round(d.wpm) : "-";
   $("dSnr").textContent = d && d.snr ? Math.round(d.snr) + " dB" : "-";
   $("dNote").hidden = !(d && d.note);
@@ -1522,7 +1522,7 @@ function bindInput() {
     list.innerHTML = app.matches.map((m, n) => `<div class="match${n ? "" : " first"}" data-n="${n}">`
       + `<span class="cd" style="width:6px;height:6px;border-radius:50%;border:1px solid var(${m.spot ? "--accent" : "--faint"});background:${m.spot ? "var(--accent)" : "transparent"}"></span>`
       + `<span class="mono" style="width:90px;font-weight:600">${esc(m.label)}</span>`
-      + `<span class="mono muted" style="width:80px">${m.call ? m.khz.toFixed(1) : ""}</span>`
+      + `<span class="mono muted" style="width:80px">${m.call ? m.khz.toFixed(2) : ""}</span>`
       + `<span class="ago">${m.ago ? m.ago + " ago" : "go to"}</span></div>`).join("");
     list.hidden = !app.matches.length || document.activeElement !== search;
   };

@@ -413,7 +413,7 @@ ApplicationWindow {
                                 }
                                 Text {
                                     x: 18; anchors.verticalCenter: parent.verticalCenter
-                                    text: modelData.call || modelData.khz.toFixed(1)
+                                    text: modelData.call || modelData.khz.toFixed(2)
                                     color: modelData.spot ? t.fg : t.faint
                                     font.family: t.mono; font.features: t.zero; font.pixelSize: modelData.call ? 13 : 11
                                     font.weight: modelData.call ? Font.DemiBold : Font.Normal
@@ -549,7 +549,7 @@ ApplicationWindow {
                             RowLayout {
                                 spacing: 10
                                 Text {
-                                    text: detailPane.d.call || (detailPane.d.khz ? detailPane.d.khz.toFixed(1) : "Pick a signal")
+                                    text: detailPane.d.call || (detailPane.d.khz ? detailPane.d.khz.toFixed(2) : "Pick a signal")
                                     color: t.fg; font.family: t.mono; font.features: t.zero; font.pixelSize: 26; font.weight: Font.DemiBold
                                 }
                                 Pill {
@@ -566,7 +566,7 @@ ApplicationWindow {
                                 Repeater {
                                     model: {
                                         const d = detailPane.d
-                                        return [["KHZ", d.spot_khz ? d.spot_khz.toFixed(1) : d.khz ? d.khz.toFixed(2) : "-"],  // a spot as spotted
+                                        return [["KHZ", d.khz ? d.khz.toFixed(2) : "-"],
                                                 ["WPM", d.wpm ? Math.round(d.wpm) : "-"],
                                                 ["SNR", d.snr ? Math.round(d.snr) + " dB" : "-"]]
                                     }
@@ -1235,7 +1235,7 @@ ApplicationWindow {
                             color: modelData.spot ? t.accent : "transparent"; border.color: modelData.spot ? t.accent : t.faint
                         }
                         Text { width: 90; text: modelData.label; color: t.fg; font.family: t.mono; font.features: t.zero; font.weight: Font.DemiBold }
-                        Text { width: 80; text: modelData.call ? modelData.khz.toFixed(1) : ""; color: t.muted; font.family: t.mono; font.features: t.zero }
+                        Text { width: 80; text: modelData.call ? modelData.khz.toFixed(2) : ""; color: t.muted; font.family: t.mono; font.features: t.zero }
                         Text { text: modelData.ago ? modelData.ago + " ago" : "go to"; color: t.faint; font.pixelSize: 11 }
                     }
                 }
