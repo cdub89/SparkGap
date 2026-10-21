@@ -1,5 +1,5 @@
 {
-    "_comment": "FlexRadio DAX-IQ example (flex_iq.py). Copy to <name>.local.json and set callsign, grid and sdr_ip, or let tools/sparkgap.sh template fill them from the radio. Each SparkGap copy uses one DAX-IQ channel, one pan and one slice: up to 4 copies on a FLEX-6600, 6700 or 8600, 2 on a 6400 or 8400, fewer while SmartSDR or DAX hold some. Every copy needs its own flex_daxiq_channel; a channel another program holds is refused at start. Tested at 96 kHz. telnet stays on localhost until you mean to feed a cluster.",
+    "_comment": "FlexRadio DAX-IQ example (flex_iq.py). Copy to <name>.local.json and set callsign, grid and sdr_ip. Each SparkGap copy uses one DAX-IQ channel, one pan, one slice and part of the radio's DAX-IQ budget: 16 units on a 6400, 6600 or 6700, of which a stream takes 2 at 48 kHz, 4 at 96 kHz and 8 at 192 kHz, shared with SmartSDR and DAX. So up to 4 copies at 96 kHz on a FLEX-6600 or 6700 (2 at 192 kHz) and 2 on a 6400; fewer while other programs stream DAX-IQ. Every copy needs its own flex_daxiq_channel, flex_udp_port, telnet_port and skimmer_suffix (the GUI feed takes the next free port from 7320 to 7339 by itself); a channel another program holds is refused at start. Tested at 96 kHz. telnet stays on localhost until you mean to feed a cluster.",
     "callsign": "N0CALL",
     "skimmer_suffix": "-1",
     "grid": "AA00aa",
@@ -12,6 +12,7 @@
     "sdr_port": 4992,
     "flex_udp_port": 7791,
     "flex_daxiq_channel": 2,
+    "_comment_flex_loop": "Optional: flex_rxant (e.g. \"ANT1\"), flex_loopa / flex_loopb (true/false) are set on SparkGap's pan and slice. Leave them out to keep the radio's band setting. Set them when another receiver hangs on a receive loop: a pan or slice that comes up with the loop off switches it off for everything on that antenna (a second skimmer on RX loop B goes deaf).",
     "sample_rate": 96000,
     "bands": [
         "20m"
@@ -25,7 +26,6 @@
     "itila_window_sec": 60,
     "itila_ev_thresh": 1.5,
     "itila_max_bins": 400,
-    "max_bins": 300,
     "max_channels": 300,
     "signal_min_snr": 12,
     "decoder_speeds": [],
@@ -55,6 +55,7 @@
     "_comment_gui_feed": "The console and the web page (docs/CONSOLE.md). On loopback only, with no join code; set bind and join_code to reach it from another machine.",
     "gui_feed": {
         "bind": "127.0.0.1",
+        "port": "auto",
         "web": true
     }
 }

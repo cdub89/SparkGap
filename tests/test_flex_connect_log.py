@@ -308,6 +308,14 @@ def test_a_channel_another_copy_of_our_station_streams_is_refused(monkeypatch: M
         _setup_to_pan(monkeypatch, 3, [MAESTRO, LAKE_GUI], live)
 
 
+def test_a_channel_a_bound_copy_streams_names_its_station_and_pan(monkeypatch: Monkey) -> None:
+    # Dallas, 2026-10-20 22:20Z: the bound copy's stream has its own handle; the station is its GUI handle
+    live = LAKE_PANS + ["S6B976AE3|stream 0x20000011 type=dax_iq daxiq_channel=3 pan=0x40000002 "
+                        "client_handle=0x6B976AE3 client_gui_handle=0x79D60253 active=1"]
+    with pytest.raises(RuntimeError, match=r"DAX-IQ 3 is in use by SparkGap-Lake \(SparkGap\) on pan 0x40000002;"):
+        _setup_to_pan(monkeypatch, 3, [MAESTRO, LAKE_GUI], live)
+
+
 def test_our_station_pan_saved_on_our_channel_is_taken_back(monkeypatch: Monkey) -> None:
     # X, 2026-10-20 11:19Z: the radio restored the station's pan on channel 3 with nobody streaming it
     sent = _setup_to_pan(monkeypatch, 3, [MAESTRO, LAKE_GUI], LAKE_PANS)
@@ -344,18 +352,56 @@ Y_STREAM = [  # Y.log 2026-10-20: the owner left, the stream lost its pan, then 
 
 def test_daxiq_streams_reads_stream_status() -> None:
     streams = flex_iq.daxiq_streams(Y_STREAM)
-    assert streams == {0x2000_0011: {"channel": "4", "pan": 0x4000_0001, "client": 0x5F91_167C}}
+    assert streams == {0x2000_0011: {"channel": "4", "pan": 0x4000_0001, "client": 0x5F91_167C, "gui": 0x303A_65A4}}
     assert flex_iq.daxiq_streams(Y_STREAM + ["S5F91167C|stream 0x20000011 removed "]) == {}
-    assert flex_iq.daxiq_users(streams, 4, 0x5F91_167C) == set()
-    assert flex_iq.daxiq_users(streams, 4, 0x7F19_D8AE) == {0x5F91_167C}
+    assert flex_iq.daxiq_users(streams, 4, 0x5F91_167C, set()) == set()
+    assert flex_iq.daxiq_users(streams, 4, 0x7F19_D8AE, set()) == {0x5F91_167C}
 
 
 def test_an_inactive_daxiq_stream_still_holds_its_channel() -> None:
     # Maestro's DAX keeps its channel 1 streams with active=0 between uses (O1.log 2026-10-20)
     line = ("S1FCCB95D|stream 0x20000004 type=dax_iq daxiq_channel=1 pan=0x40000000 slice=0x0 "
             "endpoint_type=Display daxiq_rate=48000 client_handle=0x493016BC active=0")
-    assert flex_iq.daxiq_users(flex_iq.daxiq_streams([line]), 1, 0x7F19_D8AE) == {0x4930_16BC}
+    assert flex_iq.daxiq_users(flex_iq.daxiq_streams([line]), 1, 0x7F19_D8AE, set()) == {0x4930_16BC}
 
+
+AETHER_GUI = "S0|client 0x6EDCDBAA connected client_id=DDDD-4 program=AetherSDR station=Fred6700"
+AETHER_TCI = [  # Fred's 6700, 2026-10-20 17:5xZ: a TCI server keeps a stream on every channel, binds only one
+    "S56B13ECD|stream 0x20000000 type=dax_iq daxiq_channel=1 pan=0x0 endpoint_type=Not Assigned daxiq_rate=192000 "
+    "client_handle=0x56B13ECD client_gui_handle=0x6EDCDBAA active=1",
+    "S56B13ECD|stream 0x20000001 type=dax_iq daxiq_channel=2 pan=0x40000000 endpoint_type=Display daxiq_rate=48000 "
+    "client_handle=0x56B13ECD client_gui_handle=0x6EDCDBAA active=1",
+    "S56B13ECD|stream 0x20000002 type=dax_iq daxiq_channel=3 pan=0x0 endpoint_type=Not Assigned daxiq_rate=48000 "
+    "client_handle=0x56B13ECD client_gui_handle=0x6EDCDBAA active=1",
+    "S56B13ECD|stream 0x20000003 type=dax_iq daxiq_channel=4 pan=0x0 endpoint_type=Not Assigned daxiq_rate=48000 "
+    "client_handle=0x56B13ECD client_gui_handle=0x6EDCDBAA active=1",
+]
+
+
+def test_only_a_bound_stream_or_a_sparkgap_copys_claims_a_channel() -> None:
+    streams = flex_iq.daxiq_streams(AETHER_TCI)
+    me = 0x7F19_D8AE
+    assert [flex_iq.daxiq_users(streams, c, me, set()) for c in (1, 2, 3, 4)] == [set(), {0x56B1_3ECD}, set(), set()]
+    assert flex_iq.daxiq_users(streams, 3, me, {0x6EDC_DBAA}) == {0x56B1_3ECD}
+
+
+def test_a_channel_another_program_streams_unbound_goes_ahead(monkeypatch: Monkey) -> None:
+    # the radio let a copy stream channel 3 next to the TCI server's unbound stream for 30 min (Fred, 10-20)
+    sent = _setup_to_pan(monkeypatch, 3, [AETHER_GUI, LAKE_GUI], LAKE_PANS + AETHER_TCI)
+    assert "display pan create x=1 y=1" not in sent and sent[-1] == "sub daxiq all"   # saved pan taken back
+
+
+def test_a_channel_another_program_binds_is_refused(monkeypatch: Monkey) -> None:
+    with pytest.raises(RuntimeError, match=r"DAX-IQ 2 is in use by Fred6700 \(AetherSDR\) on pan 0x40000000;"):
+        _setup_to_pan(monkeypatch, 2, [AETHER_GUI, LAKE_GUI], LAKE_PANS + AETHER_TCI)
+
+
+def test_a_channel_another_copy_streams_before_its_bind_is_refused(monkeypatch: Monkey) -> None:
+    # a bound copy's new stream has no pan until it binds; its station's GUI client is SparkGap
+    live = LAKE_PANS + ["S6B976AE3|stream 0x20000011 type=dax_iq daxiq_channel=3 pan=0x0 "
+                        "client_handle=0x6B976AE3 client_gui_handle=0x79D60253 active=1"]
+    with pytest.raises(RuntimeError, match=r"DAX-IQ 3 is in use by SparkGap-Lake \(SparkGap\) on pan none;"):
+        _setup_to_pan(monkeypatch, 3, [MAESTRO, LAKE_GUI], live)
 
 def test_pan_status_keeps_saved_channels_and_drops_removed_pans() -> None:
     lines = LAKE_PANS + ["S0|display pan 0x40000003 center=7.038400", "S0|display pan 0x40000001 removed"]

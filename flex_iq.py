@@ -109,7 +109,7 @@ def daxiq_holders(lines, channel):
 
 
 def daxiq_streams(lines):
-    """DAX-IQ streams in stream status lines: {stream id: {'channel', 'pan', 'client'}}.
+    """DAX-IQ streams in stream status lines: {stream id: {'channel', 'pan', 'client', 'gui'}}.
     A stream's fields come over several lines; the latest wins and "removed" drops it."""
     out = {}
     for line in lines:
@@ -132,6 +132,8 @@ def daxiq_streams(lines):
             st['pan'] = int(kv['pan'], 16)
         if 'client_handle' in kv:
             st['client'] = int(kv['client_handle'], 16)
+        if 'client_gui_handle' in kv:     # the GUI station a DAX program or bound copy streams for
+            st['gui'] = int(kv['client_gui_handle'], 16)
     return out
 
 
@@ -153,10 +155,18 @@ def pan_status(lines):
     return out
 
 
-def daxiq_users(streams, channel, me):
-    """Client handles other than `me` with a DAX-IQ stream on `channel`."""
-    return {st['client'] for st in streams.values()
-            if st.get('channel') == str(channel) and st.get('client') not in (None, me)}
+def daxiq_claims(streams, channel, me, sparkgap):
+    """DAX-IQ streams on `channel` from clients other than `me` that claim it: bound to a pan, or
+    another SparkGap copy's (`sparkgap`: its GUI handles).  A TCI server keeps an unbound stream on
+    every channel (Fred's 6700, 2026-10-20); the radio lets another client stream that channel too."""
+    return [st for st in streams.values()
+            if st.get('channel') == str(channel) and st.get('client') not in (None, me)
+            and (st.get('pan') or {st.get('client'), st.get('gui')} & sparkgap)]
+
+
+def daxiq_users(streams, channel, me, sparkgap):
+    """Client handles of the streams that claim `channel` (daxiq_claims)."""
+    return {st['client'] for st in daxiq_claims(streams, channel, me, sparkgap)}
 
 
 def radio_nickname(lines):
@@ -226,7 +236,8 @@ class FlexIQReceiver:
     """
 
     def __init__(self, ip, freq_hz=7040000, sample_rate=192000,
-                 daxiq_channel=1, udp_port=7791, control_port=4992, station=None):
+                 daxiq_channel=1, udp_port=7791, control_port=4992, station=None,
+                 rxant=None, loopa=None, loopb=None):
         if sample_rate not in VALID_RATES:
             raise ValueError(f"sample_rate must be one of {VALID_RATES}")
         self.ip = ip
@@ -235,6 +246,13 @@ class FlexIQReceiver:
         self.sample_rate = sample_rate
         self.channel = daxiq_channel
         self._station_cfg = station  # flex_station; else SparkGap-<radio nickname>, set on connect
+        # flex_rxant / flex_loopa / flex_loopb: set on our pan and slice; None leaves the radio's
+        # (band-persistence) value.  A receive loop is shared by every pan on that antenna, so a
+        # pan that comes up with the loop off turns it off for whatever hangs on the loop.
+        self.rx_path = ''.join(f' {k}={v}' for k, v in (('rxant', rxant),
+                                                       ('loopa', None if loopa is None else int(bool(loopa))),
+                                                       ('loopb', None if loopb is None else int(bool(loopb))))
+                               if v is not None)
         self.station = station or f"{STATION_NAME}-{daxiq_channel}"
         self.client_id = ''
         self.udp_port = udp_port
@@ -458,18 +476,24 @@ class FlexIQReceiver:
         num = lambda h: int(h, 16) if h else None   # handles compare as numbers, not text
         me = num(handle)
         station = {me} | {num(g[0]) for g in stations if g[2] == STATION_NAME and g[3] == self.station}
+        sparkgap = {num(g[0]) for g in stations if g[2] == STATION_NAME}
         streams = daxiq_streams(status)
         taken = {p: h for p, h in daxiq_holders(status, self.channel).items() if num(h) not in station}
-        users = daxiq_users(streams, self.channel, me)
-        if taken or users:
-            pan, h = sorted(taken.items())[0] if taken else ("none", f"0x{min(users):08X}")
+        claims = daxiq_claims(streams, self.channel, me, sparkgap)
+        if taken or claims:
+            if taken:
+                pan, h = sorted(taken.items())[0]
+            else:
+                st = min(claims, key=lambda st: st['client'])
+                pan = f"0x{st['pan']:08x}" if st.get('pan') else "none"
+                h = f"0x{st.get('gui') or st['client']:08X}"
             who = next((f"{g[3]} ({g[2]})" for g in stations if num(g[0]) == num(h)), f"client {h}")
             raise RuntimeError(f"[Flex] DAX-IQ {self.channel} is in use by {who} on pan {pan}; "
                                "set another flex_daxiq_channel or free it there")
         # pans another client's stream feeds, or whose channel another client streams: another copy's
         chans = pan_status(status)
         busy = {st['pan'] for st in streams.values() if st.get('client') != me and st.get('pan')}
-        busy |= {p for p, c in chans.items() if c not in (None, '0') and daxiq_users(streams, c, me)}
+        busy |= {p for p, c in chans.items() if c not in (None, '0') and daxiq_users(streams, c, me, sparkgap)}
         pans = {p for p in pans if int(p, 16) not in busy}
         # saved pans nobody streams are ours to clear; a pan with no channel may be a copy still starting
         spare = {p for p in pans if chans.get(int(p, 16)) not in (None, '0')}
@@ -503,7 +527,7 @@ class FlexIQReceiver:
                 slices = pan_slices(status, self._pan_id)
         if not self._report(f"pan 0x{self._pan_id:08x} center {self.freq_mhz:.6f} MHz, bandwidth {bw_mhz:.3f} MHz",
                             self._cmd(f"display pan set 0x{self._pan_id:08x} "
-                                      f"center={self.freq_mhz:.6f} bandwidth={bw_mhz:.6f}")):
+                                      f"center={self.freq_mhz:.6f} bandwidth={bw_mhz:.6f}{self.rx_path}")):
             raise RuntimeError(f"[Flex] The radio refused to set pan 0x{self._pan_id:08x}")
 
         # One slice keeps the RF path live (without one the Flex streams zeros).
@@ -533,6 +557,10 @@ class FlexIQReceiver:
                          self._cmd(f"slice set {self._slice_id} audio_mute=1"))
             self._report(f"slice {self._slice_id} not a transmit slice",   # the key must never land on it
                          self._cmd(f"slice set {self._slice_id} tx=0"))
+            # the slice carries its own copy of the loop settings
+            if self.rx_path and not self._report(f"slice {self._slice_id}{self.rx_path}",
+                                                 self._cmd(f"slice set {self._slice_id}{self.rx_path}")):
+                raise RuntimeError(f"[Flex] The radio refused{self.rx_path} on slice {self._slice_id}")
         status = self._cmd("sub slice all", settle=0.3)
         all_slices, _ = owned_objects(status, handle)
         on_pan = slice_pans(status, handle)
