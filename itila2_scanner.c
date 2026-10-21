@@ -54,6 +54,13 @@
 #define SC_CAND_AVG_HZ         25.0    /* hits averaged into the new bin's frequency */
 
 #include "itila_fir_coeffs.h"
+/* Hot loops built twice, AVX2/FMA and baseline, chosen at load time: portable builds keep
+ * running on older CPUs and get the native speed on newer ones (cdub89/SparkGap#19 A4). */
+#if defined(__GNUC__) && !defined(__clang__) && defined(__x86_64__)
+#define HOT_CLONES __attribute__((target_clones("arch=x86-64-v3", "default")))
+#else
+#define HOT_CLONES
+#endif
 
 #define SC_HANN_MS     40.0  /* Hann window on the 100 Hz path, at 2 kHz */
 #define SC_HANN_LEN    80    /* SC_HANN_MS x 2 taps */
@@ -147,7 +154,7 @@ static void fft_plan_free(FftPlan *p)
     p->rev = NULL; p->wr = p->wi = NULL;
 }
 
-static void fft_exec(const FftPlan *p, double *re, double *im)
+HOT_CLONES static void fft_exec(const FftPlan *p, double *re, double *im)
 {
     int n = p->n;
     for (int i = 0; i < n; i++) {
@@ -179,30 +186,30 @@ typedef struct {
     double c_phase, s_phase;           /* oscillator state */
 
     /* FIR stage 1: to 12k (up to SC_FIR1_MAX taps, complex I/Q) */
-    double dl1_i[SC_FIR1_MAX];
-    double dl1_q[SC_FIR1_MAX];
+    double dl1_i[2*SC_FIR1_MAX];
+    double dl1_q[2*SC_FIR1_MAX];
     int    dl1_count;                  /* samples fed since last output */
 
     /* FIR stage 2: 12k→2k (96 taps, complex I/Q, two paths) */
-    double dl2_100i[FIR_S2_100_LEN];
-    double dl2_100q[FIR_S2_100_LEN];
-    double dl2_200i[FIR_S2_200_LEN];
-    double dl2_200q[FIR_S2_200_LEN];
+    double dl2_100i[2*FIR_S2_100_LEN];
+    double dl2_100q[2*FIR_S2_100_LEN];
+    double dl2_200i[2*FIR_S2_200_LEN];
+    double dl2_200q[2*FIR_S2_200_LEN];
     int    dl2_count;
 
     /* Hann window on the 100 Hz path (2 kHz, complex I/Q) */
-    double dlh_i[SC_HANN_LEN];
-    double dlh_q[SC_HANN_LEN];
-    double dlw_i[SC_WIDE_LEN];         /* channel filter on the 200 Hz path */
-    double dlw_q[SC_WIDE_LEN];
+    double dlh_i[2*SC_HANN_LEN];
+    double dlh_q[2*SC_HANN_LEN];
+    double dlw_i[2*SC_WIDE_LEN];         /* channel filter on the 200 Hz path */
+    double dlw_q[2*SC_WIDE_LEN];
     int    dlw_count;
     int    dlh_count;
     int    need_preroll;               /* feed the pre-roll IQ on the next process_bins */
     int64_t start_in;                  /* FFT front end: first input sample this bin is fed (pre-roll start) */
 
     /* FIR stage 3: 2k→200Hz (60 taps, real envelope, two paths) */
-    double dl3_100[FIR_STAGE3_LEN];
-    double dl3_200[FIR_STAGE3_LEN];
+    double dl3_100[2*FIR_STAGE3_LEN];
+    double dl3_200[2*FIR_STAGE3_LEN];
     int    dl3_count;
 
     double env100[SC_ENV_CAP];
@@ -359,7 +366,7 @@ static int sc_excluded(const ItilaSc *sc, double f_hz)
     return 0;
 }
 
-static void run_scan(ItilaSc *sc, const double *seg_i, const double *seg_q)
+HOT_CLONES static void run_scan(ItilaSc *sc, const double *seg_i, const double *seg_q)
 {
     int N = sc->energy_win;
     double *re = sc->scan_re, *im = sc->scan_im, *psd = sc->scan_psd;
@@ -589,15 +596,14 @@ static void run_scan(ItilaSc *sc, const double *seg_i, const double *seg_q)
 }
 
 /* ---- FIR convolution helper: dot product of delay line with filter ---- */
+/* Delay lines are written twice (pos and pos + len), so the newest-first window is one
+ * contiguous run: same taps in the same order as (pos - k + len) % len (cdub89/SparkGap#19 A3). */
 static double fir_dot(const double *dl, int pos, const double *h, int len)
 {
-    /* Same taps in the same order as (pos - k + len) % len, without the modulo. */
+    const double *x = dl + pos + len;
     double acc = 0.0;
-    int k = 0;
-    for (; k <= pos; k++)
-        acc += dl[pos - k] * h[k];
-    for (; k < len; k++)
-        acc += dl[pos - k + len] * h[k];
+    for (int k = 0; k < len; k++)
+        acc += x[-k] * h[k];
     return acc;
 }
 
@@ -608,10 +614,10 @@ static int bin_push_12k(const ItilaSc *sc, ScBin *b, double s1_i, double s1_q)
     /* Stage 2: push into FIR2 delay lines (100 Hz + 200 Hz paths), decimate 6:1 */
     int pos2_100 = b->dl2_count % FIR_S2_100_LEN;
     int pos2_200 = b->dl2_count % FIR_S2_200_LEN;
-    b->dl2_100i[pos2_100] = s1_i;
-    b->dl2_100q[pos2_100] = s1_q;
-    b->dl2_200i[pos2_200] = s1_i;
-    b->dl2_200q[pos2_200] = s1_q;
+    b->dl2_100i[pos2_100] = b->dl2_100i[pos2_100 + FIR_S2_100_LEN] = s1_i;
+    b->dl2_100q[pos2_100] = b->dl2_100q[pos2_100 + FIR_S2_100_LEN] = s1_q;
+    b->dl2_200i[pos2_200] = b->dl2_200i[pos2_200 + FIR_S2_200_LEN] = s1_i;
+    b->dl2_200q[pos2_200] = b->dl2_200q[pos2_200 + FIR_S2_200_LEN] = s1_q;
     if (++b->dl2_count == FIR_S2_100_LEN * FIR_S2_200_LEN * SC_DEC2) b->dl2_count = 0;
 
     if (b->dl2_count % SC_DEC2 != 0) return 0;
@@ -623,15 +629,15 @@ static int bin_push_12k(const ItilaSc *sc, ScBin *b, double s1_i, double s1_q)
 
     /* Hann window on the 100 Hz path before the magnitude */
     int ph = b->dlh_count;
-    b->dlh_i[ph] = s2_100i;
-    b->dlh_q[ph] = s2_100q;
+    b->dlh_i[ph] = b->dlh_i[ph + SC_HANN_LEN] = s2_100i;
+    b->dlh_q[ph] = b->dlh_q[ph + SC_HANN_LEN] = s2_100q;
     if (++b->dlh_count == SC_HANN_LEN) b->dlh_count = 0;
     s2_100i = fir_dot(b->dlh_i, ph, sc->hann, SC_HANN_LEN);
     s2_100q = fir_dot(b->dlh_q, ph, sc->hann, SC_HANN_LEN);
 
     int pw = b->dlw_count;
-    b->dlw_i[pw] = s2_200i;
-    b->dlw_q[pw] = s2_200q;
+    b->dlw_i[pw] = b->dlw_i[pw + SC_WIDE_LEN] = s2_200i;
+    b->dlw_q[pw] = b->dlw_q[pw + SC_WIDE_LEN] = s2_200q;
     if (++b->dlw_count == SC_WIDE_LEN) b->dlw_count = 0;
     s2_200i = fir_dot(b->dlw_i, pw, WIDE_TAPS, SC_WIDE_LEN);
     s2_200q = fir_dot(b->dlw_q, pw, WIDE_TAPS, SC_WIDE_LEN);
@@ -642,8 +648,8 @@ static int bin_push_12k(const ItilaSc *sc, ScBin *b, double s1_i, double s1_q)
 
     /* Stage 3: push envelope into FIR3 delay lines, decimate 10:1 */
     int pos3 = b->dl3_count % FIR_STAGE3_LEN;
-    b->dl3_100[pos3] = env2_100;
-    b->dl3_200[pos3] = env2_200;
+    b->dl3_100[pos3] = b->dl3_100[pos3 + FIR_STAGE3_LEN] = env2_100;
+    b->dl3_200[pos3] = b->dl3_200[pos3 + FIR_STAGE3_LEN] = env2_200;
     if (++b->dl3_count == FIR_STAGE3_LEN * SC_DEC3) b->dl3_count = 0;
 
     if (b->dl3_count % SC_DEC3 != 0) return 0;
@@ -662,7 +668,7 @@ static int bin_push_12k(const ItilaSc *sc, ScBin *b, double s1_i, double s1_q)
 }
 
 /* ---- per-bin DSP: all-FIR linear-phase chain ---- */
-static int process_bin(ItilaSc *sc, ScBin *b, const double *i_full, const double *q_full, int n)
+HOT_CLONES static int process_bin(ItilaSc *sc, ScBin *b, const double *i_full, const double *q_full, int n)
 {
     int drops = 0;
     {
@@ -683,8 +689,8 @@ static int process_bin(ItilaSc *sc, ScBin *b, const double *i_full, const double
 
             /* Stage 1: push into FIR1 delay line, decimate 16:1 */
             int pos1 = b->dl1_count % sc->fir1_len;
-            b->dl1_i[pos1] = mixed_i;
-            b->dl1_q[pos1] = mixed_q;
+            b->dl1_i[pos1] = b->dl1_i[pos1 + sc->fir1_len] = mixed_i;
+            b->dl1_q[pos1] = b->dl1_q[pos1 + sc->fir1_len] = mixed_q;
             if (++b->dl1_count == sc->fir1_len * sc->dec1) b->dl1_count = 0;  /* wrap: keeps both moduli */
 
             if (b->dl1_count % sc->dec1 != 0) continue;
@@ -710,7 +716,7 @@ static int process_bin(ItilaSc *sc, ScBin *b, const double *i_full, const double
  * mixes by k0 FFT bins relative to blk_start, so a phase term makes the mix continuous from
  * block to block; the residual (under half an FFT bin) is mixed out at 12 kHz by the bin's
  * oscillator, after the mask, which is flat far beyond it. */
-static int process_bin_fft(ItilaSc *sc, ScBin *b, int slot, double *yr, double *yi)
+HOT_CLONES static int process_bin_fft(ItilaSc *sc, ScBin *b, int slot, double *yr, double *yi)
 {
     const double *xr = sc->ring_re[slot], *xi = sc->ring_im[slot];
     int N = sc->fN, Nd = sc->fNd;
