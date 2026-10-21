@@ -155,10 +155,18 @@ def pan_status(lines):
     return out
 
 
-def daxiq_users(streams, channel, me):
-    """Client handles other than `me` with a DAX-IQ stream on `channel`."""
-    return {st['client'] for st in streams.values()
-            if st.get('channel') == str(channel) and st.get('client') not in (None, me)}
+def daxiq_claims(streams, channel, me, sparkgap):
+    """DAX-IQ streams on `channel` from clients other than `me` that claim it: bound to a pan, or
+    another SparkGap copy's (`sparkgap`: its GUI handles).  A TCI server keeps an unbound stream on
+    every channel (Fred's 6700, 2026-10-20); the radio lets another client stream that channel too."""
+    return [st for st in streams.values()
+            if st.get('channel') == str(channel) and st.get('client') not in (None, me)
+            and (st.get('pan') or {st.get('client'), st.get('gui')} & sparkgap)]
+
+
+def daxiq_users(streams, channel, me, sparkgap):
+    """Client handles of the streams that claim `channel` (daxiq_claims)."""
+    return {st['client'] for st in daxiq_claims(streams, channel, me, sparkgap)}
 
 
 def radio_nickname(lines):
@@ -468,15 +476,15 @@ class FlexIQReceiver:
         num = lambda h: int(h, 16) if h else None   # handles compare as numbers, not text
         me = num(handle)
         station = {me} | {num(g[0]) for g in stations if g[2] == STATION_NAME and g[3] == self.station}
+        sparkgap = {num(g[0]) for g in stations if g[2] == STATION_NAME}
         streams = daxiq_streams(status)
         taken = {p: h for p, h in daxiq_holders(status, self.channel).items() if num(h) not in station}
-        users = daxiq_users(streams, self.channel, me)
-        if taken or users:
+        claims = daxiq_claims(streams, self.channel, me, sparkgap)
+        if taken or claims:
             if taken:
                 pan, h = sorted(taken.items())[0]
             else:
-                st = next(st for st in streams.values()
-                          if st.get('client') == min(users) and st.get('channel') == str(self.channel))
+                st = min(claims, key=lambda st: st['client'])
                 pan = f"0x{st['pan']:08x}" if st.get('pan') else "none"
                 h = f"0x{st.get('gui') or st['client']:08X}"
             who = next((f"{g[3]} ({g[2]})" for g in stations if num(g[0]) == num(h)), f"client {h}")
@@ -485,7 +493,7 @@ class FlexIQReceiver:
         # pans another client's stream feeds, or whose channel another client streams: another copy's
         chans = pan_status(status)
         busy = {st['pan'] for st in streams.values() if st.get('client') != me and st.get('pan')}
-        busy |= {p for p, c in chans.items() if c not in (None, '0') and daxiq_users(streams, c, me)}
+        busy |= {p for p, c in chans.items() if c not in (None, '0') and daxiq_users(streams, c, me, sparkgap)}
         pans = {p for p in pans if int(p, 16) not in busy}
         # saved pans nobody streams are ours to clear; a pan with no channel may be a copy still starting
         spare = {p for p in pans if chans.get(int(p, 16)) not in (None, '0')}
