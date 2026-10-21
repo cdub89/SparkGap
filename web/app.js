@@ -24,6 +24,11 @@ const LOCKOUT_S = 600;
 const DB_FLOOR = 4.0;
 const DB_TOP = 32.0;
 const TRACE_MIN_PX = 5;
+const PEAK_BINS = 2;  // zoomed in: a signal is drawn this many bins tall at its centre (a carrier's width),
+const PEAK_MIN_PX = 7;  // a trace zoomed out: TRACE_MIN_PX plus a carrier's spread
+const PEAK_MAX_PX = 12;  // kept from PEAK_MIN_PX to this: it neither shrinks nor balloons on zooming in
+const MIN_SPAN = 0.05;  // the deepest zoom: this fraction of the band
+const PEAK_FROM_PX = 1;  // from this many pixels a bin, peaks are drawn instead of stretched bins
 const FREQ_MATCH_KHZ = 0.15;
 const SEARCH_MAX = 8;
 const NO_FIT = 999.0;
@@ -381,7 +386,7 @@ class Instance {
     const v = Number(q);
     if (Number.isFinite(v) && /^[\d.]+$/.test(q)) {
       const khz = v < 100 ? v * 1000 : v;
-      return [{ call: "", khz, ago: "", spot: false, label: `${khz.toFixed(1)} kHz` }];
+      return [{ call: "", khz, ago: "", spot: false, label: `${khz.toFixed(2)} kHz` }];
     }
     const found = new Map();
     for (const [call, s] of this.spots) if (call.includes(q)) found.set(call, { call, khz: s.khz, utc: s.utc, spot: true });
@@ -665,7 +670,7 @@ class Waterfall {
   setView(lo, hi) {
     const inst = this.inst;
     if (inst && inst.nBins) {
-      const span = Math.min(Math.max(hi - lo, 2), inst.highKhz - inst.lowKhz);
+      const full = inst.highKhz - inst.lowKhz, span = Math.min(Math.max(hi - lo, full * MIN_SPAN), full);
       lo = Math.min(Math.max(lo, inst.lowKhz), inst.highKhz - span);
       hi = lo + span;
     }
@@ -675,7 +680,6 @@ class Waterfall {
     this.onview();
   }
 
-  zoom(factor, at) { this.setView(at - (at - this.lo) * factor, at + (this.hi - at) * factor); }
   pan(d) { this.setView(this.lo + d, this.hi + d); }
   khzAt(y) { return this.hi - y / this.canvas.clientHeight * (this.hi - this.lo); }
 
@@ -713,9 +717,13 @@ class Waterfall {
         b[y] = Math.min(Math.max(Math.ceil((fTop - inst.firstHz) / inst.hzPerBin), a[y] + 1), inst.nBins);
       }
     }
-    this.map = { interp: pxPerBin >= 1, a, b, frac, grow };
+    const peak = pxPerBin >= PEAK_FROM_PX;  // bin index of row y's centre: top - (y + 0.5) / pxPerBin
+    const top = (this.hi * 1000 - inst.firstHz) / inst.hzPerBin - 0.5;
+    const peakPx = Math.min(PEAK_MAX_PX, Math.max(PEAK_MIN_PX, Math.round(PEAK_BINS * pxPerBin)));
+    this.map = { interp: pxPerBin >= 1, a, b, frac, grow: peak ? 0 : grow, peak, top, pxPerBin, peakPx };
     this.v = new Float32Array(inst.nBins);
     this.wide = new Float32Array(inst.nBins);
+    this.pxCol = new Float32Array(h);
   }
 
   // ring column -> pixels (Uint32 RGBA) for one canvas column
@@ -736,6 +744,27 @@ class Waterfall {
       v = w;
     }
     const scale = 255 / (DB_TOP - DB_FLOOR), h = m.a.length;
+    if (m.peak) {  // as the console: the background without its signals, then each peak peakPx tall at its centre
+      const low = this.wide, col = this.pxCol;
+      for (let i = 0; i < n; i++) {
+        let x2 = v[i];
+        for (let k = 1; k <= 2; k++) {
+          if (i >= k && v[i - k] < x2) x2 = v[i - k];
+          if (i + k < n && v[i + k] < x2) x2 = v[i + k];
+        }
+        low[i] = x2;
+      }
+      for (let y = 0; y < h; y++) col[y] = low[m.a[y]] * (1 - m.frac[y]) + low[m.b[y]] * m.frac[y];
+      for (let i = 1; i < n - 1; i++) {
+        const a = v[i - 1], b = v[i], c = v[i + 1];
+        if (!(b >= a && b > c && b > DB_FLOOR)) continue;
+        const den = a - 2 * b + c, d = den < 0 ? Math.min(0.5, Math.max(-0.5, 0.5 * (a - c) / den)) : 0;
+        const yc = Math.round((m.top - (i + d)) * m.pxPerBin - 0.5);
+        for (let y = yc - (m.peakPx >> 1); y < yc - (m.peakPx >> 1) + m.peakPx; y++) if (y >= 0 && y < h && b > col[y]) col[y] = b;
+      }
+      for (let y = 0; y < h; y++) out[y * stride + x] = this.lut[Math.min(255, Math.max(0, (col[y] - DB_FLOOR) * scale)) | 0];
+      return;
+    }
     for (let y = 0; y < h; y++) {
       let px;
       if (m.interp) px = v[m.a[y]] * (1 - m.frac[y]) + v[m.b[y]] * m.frac[y];
@@ -1085,7 +1114,7 @@ function copyText(text) {
 function renderStatusPage() {
   const i = inst(), s = (i && i.status) || {}, h = (i && i.hello) || {}, run = h.run || {}, r = s.radio || {};
   const clock = s.clock_synced === true ? "NTP synchronised" : s.clock_synced === false ? "not synchronised" : "unknown";
-  $("statusFoot").innerHTML = !i || i.demo ? "" : `Build <b>${esc(h.build || "-")}</b>.  Clock <b>${clock}</b>.`;
+  $("statusFoot").innerHTML = !i || i.demo ? "" : `Server Build: <b>${esc(h.build || "-")}</b>.  Clock: <b>${clock}</b>.`;
   if (!i || i.demo) {
     $("statusHead").innerHTML = "";
     $("statusBody").innerHTML = '<div class="small muted">Status is shown for a connected SparkGap, not demo mode.</div>';
@@ -1237,10 +1266,10 @@ function renderTicks() {
   if (wf.hi <= wf.lo) return;
   ctx.font = "11px 'IBM Plex Mono', ui-monospace, monospace";
   ctx.textBaseline = "middle";
-  const every = wf.hi - wf.lo > 40 ? 10 : 5, step = wf.hi - wf.lo > 200 ? 5 : 1;
+  const span = wf.hi - wf.lo, every = span > 40 ? 10 : span > 10 ? 5 : 1, step = span > 200 ? 5 : 1;
   for (let k = Math.ceil(wf.lo / step) * step; k <= wf.hi; k += step) {
     const y = Math.round(yOf(k, h)) + 0.5, major = k % every === 0;
-    ctx.strokeStyle = cs.getPropertyValue(major ? "--muted" : "--line").trim();
+    ctx.strokeStyle = cs.getPropertyValue(major ? "--muted" : "--edge").trim();
     ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(major ? 10 : 6, y); ctx.stroke();
     if (major) { ctx.fillStyle = cs.getPropertyValue("--muted").trim(); ctx.fillText(String(k), 12, y); }
   }
@@ -1259,10 +1288,18 @@ function renderLadder() {
     const chip = document.createElement("div");
     chip.className = "chip" + (it.spot ? " spot" : "") + (it.call ? " call" : "") + (Math.abs(app.selectedKhz - it.khz) < 0.05 ? " sel" : "");
     chip.style.top = (y - 11) + "px";
-    chip.innerHTML = `<span class="cd"></span><span class="cc">${esc(it.call || it.khz.toFixed(1))}</span><span class="cw">${it.wpm ? Math.round(it.wpm) : ""}</span>`;
+    chip.innerHTML = `<span class="cd"></span><span class="cc">${esc(it.call || it.khz.toFixed(2))}</span><span class="cw">${it.wpm ? Math.round(it.wpm) : ""}</span>`;
     chip.onclick = () => pick(it.khz, it.call);
     box.appendChild(chip);
   }
+}
+
+// a zoom's fixed point: the picked frequency while it is on screen, so it stays where it is; else `at`
+function zoomAnchor(at) { return wf.sel > 0 && wf.sel >= wf.lo && wf.sel <= wf.hi ? wf.sel : at; }
+// zoom to a span of `span` kHz about zoomAnchor(at)
+function zoomTo(span, at) {
+  const a = zoomAnchor(at), f = (a - wf.lo) / Math.max(0.001, wf.hi - wf.lo);
+  wf.setView(a - f * span, a - f * span + span);
 }
 
 // the zoom step the view is at (index into ZOOM_STEPS), or -1 between steps
@@ -1278,6 +1315,7 @@ function renderView() {
   $("range").textContent = wf.hi > wf.lo ? `${wf.lo.toFixed(1)} – ${wf.hi.toFixed(1)} kHz` : "";
   const s = $("span");
   s.max = Math.max(3, full);
+  s.min = full * MIN_SPAN;
   if (document.activeElement !== s) s.value = span;
   $("spanText").textContent = span > 0 ? span.toFixed(0) + " kHz" : "";
   // the scroll bar covers the receiver's span; its thumb is the part on screen
@@ -1306,11 +1344,11 @@ function readings(r, mode) {
 
 function renderDetail() {
   const i = inst(), d = i && app.selectedKhz > 0 ? i.detail : null;
-  $("dTitle").textContent = d ? d.call || d.khz.toFixed(1) : "Pick a signal";
+  $("dTitle").textContent = d ? d.call || d.khz.toFixed(2) : "Pick a signal";
   const pill = $("dPill");
   pill.hidden = !d;
   if (d) { pill.textContent = d.spotted ? "SPOTTED" : "HEARD"; pill.className = "pill" + (d.spotted ? " spot" : ""); }
-  $("dKhz").textContent = d ? (d.spotKhz !== null ? d.spotKhz.toFixed(1) : d.khz.toFixed(2)) : "-";  // a spot as spotted
+  $("dKhz").textContent = d ? d.khz.toFixed(2) : "-";
   $("dWpm").textContent = d && d.wpm ? Math.round(d.wpm) : "-";
   $("dSnr").textContent = d && d.snr ? Math.round(d.snr) + " dB" : "-";
   $("dNote").hidden = !(d && d.note);
@@ -1333,7 +1371,7 @@ function renderStatus() {
   $("rec").title = rec ? `Recording IQ to ${rec.file}` : "";
   const items = [["Load", s.cpu !== undefined && s.cpu !== null ? s.cpu + "%" : "-"], ["Memory", s.rss_mb ? s.rss_mb + " MB" : "-"],
     ["Bins", s.bins !== undefined ? s.bins : "-"], ["Consoles", s.clients ? s.clients.length : "-"],
-    ["Decoder", i && i.hello.decoder ? i.hello.decoder : "-"], ["Build", i && i.hello.build ? i.hello.build : "-"],
+    ["Decoder", i && i.hello.decoder ? i.hello.decoder : "-"], ["Server Build", i && i.hello.build ? i.hello.build : "-"],
     ["Up", `${Math.floor(up / 3600)}h ${Math.floor(up % 3600 / 60)}m`]];
   $("statusbar").innerHTML = items.map(([k, v]) => `<span><span class="k">${k}</span><span class="v">${esc(String(v))}</span></span>`).join("");
 }
@@ -1359,7 +1397,6 @@ function renderSettings() {
   seg($("sRule"), ["off", "on"], c.spot_rule === "repeat" ? 1 : c.spot_rule ? 0 : -1);
   seg($("sValid"), v, v.indexOf(c.spot_validation || (c.spot_rule ? "off" : "")));
   seg($("sCalls"), ["SCP", "RBN", "RBN + SKCC"], ["scp", "rbn", "rbn+skcc"].indexOf(c.spot_validation_calls));
-  $("build").textContent = (inst() && inst().hello.build) || "";  // the server's commit, which is this page's too
   for (const id of ["lValid", "sValid", "lCalls", "sCalls"]) $(id).hidden = !("spot_validation" in c);  // a SparkGap without call validation
 }
 
@@ -1485,7 +1522,7 @@ function bindInput() {
     list.innerHTML = app.matches.map((m, n) => `<div class="match${n ? "" : " first"}" data-n="${n}">`
       + `<span class="cd" style="width:6px;height:6px;border-radius:50%;border:1px solid var(${m.spot ? "--accent" : "--faint"});background:${m.spot ? "var(--accent)" : "transparent"}"></span>`
       + `<span class="mono" style="width:90px;font-weight:600">${esc(m.label)}</span>`
-      + `<span class="mono muted" style="width:80px">${m.call ? m.khz.toFixed(1) : ""}</span>`
+      + `<span class="mono muted" style="width:80px">${m.call ? m.khz.toFixed(2) : ""}</span>`
       + `<span class="ago">${m.ago ? m.ago + " ago" : "go to"}</span></div>`).join("");
     list.hidden = !app.matches.length || document.activeElement !== search;
   };
@@ -1516,7 +1553,7 @@ function bindInput() {
     if (pointers.size === 1) drag = { y: e.clientY, lo: wf.lo, moved: false };
     else if (pointers.size === 2) {
       const ys = [...pointers.values()];
-      drag = { pinch: Math.abs(ys[0] - ys[1]) || 1, lo: wf.lo, hi: wf.hi, at: wf.khzAt((ys[0] + ys[1]) / 2 - r.top), moved: true };
+      drag = { pinch: Math.abs(ys[0] - ys[1]) || 1, lo: wf.lo, hi: wf.hi, at: zoomAnchor(wf.khzAt((ys[0] + ys[1]) / 2 - r.top)), moved: true };
     }
   });
   box.addEventListener("pointermove", e => {
@@ -1548,7 +1585,7 @@ function bindInput() {
   box.addEventListener("wheel", e => {
     e.preventDefault();
     const h = box.clientHeight, span = wf.hi - wf.lo, px = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
-    if (e.ctrlKey) wf.zoom(Math.pow(0.8, -px / 100), wf.khzAt(e.clientY - box.getBoundingClientRect().top));
+    if (e.ctrlKey) zoomTo(span * Math.pow(0.8, -px / 100), wf.khzAt(e.clientY - box.getBoundingClientRect().top));
     else wf.pan(-px / h * span);
   }, { passive: false });
 
@@ -1561,13 +1598,13 @@ function bindInput() {
     if (Math.abs(hi - wf.hi) >= full / fs.scrollHeight) wf.setView(hi - span, hi);
   });
 
-  $("span").oninput = e => { const mid = (wf.lo + wf.hi) / 2, v = Number(e.target.value); wf.setView(mid - v / 2, mid + v / 2); };
-  $("full").onclick = () => {  // the next step: Full, Half, Quarter of the band around the view's centre
+  $("span").oninput = e => zoomTo(Number(e.target.value), (wf.lo + wf.hi) / 2);
+  $("full").onclick = () => {  // the next step: Full, Half, Quarter of the band, about the pick or the view's centre
     const i = inst();
     if (!i || !i.nBins) return;
     const k = zoomStep(i), d = ZOOM_STEPS[k < 0 ? 0 : (k + 1) % ZOOM_STEPS.length][1];
-    const span = (i.highKhz - i.lowKhz) / d, mid = d === 1 ? (i.lowKhz + i.highKhz) / 2 : (wf.lo + wf.hi) / 2;
-    wf.setView(mid - span / 2, mid + span / 2);
+    if (d === 1) wf.setView(i.lowKhz, i.highKhz);
+    else zoomTo((i.highKhz - i.lowKhz) / d, (wf.lo + wf.hi) / 2);
   };
   window.addEventListener("resize", () => { wf.dirty = true; renderView(); });
 }
