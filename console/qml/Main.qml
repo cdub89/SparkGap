@@ -35,6 +35,11 @@ ApplicationWindow {
         if (visibility === Window.Windowed) { geom.x = x; geom.y = y; geom.width = width; geom.height = height }
     }
     color: t.bg
+    // the window's edge: Windows draws its frame too faint to see on a dark desktop
+    Rectangle {
+        anchors.fill: parent; z: 1000; color: "transparent"; border.color: t.edge
+        visible: win.visibility === Window.Windowed
+    }
 
     property var inst: console_.current
     readonly property string helpUrl: "https://github.com/hotairfred/SparkGap/blob/main/docs/CONSOLE.md"  // the guide, from Settings
@@ -86,12 +91,14 @@ ApplicationWindow {
         readonly property color surface: win.dark ? "#11171d" : "#e9ecef"
         readonly property color sunken:  win.dark ? "#0d1318" : "#dde2e6"
         readonly property color line:    win.dark ? "#1f2a33" : "#c4ccd2"
+        // control edges (inputs, band picker, switches): 3:1 against every background (WCAG 2.1 1.4.11)
+        readonly property color edge:    win.dark ? "#4c677d" : "#6d808f"
         readonly property color fg:      win.dark ? "#dbe4ea" : "#16202a"
         readonly property color muted:   win.dark ? "#8796a2" : "#56636e"
-        readonly property color faint:   win.dark ? "#5c6a75" : "#76838e"
-        readonly property color accent:  win.dark ? "#f3a640" : "#b55f00"
-        readonly property color good:    win.dark ? "#4fc28a" : "#1f7a4d"
-        readonly property color bad:     win.dark ? "#ff6b5a" : "#c0392b"
+        readonly property color faint:   win.dark ? "#71828f" : "#59636c"  // text: 4.5:1 (WCAG 2.1 1.4.3)
+        readonly property color accent:  win.dark ? "#f3a640" : "#974f00"
+        readonly property color good:    win.dark ? "#4fc28a" : "#1c6f46"
+        readonly property color bad:     win.dark ? "#ff6b5a" : "#b23528"
         // the waterfall keeps the dark palette in both themes
         readonly property var wf: ["#070b0f", "#10263a", "#1f5fa8", "#19b3c4", "#4cc76a", "#f2c94c", "#ff6b3d"]
         readonly property color wfMark: "#f3a640"  // bubbles and the selection line on the waterfall
@@ -117,7 +124,7 @@ ApplicationWindow {
         property bool readOnly: false
         signal picked(int index)
         implicitWidth: row.implicitWidth + 4; implicitHeight: 30
-        radius: 8; color: t.sunken; border.color: t.line
+        radius: 8; color: t.sunken; border.color: t.edge
         Row {
             id: row; anchors.centerIn: parent; spacing: 0
             Repeater {
@@ -127,6 +134,7 @@ ApplicationWindow {
                     required property var modelData
                     width: lbl.implicitWidth + 24; height: 26; radius: 6
                     color: index === seg.current ? t.surface : "transparent"
+                    border.color: index === seg.current ? t.edge : "transparent"  // the pick: 3:1, not fill alone
                     Text {
                         id: lbl; anchors.centerIn: parent; text: modelData
                         color: index === seg.current ? t.fg : t.muted; font.family: t.sans; font.pixelSize: 13
@@ -221,7 +229,7 @@ ApplicationWindow {
                     if (c.n !== console_.currentIndex) console_.setCurrent(c.n)
                     if (c.band !== inst.band) win.setBand(c.band)
                 }
-                background: Rectangle { radius: 8; color: t.sunken; border.color: bandSeg.activeFocus ? t.accent : t.line }
+                background: Rectangle { radius: 8; color: t.sunken; border.color: bandSeg.activeFocus ? t.accent : t.edge }
                 contentItem: Text {
                     leftPadding: 10; rightPadding: 24; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
                     text: bandSeg.displayText; color: t.fg; font.family: t.sans; font.pixelSize: 13
@@ -232,7 +240,7 @@ ApplicationWindow {
                     required property var modelData
                     width: bandSeg.width; height: 30
                     contentItem: Text { text: modelData; color: t.fg; font.family: t.sans; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter }
-                    background: Rectangle { color: highlighted ? t.sunken : t.surface }
+                    background: Rectangle { color: highlighted ? t.sunken : t.surface; border.color: highlighted ? t.accent : "transparent" }
                     highlighted: bandSeg.highlightedIndex === index
                 }
                 popup.background: Rectangle { radius: 8; color: t.surface; border.color: t.line }
@@ -245,7 +253,7 @@ ApplicationWindow {
                 placeholderTextColor: t.faint; color: t.fg
                 font.family: t.mono; font.features: t.zero; font.pixelSize: 12
                 leftPadding: 8; topPadding: 0; bottomPadding: 0; verticalAlignment: TextInput.AlignVCenter
-                background: Rectangle { radius: 8; color: t.sunken; border.color: search.activeFocus ? t.accent : t.line }
+                background: Rectangle { radius: 8; color: t.sunken; border.color: search.activeFocus ? t.accent : t.edge }
                 property var matches: []
                 onTextChanged: matches = inst ? inst.search(text) : []
                 onAccepted: if (matches.length) win.goTo(matches[0])
@@ -292,7 +300,7 @@ ApplicationWindow {
             }
             Rectangle {
                 id: gear
-                width: 32; height: 32; radius: 8; color: settings.visible ? t.sunken : t.surface; border.color: t.line
+                width: 32; height: 32; radius: 8; color: settings.visible ? t.sunken : t.surface; border.color: settings.visible ? t.accent : t.line
                 Text { anchors.centerIn: parent; text: "⚙"; color: t.fg; font.pixelSize: 23 }
                 MouseArea {
                     anchors.fill: parent; cursorShape: Qt.PointingHandCursor; hoverEnabled: true
@@ -316,7 +324,7 @@ ApplicationWindow {
                 }
             }
             Rectangle {
-                width: 32; height: 32; radius: 8; color: statusPop.visible ? t.sunken : t.surface; border.color: t.line
+                width: 32; height: 32; radius: 8; color: statusPop.visible ? t.sunken : t.surface; border.color: statusPop.visible ? t.accent : t.line
                 Text { anchors.centerIn: parent; text: "ⓘ"; color: t.fg; font.pixelSize: 19 }
                 MouseArea {
                     anchors.fill: parent; cursorShape: Qt.PointingHandCursor; hoverEnabled: true
@@ -711,27 +719,38 @@ ApplicationWindow {
 
         }
 
-        // ---- status bar ----
-        Row {
-            spacing: 22
-            Repeater {
-                model: {
-                    const s = inst ? inst.status : {}
-                    const up = s.uptime_s || 0
-                    return [["Load", s.cpu !== undefined && s.cpu !== null ? s.cpu + "%" : "-"],
-                            ["Memory", s.rss_mb ? s.rss_mb + " MB" : "-"],
-                            ["Bins", s.bins !== undefined ? s.bins : "-"],
-                            ["Consoles", s.clients ? s.clients.length : "-"],
-                            ["Decoder", inst && inst.info.decoder ? inst.info.decoder : "-"],
-                            ["Build", inst && inst.info.build ? inst.info.build : "-"],
-                            ["Up", Math.floor(up / 3600) + "h " + Math.floor(up % 3600 / 60) + "m"]]
+        // ---- status bar: the server's readings, Exit on the right ----
+        RowLayout {
+            Layout.fillWidth: true
+            Row {
+                spacing: 22
+                Repeater {
+                    model: {
+                        const s = inst ? inst.status : {}
+                        const up = s.uptime_s || 0
+                        return [["Load", s.cpu !== undefined && s.cpu !== null ? s.cpu + "%" : "-"],
+                                ["Memory", s.rss_mb ? s.rss_mb + " MB" : "-"],
+                                ["Bins", s.bins !== undefined ? s.bins : "-"],
+                                ["Consoles", s.clients ? s.clients.length : "-"],
+                                ["Decoder", inst && inst.info.decoder ? inst.info.decoder : "-"],
+                                ["Build", inst && inst.info.build ? inst.info.build : "-"],
+                                ["Up", Math.floor(up / 3600) + "h " + Math.floor(up % 3600 / 60) + "m"]]
+                    }
+                    delegate: Row {
+                        required property var modelData
+                        spacing: 5
+                        Text { text: modelData[0]; color: t.muted; font.pixelSize: 12 }
+                        Text { text: modelData[1]; color: t.fg; font.family: t.mono; font.features: t.zero; font.pixelSize: 12 }
+                    }
                 }
-                delegate: Row {
-                    required property var modelData
-                    spacing: 5
-                    Text { text: modelData[0]; color: t.muted; font.pixelSize: 12 }
-                    Text { text: modelData[1]; color: t.fg; font.family: t.mono; font.features: t.zero; font.pixelSize: 12 }
-                }
+            }
+            Item { Layout.fillWidth: true }
+            Rectangle {  // same as closing the window
+                implicitWidth: exitTxt.implicitWidth + 24; implicitHeight: 24; radius: 6
+                color: exitHov.hovered ? t.sunken : "transparent"; border.color: t.edge
+                Text { id: exitTxt; anchors.centerIn: parent; text: "Exit"; color: t.fg; font.pixelSize: 12 }
+                HoverHandler { id: exitHov; cursorShape: Qt.PointingHandCursor }
+                TapHandler { onTapped: win.close() }
             }
         }
     }
@@ -1056,7 +1075,7 @@ ApplicationWindow {
                         placeholderTextColor: t.faint; color: t.fg
                         font.family: t.mono; font.features: t.zero; font.pixelSize: 12
                         leftPadding: 8; topPadding: 0; bottomPadding: 0; verticalAlignment: TextInput.AlignVCenter
-                        background: Rectangle { radius: 8; color: t.sunken; border.color: parent.activeFocus ? t.accent : t.line }
+                        background: Rectangle { radius: 8; color: t.sunken; border.color: parent.activeFocus ? t.accent : t.edge }
                     }
                     Setting {
                         label: "CONNECTIONS"
