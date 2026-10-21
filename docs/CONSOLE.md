@@ -69,7 +69,7 @@ button steps through Full, Half and Quarter of the span), **Span** is the range
 on screen, and **SNR** is the waterfall's colour scale.
 
 **Bottom bar**: SparkGap's load (percent of one core, a 60 s average), memory,
-open decoder bins, connected consoles, decoder, build and uptime.
+open decoder bins, connected consoles, decoder, server build and uptime.
 
 ## The status page
 
@@ -89,7 +89,8 @@ open decoder bins, connected consoles, decoder, build and uptime.
   host name (from reverse DNS) with its address and connect time.
 - **PROBLEMS**: errors since start, with the last five; warnings are in the
   log only.
-- **Footer**: SparkGap's build and whether its clock is NTP synchronised.
+- **Footer**: the server build, the console build (desktop console only), and
+  whether SparkGap's clock is NTP synchronised.
 
 Selecting text holds the page still until the selection is cleared, so it can
 be copied.
@@ -105,7 +106,7 @@ be copied.
   one to show it; Edit or ✕ to change or remove it.
 - **SPOT RULE, VALIDATION, CALL SOURCE**: read-only, from the selected server's
   config.
-- Help, a link to this guide, and the console's build, at the bottom.
+- Help, a link to this guide, at the bottom.
 
 The desktop console keeps its window size, position and theme between runs. A
 browser keeps the server list, theme and demo setting for each address the page
@@ -204,8 +205,8 @@ prints a line a step and keeps the tools' full output in `build.log`. It makes:
   (210 MB unpacked).
 
 `<build>` is `git describe --always --dirty`, with `-dirty` when the tree had
-uncommitted changes; the build writes it to `build.txt` in both apps, and
-Settings shows it.
+uncommitted changes; the build writes it to `build.txt` in both apps, and the
+Status footer shows it as the console build.
 
 **Windows app.** `windows_zip.sh` runs nothing Windows here. It unpacks the
 official Windows embeddable Python (checked against python.org's SHA-256),

@@ -385,3 +385,36 @@ def test_no_answer_is_said_plainly() -> None:
     app.exec()
     assert inst.error == "no answer"
     inst.close()
+
+
+def _trace_rows(span_khz: float, left: float, right: float) -> list[int]:
+    """Pixel rows drawn above the background for one CW carrier at bin 100 (46.875 Hz bins, as at
+    96 kHz), its neighbours at the given dB, in a 600 px panel showing span_khz round it."""
+    from types import SimpleNamespace
+
+    import numpy as np
+    from backend import DB_FLOOR, Waterfall
+
+    inst: Any = SimpleNamespace(hz_per_bin=46.875, first_hz=0.0, n_bins=200)
+    centre_khz = (100 + 0.5) * 46.875 / 1000
+    half = span_khz / 2
+    w: Any = SimpleNamespace(_lo=centre_khz - half, _hi=centre_khz + half, _map=None)
+    Waterfall._build_map(w, inst, 600)
+    v = np.zeros((200, 1), dtype=np.float32)
+    v[99, 0], v[100, 0], v[101, 0] = left, 30.0, right
+    return [int(y) for y in np.nonzero(Waterfall._peaks(w, v)[:, 0] > DB_FLOOR)[0]]
+
+
+def test_a_cw_trace_keeps_its_width_when_zoomed_in() -> None:
+    wide, narrow = _trace_rows(5.0, 24.0, 24.0), _trace_rows(2.5, 24.0, 24.0)
+    from backend import PEAK_MAX_PX, PEAK_MIN_PX, peak_px
+
+    assert len(wide) == peak_px(600 / (5_000 / 46.875)) and len(narrow) == PEAK_MAX_PX
+    assert PEAK_MIN_PX <= len(wide) <= len(narrow) <= PEAK_MAX_PX  # never shrinks, never balloons
+    assert abs((wide[0] + wide[-1]) / 2 - 299.5) <= 1  # at the carrier, the panel's middle
+
+
+def test_a_cw_trace_sits_at_its_frequency_not_its_bins() -> None:
+    # a stronger upper neighbour puts the carrier above the bin centre: higher, so nearer the top
+    rows = _trace_rows(5.0, 20.0, 28.0)
+    assert (rows[0] + rows[-1]) / 2 < 299.5 - 1

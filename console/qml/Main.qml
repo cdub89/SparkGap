@@ -46,6 +46,15 @@ ApplicationWindow {
     property bool codeShown: false  // Status shows this console's join code in clear
     TextEdit { id: codeClip; visible: false }  // clipboard for the join code
     property string themeOverride: "dark"  // dark by default; the toggle switches it
+    // a zoom's fixed point: the picked frequency while it is on screen, so it stays where it is; else `at`
+    function zoomAnchor(at) {
+        return selectedKhz > 0 && selectedKhz >= wf.lowKhz && selectedKhz <= wf.highKhz ? selectedKhz : at
+    }
+    // zoom to a span of `span` kHz about zoomAnchor(at)
+    function zoomTo(span, at) {
+        const a = zoomAnchor(at), f = (a - wf.lowKhz) / Math.max(0.001, wf.highKhz - wf.lowKhz)
+        wf.setView(a - f * span, a - f * span + span)
+    }
     // the zoom step the view is at (0 Full, 1 Half, 2 Quarter), or -1 between steps (a view within 5% of a step is at it)
     function zoomStep() {
         if (!inst) return 0
@@ -354,7 +363,8 @@ ApplicationWindow {
 
                         function yOf(khz) { return (wf.highKhz - khz) / Math.max(0.001, wf.highKhz - wf.lowKhz) * height }
 
-                        // frequency ticks, one per kHz (every 5 on spans over 200 kHz), labels every 5 or 10
+                        // frequency ticks, one per kHz (every 5 on spans over 200 kHz), labels every 10, 5 or (10 kHz
+                        // and under) every kHz
                         Repeater {
                             id: ticks
                             readonly property int step: wf.highKhz - wf.lowKhz > 200 ? 5 : 1
@@ -363,9 +373,10 @@ ApplicationWindow {
                             delegate: Item {
                                 required property int index
                                 readonly property int khz: ticks.first + index * ticks.step
-                                readonly property bool major: (wf.highKhz - wf.lowKhz) > 40 ? khz % 10 === 0 : khz % 5 === 0
+                                readonly property real span: wf.highKhz - wf.lowKhz
+                                readonly property bool major: span > 40 ? khz % 10 === 0 : span > 10 ? khz % 5 === 0 : true
                                 y: ladder.yOf(khz); width: ladder.width
-                                Rectangle { width: major ? 10 : 6; height: 1; color: major ? t.muted : t.line }
+                                Rectangle { width: major ? 10 : 6; height: 1; color: major ? t.muted : t.edge }
                                 Text {
                                     visible: major; x: 12; y: -height / 2; text: khz
                                     color: t.muted; font.family: t.mono; font.features: t.zero; font.pixelSize: 11
@@ -499,7 +510,7 @@ ApplicationWindow {
                             onWheel: (ev) => {
                                 const khz = wf.highKhz - ev.y / wf.height * (wf.highKhz - wf.lowKhz)
                                 const px = ev.pixelDelta.y !== 0 ? ev.pixelDelta.y : ev.angleDelta.y / 120 * 100  // a notch is 100 px
-                                wf.zoom(Math.pow(0.8, px / 100), khz)
+                                win.zoomTo((wf.highKhz - wf.lowKhz) * Math.pow(0.8, px / 100), khz)
                             }
                         }
                         // pinch on a touch screen or touchpad zooms about the fingers
@@ -510,7 +521,7 @@ ApplicationWindow {
                             property real at: 0
                             onActiveChanged: if (active) {
                                 lo = wf.lowKhz; hi = wf.highKhz
-                                at = wf.highKhz - centroid.position.y / wf.height * (wf.highKhz - wf.lowKhz)
+                                at = win.zoomAnchor(wf.highKhz - centroid.position.y / wf.height * (wf.highKhz - wf.lowKhz))
                             }
                             onActiveScaleChanged: if (active) wf.setView(at - (at - lo) / activeScale, at + (hi - at) / activeScale)
                         }
@@ -633,11 +644,10 @@ ApplicationWindow {
                                     id: spanSlider
                                     Layout.preferredWidth: 170
                                     leftPadding: 0  // starts on the column's left edge, with Span and SNR
-                                    from: 2; to: Math.max(3, fscroll.full); stepSize: 0
+                                    from: fscroll.full * 0.05; to: Math.max(3, fscroll.full); stepSize: 0  // 5%: the deepest zoom
                                     Binding on value { when: !spanSlider.pressed; value: fscroll.span }
                                     onMoved: {
-                                        const mid = (wf.lowKhz + wf.highKhz) / 2
-                                        wf.setView(mid - value / 2, mid + value / 2)
+                                        win.zoomTo(value, (wf.lowKhz + wf.highKhz) / 2)
                                     }
                                     background: Rectangle {
                                         x: spanSlider.leftPadding; y: spanSlider.topPadding + spanSlider.availableHeight / 2 - 2
@@ -659,12 +669,12 @@ ApplicationWindow {
                                                        : Math.round(100 * (wf.highKhz - wf.lowKhz) / Math.max(0.001, inst.highKhz - inst.lowKhz)) + "%" } }
                                     HoverHandler { id: fullHov; cursorShape: Qt.PointingHandCursor }
                                     TapHandler {
-                                        onTapped: {  // the next step: Full, Half, Quarter of the band around the view's centre
+                                        onTapped: {  // the next step: Full, Half, Quarter of the band, about the pick or the view's centre
                                             if (!inst) return
                                             const k = win.zoomStep(), d = [1, 2, 4][k < 0 ? 0 : (k + 1) % 3]
                                             const span = (inst.highKhz - inst.lowKhz) / d
-                                            const mid = d === 1 ? (inst.lowKhz + inst.highKhz) / 2 : (wf.lowKhz + wf.highKhz) / 2
-                                            wf.setView(mid - span / 2, mid + span / 2)
+                                            if (d === 1) wf.setView(inst.lowKhz, inst.highKhz)
+                                            else win.zoomTo(span, (wf.lowKhz + wf.highKhz) / 2)
                                         }
                                     }
                                 }
@@ -733,7 +743,7 @@ ApplicationWindow {
                                 ["Bins", s.bins !== undefined ? s.bins : "-"],
                                 ["Consoles", s.clients ? s.clients.length : "-"],
                                 ["Decoder", inst && inst.info.decoder ? inst.info.decoder : "-"],
-                                ["Build", inst && inst.info.build ? inst.info.build : "-"],
+                                ["Server Build", inst && inst.info.build ? inst.info.build : "-"],
                                 ["Up", Math.floor(up / 3600) + "h " + Math.floor(up % 3600 / 60) + "m"]]
                     }
                     delegate: Row {
@@ -759,7 +769,8 @@ ApplicationWindow {
     function statusSections() {
         // { head, live, tiles: [{k, v, sub, bad}], cards: [{title, wide, rows: [{k, v, sub, mono, bad, level}]}] }; empty in demo
         const i = inst, s = (i && i.status) || {}, h = (i && i.info) || {}, run = h.run || {}, r = s.radio || {}
-        if (!i || i.demo) return { head: "", live: false, health: "ok", issues: [], tiles: [], cards: [] }
+        const consoleBuild = "Console Build: <b>" + build_ + "</b>"
+        if (!i || i.demo) return { head: "", live: false, health: "ok", issues: [], tiles: [], cards: [], foot: consoleBuild + "." }
         const code = console_.feedAt(console_.currentIndex).token || ""
         const dash = v => v === null || v === undefined || v === "" ? "-" : String(v)
         const num = v => v === null || v === undefined ? "-" : Number(v).toLocaleString(Qt.locale("en_US"), "f", 0)
@@ -831,7 +842,7 @@ ApplicationWindow {
         const tag = (text, lv) => ({ text: text, lv: lv })
         const clock = s.clock_synced === true ? "NTP synchronised" : s.clock_synced === false ? "not synchronised" : "unknown"
         return { head: i.station || "", state: r.state ? String(r.state).toUpperCase() : "", live: live,
-                 foot: "Build <b>" + (h.build || "-") + "</b>.  Clock <b>" + clock + "</b>.",
+                 foot: "Server Build: <b>" + (h.build || "-") + "</b>.  " + consoleBuild + ".  Clock: <b>" + clock + "</b>.",
                  health: worst, issues: issues.length ? issues : [{ lv: "ok", t: "Healthy: radio live, decoding keeping up, no errors" }],
                  tiles: tiles,
                  cards: [{ title: "RADIO", wide: false, rows: radio,
@@ -1185,7 +1196,6 @@ ApplicationWindow {
                     HoverHandler { cursorShape: Qt.PointingHandCursor }
                     TapHandler { onTapped: Qt.openUrlExternally(win.helpUrl) }
                 }
-                Text { text: build_; color: t.faint; font.family: t.mono; font.features: t.zero; font.pixelSize: 11 }
                 Item { Layout.fillWidth: true }
                 Rectangle {
                     width: closeTxt.implicitWidth + 28; height: 30; radius: 8

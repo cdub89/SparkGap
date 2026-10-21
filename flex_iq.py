@@ -46,6 +46,9 @@ STATION_NAME = 'SparkGap'   # shown in SmartSDR's station list (Multi-Flex), wit
 STALL_S = 10                # no DAX-IQ packet for this long: set the radio up again
 RETRY_S = 30                # after a reconnect: time for the new stream to start
 HALT_WINDOW_S = 600         # a second loss within this long stops SparkGap: no reconnect loops on the radio
+TX_STATES = ('PTT_REQUESTED', 'TRANSMITTING', 'UNKEY_REQUESTED')  # the radio's interlock while keyed
+TX_HOLD_S = 0.15            # after key-up: the DAX-IQ of the transmission arrives after the status line
+TX_SPANS_KEPT = 64
 
 
 def owned_objects(lines, handle):
@@ -206,6 +209,11 @@ def utc_hms(t):
     return time.strftime('%H:%M:%SZ', time.gmtime(t)) if t else 'none since connecting'
 
 
+def tx_states(lines):
+    """The radio's interlock states in status lines (S0|interlock ... state=TRANSMITTING), in order."""
+    return [m.group(1) for l in lines for m in [re.search(r'\|interlock .*\bstate=([A-Z_]+)', l)] if m]
+
+
 def ptt_ours(lines):
     """Status lines in which the radio gives a SparkGap station the key and PTT jacks."""
     return [l for l in lines if f'program={STATION_NAME} ' in l
@@ -289,6 +297,8 @@ class FlexIQReceiver:
         self._lock = threading.Lock()   # stop() waits for a reconnect in progress
         self._ptt_warned = False
         self.others = []          # other stations on the radio at the last connect
+        self._tx_since = None     # arrival time of the key-down in progress
+        self._tx_spans = []       # (key-down, key-up) arrival times, newest last
 
     # -- TCP control channel -------------------------------------------------
 
@@ -374,6 +384,7 @@ class FlexIQReceiver:
         self._sent = {}
         self._handle = ''
         self._ptt_warned = False
+        self._tx_since = None
         self.attempts += 1
         log.info("[Flex] Connection attempt %d to %s:%d (%s)", self.attempts, self.ip, self.control_port,
                  "reconnect: %s" % why if why else "first start")
@@ -466,6 +477,7 @@ class FlexIQReceiver:
                 self.others.append(f"{name} ({m.group(2)})")
         status = (self._cmd("sub pan all", settle=0.5) + self._cmd("sub slice all", settle=0.5)
                   + self._cmd("sub daxiq all", settle=0.5))
+        self._report("transmit state for the GUI", self._cmd("sub tx all", settle=0.3))  # key-down: an empty spectrum
         slices, pans = owned_objects(status, handle)
         if not pans:
             status += self._drain(1.0)     # the default pan's status can lag
@@ -642,6 +654,8 @@ class FlexIQReceiver:
         lines = [l.decode('utf-8', errors='replace') for l in lines]
         for line in lines:
             self._log_reply(line)
+        for state in tx_states(lines):
+            self._note_tx(state, time.time())
         for line in clients_gone(lines):
             log.info("[Flex] Radio reports: %s", line.strip()[:200])
         if ptt_ours(lines) and not self._ptt_warned:
@@ -649,6 +663,23 @@ class FlexIQReceiver:
             log.warning("[Flex] The radio's key and PTT jacks now follow the SparkGap station, "
                         "not the operator's: set local PTT in SmartSDR")
         return True
+
+    def _note_tx(self, state, now):
+        """Key-down and key-up times from the interlock state, for the GUI's spectrum."""
+        if state in TX_STATES:
+            if self._tx_since is None:
+                self._tx_since = now
+        elif self._tx_since is not None:
+            self._tx_spans = (self._tx_spans + [(self._tx_since, now)])[-TX_SPANS_KEPT:]
+            self._tx_since = None
+
+    def transmitting_at(self, t):
+        """Whether the radio was keyed at time t (seconds since the epoch, as the IQ arrived), with
+        TX_HOLD_S after each key-up: the spectrum shows those rows empty instead of the transmitter."""
+        since = self._tx_since
+        if since is not None and t >= since:
+            return True
+        return any(a <= t <= b + TX_HOLD_S for a, b in reversed(self._tx_spans))
 
     def _restart(self, why, alive):
         """Drop the connection and set the radio up once more; a second loss within

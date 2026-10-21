@@ -319,7 +319,7 @@ def test_a_channel_a_bound_copy_streams_names_its_station_and_pan(monkeypatch: M
 def test_our_station_pan_saved_on_our_channel_is_taken_back(monkeypatch: Monkey) -> None:
     # X, 2026-10-20 11:19Z: the radio restored the station's pan on channel 3 with nobody streaming it
     sent = _setup_to_pan(monkeypatch, 3, [MAESTRO, LAKE_GUI], LAKE_PANS)
-    assert "display pan create x=1 y=1" not in sent and sent[-1] == "sub daxiq all"
+    assert "display pan create x=1 y=1" not in sent and sent[-1] == "sub tx all"
 
 
 def test_a_channel_this_client_holds_is_ours(monkeypatch: Monkey) -> None:
@@ -388,7 +388,7 @@ def test_only_a_bound_stream_or_a_sparkgap_copys_claims_a_channel() -> None:
 def test_a_channel_another_program_streams_unbound_goes_ahead(monkeypatch: Monkey) -> None:
     # the radio let a copy stream channel 3 next to the TCI server's unbound stream for 30 min (Fred, 10-20)
     sent = _setup_to_pan(monkeypatch, 3, [AETHER_GUI, LAKE_GUI], LAKE_PANS + AETHER_TCI)
-    assert "display pan create x=1 y=1" not in sent and sent[-1] == "sub daxiq all"   # saved pan taken back
+    assert "display pan create x=1 y=1" not in sent and sent[-1] == "sub tx all"   # saved pan taken back
 
 
 def test_a_channel_another_program_binds_is_refused(monkeypatch: Monkey) -> None:
@@ -481,3 +481,27 @@ def test_the_owner_leaves_pans_other_copies_stream(monkeypatch: Monkey) -> None:
         rx._setup()
     assert rx._pan_id == 0x4000_0002 and rx._slice_id == 2    # its own saved pan back
     assert [c for c in sent if "remove" in c] == ["display pan remove 0x40000003"]   # its slice goes with it
+
+
+TX_LINES = [  # Lakehouse 6600, 2026-10-21 17:45:31Z: VVV on the radio's own keyer (break-in)
+    "S0|interlock tx_client_handle=0x3B49B6BD state=PTT_REQUESTED reason= source=HWCW",
+    "S0|interlock tx_client_handle=0x3B49B6BD state=TRANSMITTING reason= source=HWCW",
+    "S3B49B6BD|interlock acc_txreq_enable=0 rca_txreq_enable=0 acc_tx_enabled=1 tx1_enabled=1",
+    "S0|interlock tx_client_handle=0x00000000 state=UNKEY_REQUESTED reason= source=",
+    "S0|interlock tx_client_handle=0x00000000 state=READY reason= source=",
+]
+
+
+def test_tx_states_reads_the_interlock_state() -> None:
+    assert flex_iq.tx_states(TX_LINES) == ["PTT_REQUESTED", "TRANSMITTING", "UNKEY_REQUESTED", "READY"]
+
+
+def test_transmitting_at_covers_key_down_to_key_up_and_a_hold() -> None:
+    rx = FlexIQReceiver("192.0.2.1")
+    for state, t in zip(flex_iq.tx_states(TX_LINES), (100.0, 100.02, 101.0, 101.05)):
+        rx._note_tx(state, t)
+    assert not rx.transmitting_at(99.9)
+    assert rx.transmitting_at(100.5) and rx.transmitting_at(101.05 + flex_iq.TX_HOLD_S)
+    assert not rx.transmitting_at(101.05 + flex_iq.TX_HOLD_S + 0.01)
+    rx._note_tx("PTT_REQUESTED", 102.0)                 # keyed again, not yet up
+    assert rx.transmitting_at(102.5) and not rx.transmitting_at(101.5)

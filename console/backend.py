@@ -59,6 +59,11 @@ LOCKOUT_S = 600  # the feed refuses an address this long after repeated wrong jo
 DB_FLOOR = 4.0  # dB over the noise floor drawn as background
 DB_TOP = 32.0  # top of the colour scale
 TRACE_MIN_PX = 5  # a signal is drawn at least this tall
+PEAK_BINS = 2.0  # zoomed in: a trace is this many bins tall at its centre (a carrier's width),
+PEAK_MIN_PX = 7  # a trace zoomed out: TRACE_MIN_PX plus a carrier's spread
+PEAK_MAX_PX = 12  # kept from PEAK_MIN_PX to this: it neither shrinks nor balloons on zooming in
+MIN_SPAN = 0.05  # the deepest zoom: this fraction of the band
+PEAK_FROM_PX = 1.0  # from this many pixels a bin, peaks are drawn instead of stretched bins
 FRAME_LOG = bool(os.environ.get("SPARKGAP_FRAME_LOG"))  # print frame timing every 1200 frames
 FREQ_MATCH_KHZ = 0.15  # a window belongs to a call within this distance
 SEARCH_MAX = 8  # matches listed under the search box
@@ -856,6 +861,11 @@ QML_IMPORT_NAME = "SparkGap"
 QML_IMPORT_MAJOR_VERSION = 1
 
 
+def peak_px(px_per_bin: float) -> int:
+    """Zoomed in: a trace's height, PEAK_BINS bins, within PEAK_MIN_PX..PEAK_MAX_PX."""
+    return int(min(PEAK_MAX_PX, max(PEAK_MIN_PX, round(PEAK_BINS * px_per_bin))))
+
+
 @QmlElement
 class Waterfall(QQuickPaintedItem):
     """Draws the selected Instance's spectrum: frequency down, time flowing left.
@@ -932,7 +942,8 @@ class Waterfall(QQuickPaintedItem):
     def setView(self, lo: float, hi: float) -> None:  # noqa: N802
         inst = self._inst
         if inst and inst.n_bins:
-            span = min(max(hi - lo, 2.0), inst.high_khz() - inst.low_khz())
+            full = inst.high_khz() - inst.low_khz()
+            span = min(max(hi - lo, full * MIN_SPAN), full)
             lo = min(max(lo, inst.low_khz()), inst.high_khz() - span)
             hi = lo + span
         if (lo, hi) == (self._lo, self._hi):
@@ -943,9 +954,6 @@ class Waterfall(QQuickPaintedItem):
         self.update()
 
     @Slot(float, float)
-    def zoom(self, factor: float, at_khz: float) -> None:
-        self.setView(at_khz - (at_khz - self._lo) * factor, at_khz + (self._hi - at_khz) * factor)
-
     @Slot(float)
     def pan(self, dkhz: float) -> None:
         self.setView(self._lo + dkhz, self._hi + dkhz)
@@ -987,7 +995,12 @@ class Waterfall(QQuickPaintedItem):
             i0 = np.clip(np.floor(pos).astype(int), 0, inst.n_bins - 1)
             i1 = np.clip(i0 + 1, 0, inst.n_bins - 1)
             frac = np.clip(pos - np.floor(pos), 0, 1).astype(np.float32)[:, None]
-            self._map = ("interp", i0, i1, frac, grow)
+            # zoomed in: peaks; the bin index of row y's centre is top - (y + 0.5) / px_per_bin
+            if px_per_bin >= PEAK_FROM_PX:
+                top = (self._hi * 1000 - inst.first_hz) / inst.hz_per_bin - 0.5
+                self._map = ("peak", i0, i1, frac, top, px_per_bin, 0)
+            else:
+                self._map = ("interp", i0, i1, frac, grow)
         else:
             edges = (f_hz[::-1] - inst.first_hz) / inst.hz_per_bin  # ascending, bottom row first
             starts = np.clip(np.floor(edges - 0.5 / px_per_bin).astype(int), 0, inst.n_bins - 1)
@@ -1006,7 +1019,9 @@ class Waterfall(QQuickPaintedItem):
                 np.maximum(wide[k:], v[:-k], out=wide[k:])
                 np.maximum(wide[:-k], v[k:], out=wide[:-k])
             v = wide
-        if self._map[0] == "interp":
+        if self._map[0] == "peak":
+            px = self._peaks(v)
+        elif self._map[0] == "interp":
             _, i0, i1, frac, _ = self._map
             px = v[i0] * (1 - frac) + v[i1] * frac
         else:
@@ -1014,6 +1029,32 @@ class Waterfall(QQuickPaintedItem):
             px = np.maximum.reduceat(v[: max(end, int(starts[-1]) + 1)], starts, axis=0)[::-1]
         idx = np.clip((px - DB_FLOOR) * (255.0 / (DB_TOP - DB_FLOOR)), 0, 255).astype(np.uint8)
         return self.lut[idx]
+
+    def _peaks(self, v: np.ndarray) -> np.ndarray:
+        """Zoomed in: the background without its signals (each bin the lowest within 2 bins), then
+        each peak drawn peak_px() tall at its centre (a parabola through the 3 bins round it), so a
+        trace keeps its width as the view narrows and sits at its frequency, not a bin's."""
+        assert self._map is not None
+        _, i0, i1, frac, top, ppb, _ = self._map
+        low = v.copy()
+        for k in (1, 2):
+            np.minimum(low[k:], v[:-k], out=low[k:])
+            np.minimum(low[:-k], v[k:], out=low[:-k])
+        px = low[i0] * (1 - frac) + low[i1] * frac
+        mid = v[1:-1]
+        bi, col = np.nonzero((mid >= v[:-2]) & (mid > v[2:]) & (mid > DB_FLOOR))
+        bi = bi + 1
+        a, b, c = v[bi - 1, col], v[bi, col], v[bi + 1, col]
+        den = a - 2 * b + c
+        d = np.clip(np.divide(0.5 * (a - c), den, out=np.zeros_like(den), where=den < 0), -0.5, 0.5)
+        yc = np.rint((top - (bi + d)) * ppb - 0.5).astype(int)
+        h = px.shape[0]
+        n = peak_px(ppb)
+        for o in range(-(n // 2), n - n // 2):
+            y = yc + o
+            ok = (y >= 0) & (y < h)
+            np.maximum.at(px, (y[ok], col[ok]), b[ok])
+        return px
 
     def _rebuild(self, inst: Instance, w: int, h: int) -> None:
         n = w + 3
