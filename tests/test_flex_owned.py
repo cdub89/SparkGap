@@ -133,13 +133,15 @@ def test_failed_start_removes_what_it_made() -> None:
         rx._pan_id, rx._slice_id = 0x40000001, 1
         raise RuntimeError("[Flex] Failed to create DAX-IQ stream")
 
+    made = {"sub pan all": ["S0|display pan 0x40000001 client_handle=0x7F19D8AE daxiq_channel=0"],
+            "sub slice all": ["S0|slice 1 in_use=1 pan=0x40000001 client_handle=0x7F19D8AE"]}
     rx._setup = setup  # type: ignore[method-assign]
-    rx._cmd = lambda cmd, timeout=2.0, settle=0.0: sent.append(cmd) or ["R1|0|"]  # type: ignore[method-assign]
+    rx._cmd = lambda cmd, timeout=2.0, settle=0.0: sent.append(cmd) or made.get(cmd, []) + ["R1|0|"]  # type: ignore[method-assign]
     try:
         rx.start()
     except RuntimeError:
         pass
-    assert sent == ["slice remove 1", "display pan remove 0x40000001"]
+    assert sent == ["sub daxiq all", "sub pan all", "sub slice all", "slice remove 1", "display pan remove 0x40000001"]
 
 
 def test_start_forgets_objects_from_a_dropped_connection() -> None:
