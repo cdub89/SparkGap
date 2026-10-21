@@ -798,6 +798,8 @@ class SpectrumTap:
         self.floor_blk = max(8, round(FLOOR_BLOCK_HZ / (sample_rate / n_out)))
         self.floor_x = (np.arange(n_out // self.floor_blk) + 0.5) * self.floor_blk
         self.floor: np.ndarray | None = None
+        # the radio was keyed at time t: those rows go out empty, not the transmitter (Flex)
+        self.tx: Callable[[float], bool] | None = None
 
     def feed_iq(self, i_samples: Any, q_samples: Any) -> None:
         if not self.feed.n_clients:
@@ -822,6 +824,13 @@ class SpectrumTap:
         self.buf = hist[-self.nfft :]
 
     def row(self, seg: np.ndarray, utc: float) -> None:
+        hz_per_bin = self.sample_rate / self.nfft * self.pool
+        if self.tx is not None and self.tx(utc):  # dark while keyed; the floor keeps its level
+            empty = bytes(self.nfft // self.pool)
+            self.feed.publish_spectrum(
+                self.center_hz - self.sample_rate / 2, hz_per_bin, DB_PER_UNIT, empty, utc
+            )
+            return
         p = np.abs(np.fft.fftshift(np.fft.fft(seg * self.window))) ** 2
         if self.pool > 1:
             p = p.reshape(-1, self.pool).max(axis=1)
@@ -831,7 +840,6 @@ class SpectrumTap:
         self.floor = med if self.floor is None else self.floor + FLOOR_SMOOTH * (med - self.floor)
         over = (db - np.interp(np.arange(len(db)), self.floor_x, self.floor)) / DB_PER_UNIT
         bins = np.clip(over, 0, 255).astype(np.uint8).tobytes()
-        hz_per_bin = self.sample_rate / self.nfft * self.pool
         self.feed.publish_spectrum(
             self.center_hz - self.sample_rate / 2, hz_per_bin, DB_PER_UNIT, bins, utc
         )

@@ -335,6 +335,29 @@ def test_tap_floor_follows_edge_rolloff() -> None:
         assert abs(np.mean(part == 0) - centre_zero) < 0.2
 
 
+
+def test_tap_sends_empty_rows_while_the_radio_is_keyed() -> None:
+    # a keyed Flex: the IQ carries the transmitter; those rows go out empty and the floor holds
+    f = FeedServer({"bind": "127.0.0.1", "port": 0}, HELLO)
+    tap = SpectrumTap(f, 96_000, 7_048_000.0)
+    rows: list[np.ndarray] = []
+
+    def grab(first: float, hz: float, unit: float, bins: bytes, utc: float) -> None:
+        rows.append(np.frombuffer(bins, np.uint8))
+
+    f.publish_spectrum = grab  # type: ignore[method-assign]
+    rng = np.random.default_rng(3)
+    noise = lambda k: rng.normal(size=tap.nfft) * k + 1j * rng.normal(size=tap.nfft) * k  # noqa: E731
+    tap.tx = lambda utc: 10.0 <= utc < 20.0
+    for _ in range(20):
+        tap.row(noise(1), 0.0)
+    floor = None if tap.floor is None else tap.floor.copy()
+    tap.row(noise(1000), 15.0)                        # the transmitter, 60 dB up
+    assert rows[-1].max() == 0 and len(rows[-1]) == len(rows[0])
+    assert floor is not None and tap.floor is not None and np.array_equal(tap.floor, floor)
+    tap.row(noise(1), 25.0)
+    assert 0 < np.mean(rows[-1] == 0) < 1               # after key-up: the band as before
+
 def test_tap_idle_without_clients() -> None:
     f = FeedServer({"bind": "127.0.0.1", "port": 0}, HELLO)
     tap = SpectrumTap(f, 96_000, 7_090_000.0)

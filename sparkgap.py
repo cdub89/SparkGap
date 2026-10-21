@@ -7545,6 +7545,9 @@ class SparkGap:
         self.manager = self.managers[0]
         _start_gui_feed(self.cfg, [(n, c) for n, c, _ in self._band_meta], rx_sample_rate,
                         self.managers)
+        for mgr in self.managers:  # a keyed Flex: empty spectrum rows, not the transmitter
+            if mgr._spectrum_tap is not None:
+                mgr._spectrum_tap.tx = getattr(self.receiver, 'transmitting_at', None)
 
         self.receiver.start()
         self.running = True
