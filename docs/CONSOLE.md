@@ -193,8 +193,9 @@ Both apps, Linux and Windows, are built on Linux, from the `console` folder
 ./build --all      # gates, then both apps in dist/
 ```
 
-The gates compile the code, run the tests, check for em dashes, and start the
-console offscreen for 8 s, failing on any error or QML warning. `./build --all`
+The gates compile the code, run ruff and pyright (with the repo's settings),
+run the tests, check for em dashes, and start the console offscreen for 8 s,
+failing on any error or QML warning. `./build --all`
 prints a line a step and keeps the tools' full output in `build.log`. It makes:
 
 - `SparkGapConsole-<build>-linux-x86_64.tar.gz`: the Linux app (PyInstaller,

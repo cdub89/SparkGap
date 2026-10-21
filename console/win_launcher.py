@@ -10,8 +10,10 @@ import io
 import sys
 import zipfile
 
-MAIN = b'''import os, runpy, sys
+MAIN = b'''import ctypes, os, runpy, sys
 from pathlib import Path
+# our own app ID: the taskbar then shows the window's icon, not pythonw.exe's
+ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("SparkGap.Console")
 # a windowed app has nowhere to show errors: keep them in console.log
 log = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "SparkGapConsole" / "console.log"
 log.parent.mkdir(parents=True, exist_ok=True)

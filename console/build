@@ -30,9 +30,18 @@ BLOG=build.log; : >"$BLOG"
 NAME=$(git describe --always --dirty)
 echo "BUILD $NAME"
 FAILED=0
+detail() { # the gate's own summary, from its output in $LOG/out
+  case $1 in
+    "py compile"|ruff) echo "${#PYFILES[@]} files" ;;
+    pyright) grep -m1 -E '[0-9]+ errors?, [0-9]+ warnings?' "$LOG/out" ;;
+    tests) grep -m1 -E '[0-9]+ passed' "$LOG/out" | sed -E 's/^=+ | =+$//g; s/ in [0-9.]+s//' ;;
+    "no em dashes") echo "none in $(git ls-files --cached --others --exclude-standard ':!*.ttf' | wc -l) files" ;;
+    "app starts") echo "QML loaded, no errors or warnings" ;;
+  esac
+}
 gate() {
   local name=$1 t=$SECONDS; shift
-  if "$@" >"$LOG/out" 2>&1; then echo "PASS $name ($((SECONDS - t)) s)"
+  if "$@" >"$LOG/out" 2>&1; then echo "PASS $name ($(detail "$name"), $((SECONDS - t)) s)"
   else echo "FAIL $name"; tail -n 40 "$LOG/out"; FAILED=1; fi
   { echo "== gate: $name"; cat "$LOG/out"; } >>"$BLOG"
 }
@@ -42,7 +51,14 @@ starts() { # the app runs 8 s with no errors or QML warnings, with its settings 
   echo "$out"
   [ $rc -eq 124 ] && ! grep -qiE "qml|error|traceback|warning" <<<"$out"
 }
-gate "py compile" $PY -m py_compile sparkgap_console.py backend.py win_launcher.py tests/*.py
+PYFILES=(sparkgap_console.py backend.py win_launcher.py tests/*.py)
+gate "py compile" $PY -m py_compile "${PYFILES[@]}"
+# from the repo root with the same settings as the repo's gates (.claude/bin/gates): the tests import
+# feed_server from there, and ruff sorts imports as it does for the whole repo
+REPO=("${PYFILES[@]/#/console/}")
+gate "ruff" bash -c 'cd .. && uvx ruff check --quiet --isolated --target-version py310 --select E,W,F,I,UP,B \
+  --line-length 100 "$@"' _ "${REPO[@]}"
+gate "pyright" bash -c 'cd .. && uvx pyright --pythonversion 3.10 --pythonpath console/.venv/bin/python "$@"' _ "${REPO[@]}"
 gate "tests" $PY -m pytest -q tests
 gate "no em dashes" bash -c '! git grep --untracked -nIP "\x{2014}" -- . ":!*.ttf"'
 gate "app starts" starts $PY sparkgap_console.py
