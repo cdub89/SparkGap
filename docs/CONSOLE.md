@@ -259,7 +259,7 @@ Shared, and kept the same:
   status page, and the zoom panel (Zoom, Span and SNR rows).
 - Settings: demo, decoded readings, connections (a server added without a port
   is searched for on ports 7320 to 7339), the read-only spot rule, validation and
-  call source (shown when the server reports them), the build, at 480 px.
+  call source (shown when the server reports them), at 480 px.
 - Demo mode: the same made-up signals; turning it on only switches the view.
 - Scroll bars: thin, with small arrows, the same on the waterfall and the
   decoded text.
