@@ -182,19 +182,42 @@ list is kept between runs. Servers given on the command line are added to it:
 The console draws with Qt's software renderer, which costs far less CPU over
 remote desktop. `--gpu` uses the graphics card instead.
 
-## Console: Windows build
+## Console: building the apps
 
-On Windows, from the `console` folder, with the venv above:
+Both apps, Linux and Windows, are built on Linux, from the `console` folder
+(needs [uv](https://docs.astral.sh/uv/), curl and zip):
 
-```bat
-.venv\Scripts\pip install pyinstaller
-.venv\Scripts\pyinstaller --noconfirm SparkGapConsole.spec
+```sh
+./build            # dev install into .venv; no gates
+./build --check    # every gate, then stop
+./build --all      # gates, then both apps in dist/
 ```
 
-The result is `dist\SparkGapConsole`, a folder of about 125 MB with
-`SparkGapConsole.exe`. It runs on any Windows PC without Python; copy the whole
-folder. Settings shows the build's commit when a `build.txt` holding it sits
-next to the spec at build time.
+The gates compile the code, run the tests, check for em dashes, and start the
+console offscreen for 8 s, failing on any error or QML warning. `./build --all`
+prints a line a step and keeps the tools' full output in `build.log`. It makes:
+
+- `SparkGapConsole-<build>-linux-x86_64.tar.gz`: the Linux app (PyInstaller,
+  `SparkGapConsole.spec`), about 80 MB, started for 8 s before it is packed.
+- `SparkGapConsole-<build>-windows-x64.zip`: the Windows app, about 80 MB
+  (210 MB unpacked).
+
+`<build>` is `git describe --always --dirty`, with `-dirty` when the tree had
+uncommitted changes; the build writes it to `build.txt` in both apps, and
+Settings shows it.
+
+**Windows app.** `windows_zip.sh` runs nothing Windows here. It unpacks the
+official Windows embeddable Python (checked against python.org's SHA-256),
+installs the Windows wheels of the requirements at the versions the Linux build
+uses, leaves out the Qt parts the console never loads (the spec's `DROP` list),
+adds the console's files in the repo's layout, and adds `SparkGapConsole.exe`,
+pip's own GUI launcher, which starts the console with no console window. Unzip
+it anywhere and run `SparkGapConsole\SparkGapConsole.exe`; no Python needed.
+Errors go to `%LOCALAPPDATA%\SparkGapConsole\console.log`. The build can't start
+the Windows app, so start a new one on a Windows PC before relying on it.
+
+To install, copy the folder from either archive anywhere; nothing else is
+needed. Delete the old folder first when updating.
 
 ## SparkGap Web
 

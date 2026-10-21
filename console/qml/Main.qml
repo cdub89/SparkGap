@@ -280,9 +280,10 @@ ApplicationWindow {
                 ToolTip.visible: recHover.hovered; ToolTip.delay: 600
                 ToolTip.text: visible ? "Recording IQ to " + inst.status.recording.file : ""
                 Rectangle {
+                    id: recDot
                     width: 8; height: 8; radius: 4; anchors.verticalCenter: parent.verticalCenter; color: t.bad
                     SequentialAnimation on opacity {
-                        running: parent.visible; loops: Animation.Infinite
+                        running: recDot.visible; loops: Animation.Infinite
                         PropertyAction { value: 1.0 } PauseAnimation { duration: 500 }
                         PropertyAction { value: 0.15 } PauseAnimation { duration: 500 }
                     }
