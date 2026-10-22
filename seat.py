@@ -42,6 +42,7 @@ CALL_SOURCES = ("scp", "rbn", "rbn+skcc")
 RULE_FLAGS = ("spot_rule_split_runs", "spot_rule_contest_words", "spot_rule_cq_repeats")
 TOP_CALLS = 10
 ERRORS_KEPT = 5
+IQ_TRIMMED_RE = re.compile(r"IQ trimmed before scanner: ([\d.]+s)")
 
 
 @dataclass
@@ -57,6 +58,7 @@ class LogStats:
     reconnects: int = 0
     feed_port: int | None = None
     feed_failed: bool = False
+    iq_trimmed: str | None = None
 
     def update(self, log: Path) -> None:
         try:
@@ -81,6 +83,8 @@ class LogStats:
                 self.feed_port = int(m.group(1))
             elif "GUI feed failed to start" in line:
                 self.feed_failed = True
+            if m := IQ_TRIMMED_RE.search(line):
+                self.iq_trimmed = m.group(1)
 
 
 class SeatError(RuntimeError):
@@ -107,6 +111,23 @@ def errors_in(log: Path) -> list[str]:
         ]
     except OSError:
         return []
+
+
+def proc_started(pid: int) -> float | None:
+    """When process pid started, in seconds since the epoch, from /proc (as ps reckons its age)."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        ticks = int(
+            stat.rsplit(")", 1)[1].split()[19]
+        )  # field 22, starttime, after the command name
+        boot = next(
+            int(line.split()[1])
+            for line in Path("/proc/stat").read_text().splitlines()
+            if line.startswith("btime ")
+        )
+    except (OSError, ValueError, IndexError, StopIteration):
+        return None
+    return boot + ticks / os.sysconf("SC_CLK_TCK")
 
 
 def write_config(path: Path, changes: dict[str, Any]) -> None:
@@ -356,7 +377,7 @@ class Seat:
         return {
             "band": self.band(i),
             "bands_known": self.bands_known(i),
-            "validation": cfg.get("spot_validation") or "off",
+            "validation": cfg.get("spot_validation", "normal") or "off",
             "call_source": cfg.get("spot_validation_calls") or "scp",
             **{k: bool(cfg.get(k, False)) for k in RULE_FLAGS},
             "record": bool(cfg.get("record_wav")),
@@ -441,9 +462,43 @@ class Seat:
             "warnings": stats.warnings,
             "reconnects": stats.reconnects,
             "log": log.name if log else None,
-            "started": log.stat().st_ctime if log and pid else None,
+            "started": proc_started(pid) if pid else None,
+            "build": self.build(i.code),
+            "iq_trimmed": stats.iq_trimmed if pid else None,
+            "rec_free_gb": (
+                shutil.disk_usage(self.rec).free // 2**30
+                if cfg.get("record_wav") and self.rec.exists()
+                else None
+            ),
         }
         return out
+
+    @staticmethod
+    def build(code: Path) -> str | None:
+        """The commit a code folder has checked out, read from its git files: no subprocess
+        in the status refresh, which runs every two seconds."""
+        try:
+            git = code / ".git"
+            gitdir = git
+            if git.is_file():  # a worktree: .git names its own git folder
+                gitdir = Path(git.read_text().split("gitdir:", 1)[1].strip())
+                gitdir = gitdir if gitdir.is_absolute() else (code / gitdir).resolve()
+            head = (gitdir / "HEAD").read_text().strip()
+            if not head.startswith("ref: "):
+                return head[:7] or None
+            ref = head[5:]
+            common = gitdir
+            if (gitdir / "commondir").exists():
+                common = (gitdir / (gitdir / "commondir").read_text().strip()).resolve()
+            for d in (gitdir, common):
+                if (d / ref).exists():
+                    return (d / ref).read_text().strip()[:7] or None
+            for line in (common / "packed-refs").read_text().splitlines():
+                if line.endswith(" " + ref):
+                    return line[:7]
+        except (OSError, IndexError):
+            return None
+        return None
 
     def station_status(self, radio: str) -> dict[str, Any]:
         out: dict[str, Any] = {

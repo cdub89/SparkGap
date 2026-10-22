@@ -10,9 +10,17 @@ const HELP_URL = "https://github.com/hotairfred/SparkGap/blob/main/docs/CONSOLE.
 const SCAN_TIMEOUT_S = 3;
 const AGENT_PORT = 7320;  // a machine's agent: it runs that machine's copies and passes their feeds through
 const AGENT_PROTOCOL = "sparkgap.agent.v1";
-const VALIDATION = ["off", "permissive", "normal", "aggressive"];
+const VALIDATION = ["permissive", "normal", "aggressive"];  // "off" stays a config setting, not offered here
 const CALL_SOURCES = [["scp", "SCP"], ["rbn", "RBN"], ["rbn+skcc", "RBN + SKCC"]];
-const RULE_FLAGS = [["spot_rule_split_runs", "Split runs"], ["spot_rule_contest_words", "Contest words"], ["spot_rule_cq_repeats", "CQ repeats"]];
+const RULE_FLAGS = [
+  ["spot_rule_split_runs", "Split runs", "Words sent with no gap are split before the rule reads them: CQCQDE becomes CQ CQ DE (hand-sent CW)."],
+  ["spot_rule_contest_words", "Contest words", "CWT, SST or MST right before a call opens a CQ group as CQ does: runners who send CWT K5AX without the CQ."],
+  ["spot_rule_cq_repeats", "CQ repeats", "Back-to-back CQs from one call count as separate copies, so a runner is spotted sooner."],
+];
+const HINTS = {
+  validation: "A confidence score decides which calls are spotted: permissive spots more, aggressive fewer (docs/ITILA2.md).",
+  call_source: "Calls known from this list score higher in validation: SCP, calls RBN skimmers heard in the last days, or those plus the SKCC roster.",
+};
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 const CODE_LENGTH = 6;
 const SPECTRUM_HZ = 60;
@@ -46,7 +54,6 @@ const PEAK_MIN_DB = 8.0;
 const TRACE_DUTY = 0.15;
 // close codes the feed gives a browser instead of an HTTP refusal
 const CLOSE_WRONG_CODE = 4401, CLOSE_LOCKED_OUT = 4429, CLOSE_FULL = 4503, CLOSE_POLICY = 1008;
-const DEMO_URL = "demo";
 const STORE = "sparkgap.web.";
 
 const $ = id => document.getElementById(id);
@@ -67,7 +74,6 @@ class Instance {
   constructor(url, token) {
     this.url = url;
     this.token = token;
-    this.demo = url === DEMO_URL;
     this.state = "connecting";
     this.error = "";
     this.hello = {};
@@ -103,11 +109,6 @@ class Instance {
   open() {
     this.refused = "";
     clearTimeout(this.retryTimer);
-    if (this.demo) {
-      this.source = new Demo(this);
-      this.setState("live");
-      return;
-    }
     const protocols = [PROTOCOL];
     if (this.token) protocols.push(CODE_PROTOCOL + this.token);
     this.setState("connecting");
@@ -319,7 +320,7 @@ class Instance {
   // two copies with one name are told apart by port
   get name() {
     const base = this.baseName;
-    const twin = base && app.instances.some(i => i !== this && !i.demo && i.baseName === base);
+    const twin = base && app.instances.some(i => i !== this && i.baseName === base);
     return twin ? `${base} :${urlParts(this.url)[1]}` : base;
   }
 
@@ -329,7 +330,7 @@ class Instance {
     return [this.name, band].filter(x => x).join(" · ");
   }
 
-  get title() { return this.demo ? "Demo" : this.station || this.url.split("//").pop().split("/")[0]; }
+  get title() { return this.station || this.url.split("//").pop().split("/")[0]; }
 
   get lowKhz() { return this.nBins ? this.firstHz / 1000 : 0; }
   get highKhz() { return this.nBins ? (this.firstHz + this.nBins * this.hzPerBin) / 1000 : 0; }
@@ -489,149 +490,6 @@ class Instance {
     return { khz: k, spotKhz: spot ? spot.khz : null, call, spotted: !!spot, wpm: src.wpm ?? null, snr, windows: rows, note };
   }
 }
-
-// ---- demo: made-up signals sent as feed messages, so the page runs the same code as on a live feed ----
-
-const MORSE = {
-  A: ".-", B: "-...", C: "-.-.", D: "-..", E: ".", F: "..-.", G: "--.", H: "....", I: "..", J: ".---", K: "-.-", L: ".-..", M: "--",
-  N: "-.", O: "---", P: ".--.", Q: "--.-", R: ".-.", S: "...", T: "-", U: "..-", V: "...-", W: ".--", X: "-..-", Y: "-.--", Z: "--..",
-  0: "-----", 1: ".----", 2: "..---", 3: "...--", 4: "....-", 5: ".....", 6: "-....", 7: "--...", 8: "---..", 9: "----.", "/": "-..-.",
-};
-// [kHz, wpm, SNR dB, sent text, spotted]; null text: a carrier with nothing decoded
-const DEMO_SIGNALS = [
-  [7016.8, 21, 9, "TU 5NN TX", false], [7019.3, 25, 14, "CQ CQ DE N3AD N3AD K", true],
-  [7021.2, 22, 18, "CQ CQ DE AF4PX AF4PX K", true], [7024.6, 26, 23, "CQ CQ DE AC5P AC5P K", false],
-  [7027.9, 30, 16, "CQ NA4J NA4J TEST", true], [7031.3, 18, 27, "CQ CQ CQ DE K4WLO K4WLO K", true],
-  [7033.0, 32, 12, "TEST K3WW K3WW", true], [7036.4, 20, 20, "CQ CQ DE WB5NHH WB5NHH PSE K", false],
-  [7039.8, 24, 15, "CQ DE W3RJ W3RJ K", true], [7041.5, 27, 11, "CQ N4ZZ N4ZZ", false],
-  [7046.2, 16, 19, "GM OM UR RST 579 579 NAME BOB BOB QTH OH", false], [7052.7, 0, 13, null, false],
-  [7055.6, 19, 21, "CQ SKCC DE KD8QWX KD8QWX K", true], [7061.0, 23, 8, "R R TU 73 EE", false],
-];
-const DEMO_BAND = { name: "40m", center_khz: 7048.0, span_khz: 96.0 };
-const DEMO_BINS = 2048;
-const DEMO_SUBSTEPS = 4;  // keying sampled within each row, so edges blend
-
-function keying(text, wpm) {  // [[on, seconds], ...] for one sending of text, then a pause
-  const u = 1.2 / wpm, out = [];
-  text.split(" ").forEach((word, wi) => {
-    if (wi) out.push([0, 7 * u]);
-    [...word].forEach((ch, ci) => {
-      if (ci) out.push([0, 3 * u]);
-      [...(MORSE[ch] || "")].forEach((el, ei) => { if (ei) out.push([0, u]); out.push([1, el === "." ? u : 3 * u]); });
-    });
-  });
-  out.push([0, 2 + Math.random() * 3]);
-  return out;
-}
-
-// a decoded reading of sent text: mostly right, sometimes a split or a stray letter
-function misread(text, rough) {
-  return text.split(" ").map(w => {
-    const r = Math.random();
-    if (r < rough * 0.3 && w.length > 2) return w.slice(0, 2) + " " + w.slice(2);
-    if (r < rough * 0.5) return w.replace(/[A-Z]/, c => ({ E: "I", T: "M", A: "W", S: "H", N: "D" })[c] || c);
-    return w;
-  }).join(" ") + (Math.random() < rough ? " E" : "");
-}
-
-class Demo {
-  constructor(inst) {
-    this.inst = inst;
-    this.start = now();
-    this.spots = 0;
-    this.hzPerBin = DEMO_BAND.span_khz * 1000 / DEMO_BINS;
-    this.firstHz = DEMO_BAND.center_khz * 1000 - DEMO_BAND.span_khz * 500;
-    this.sigs = DEMO_SIGNALS.map(([khz, wpm, snr, text, spot]) => {
-      const k = text ? keying(text, wpm) : [[1, 1]];
-      const total = k.reduce((a, [, d]) => a + d, 0);
-      return { khz, wpm, snr, text, spot, k, total, phase: Math.random() * total, next: now() + 2 + Math.random() * 8, seen: 0, spotted: false };
-    });
-    inst.message({
-      type: "hello", v: FEED_VERSION, call: "DEMO", decoder: "itila2",
-      config: {
-        callsign: "DEMO", cw_decoder: "itila2", sample_rate: 96_000, flex_daxiq_channel: null, telnet_port: 7300,
-        enable_ft8: false, spot_rule: "repeat",
-      },
-      bands: [DEMO_BAND],
-    });
-    inst.message({ type: "snapshot", signals: [], windows: [], spots: [], status: null });
-    this.timers = [
-      setInterval(() => this.rows(), 1000 / SPECTRUM_HZ),
-      setInterval(() => this.decode(), 500),
-      setInterval(() => this.statusMsg(), 2000),
-    ];
-    this.lastRow = now();
-  }
-
-  stop() { this.timers.forEach(clearInterval); }
-
-  keyed(s, t) {
-    let x = (t + s.phase) % s.total;
-    for (const [on, d] of s.k) { if (x < d) return on; x -= d; }
-    return 0;
-  }
-
-  rows() {
-    // every row due since the last call, so a throttled timer still fills the waterfall
-    const t1 = now(), step = 1 / SPECTRUM_HZ;
-    let t = this.lastRow + step;
-    if (t1 - t > 2) t = t1 - 2;
-    for (; t <= t1; t += step) this.row(t);
-    this.lastRow = t - step;
-  }
-
-  row(t) {
-    const unit = 0.25, row = new Uint8Array(DEMO_BINS);
-    for (let i = 0; i < DEMO_BINS; i++) {
-      const p = (-Math.log(Math.random() + 1e-9) - Math.log(Math.random() + 1e-9) - Math.log(Math.random() + 1e-9)) / 3;
-      const db = 10 * Math.log10(p + 1e-3) + 1.5;  // dB over the floor, as the feed sends it
-      row[i] = db > 0 ? Math.min(255, db / unit) : 0;
-    }
-    for (const s of this.sigs) {
-      let on = 0;
-      for (let k = 0; k < DEMO_SUBSTEPS; k++) on += this.keyed(s, t - k / (SPECTRUM_HZ * DEMO_SUBSTEPS));
-      if (!on) continue;
-      const db = s.snr + 1.5 * Math.sin(t * 0.7 + s.phase) + 10 * Math.log10(on / DEMO_SUBSTEPS);  // slow QSB, soft edges
-      const pos = (s.khz * 1000 - this.firstHz) / this.hzPerBin;
-      const b = Math.floor(pos), f = pos - b;
-      for (const [i, lvl] of [[b - 1, db - 14], [b, db - 6 * f], [b + 1, db - 6 * (1 - f)], [b + 2, db - 14]]) {
-        if (i >= 0 && i < DEMO_BINS) row[i] = Math.max(row[i], Math.min(255, Math.max(0, lvl / unit)));
-      }
-    }
-    this.inst.row(t, this.firstHz, this.hzPerBin, unit, row);
-  }
-
-  decode() {
-    const t = now();
-    for (const s of this.sigs) {
-      if (!s.text || t < s.next) continue;
-      s.next = t + 5 + Math.random() * 4;
-      s.seen++;
-      const wpm = s.wpm + (Math.random() - 0.5) * 2, snr = s.snr + (Math.random() - 0.5) * 3;
-      const rough = Math.max(0.05, 0.6 - s.snr / 40);
-      const narrow = Math.random() < 0.08 ? "" : misread(s.text, rough * 1.5);
-      const base = { type: "window", khz: s.khz, wpm: Math.round(wpm * 10) / 10, snr: Math.round(snr * 10) / 10, utc: t };
-      this.inst.message({ ...base, text: narrow, cost: narrow ? 0.5 + Math.random() * 0.8 : NO_FIT });
-      this.inst.message({ ...base, text: misread(s.text, rough), cost: 0.2 + Math.random() * 0.6 });
-      if (s.spot && !s.spotted && s.seen >= 2) {
-        s.spotted = true;
-        this.spots++;
-        const call = s.text.split(" ").find(w => CALL_RE.test(w));
-        this.inst.message({ type: "spot", khz: s.khz, call, snr: base.snr, wpm: Math.round(wpm), utc: t });
-      }
-    }
-  }
-
-  statusMsg() {
-    const active = this.inst.signals.size;
-    this.inst.message({
-      type: "status", cpu: Math.round(30 + Math.random() * 12), rss_mb: 330 + Math.round(Math.random() * 4),
-      bins: active * 2 + 6, spots: this.spots, uptime_s: Math.round(now() - this.start), utc: now(),
-    });
-  }
-}
-
-// ---- the waterfall: frequency down, time flowing left ----
 
 class Waterfall {
   constructor(canvas) {
@@ -840,16 +698,17 @@ class Waterfall {
 
 const app = {
   servers: [],  // {address, token}: a machine's agent and its join code; its copies come from its seat
+  tab: "agent",  // the dialog's tab: "agent" or "<server index>:<copy name>"
+  pending: {},  // "<agent address>|<copy name>" -> settings picked but not yet applied
+  mode: load("mode", "info"),  // the dialog shows Settings or Info
   want: load("current", ""),  // the copy shown, by name, wherever its port is today
   instances: [],
   current: 0,
   selectedKhz: -1,
-  back: 0,  // the server shown before demo
   editing: -2,  // -2 no form, -1 adding, else the row being edited
   note: "",  // what the last search for servers found
   decoded: "lowest",
   matches: [],
-  codeShown: false,  // Status shows this console's join code in clear
 };
 const wf = new Waterfall($("wf"));
 
@@ -946,7 +805,7 @@ class AgentLink {
   dropped() {
     for (const resolve of this.waiting.values()) resolve({ ok: false, error: "agent connection lost" });
     this.waiting.clear();
-    renderSeat(); renderConns();
+    renderSettings();
     // a wrong code is never retried: every try counts toward the agent's lockout; Edit fixes it
     if (this.closed || this.state === "wrong join code") return;
     const wait = this.state === "locked out" ? LOCKOUT_S : RECONNECT_S[Math.min(this.retry++, RECONNECT_S.length - 1)];
@@ -955,7 +814,12 @@ class AgentLink {
   close() { this.closed = true; clearTimeout(this.timer); if (this.ws) this.ws.close(); }
   message(m) {
     if (m.type === "hello") { this.hello = m; this.state = "live"; this.retry = 0; renderConns(); }
-    else if (m.type === "seat") { this.seat = m; agentCopies(this.server); renderSeat(); }
+    else if (m.type === "seat") {
+      this.seat = m;
+      const names = new Set((m.instances || []).map(i => i.name));
+      dropPending(this.server.address, name => !names.has(name));
+      agentCopies(this.server); renderSettings();
+    }
     else if (m.type === "agent_result" && this.waiting.has(m.id)) { this.waiting.get(m.id)(m); this.waiting.delete(m.id); }
   }
   request(cmd, name, settings) {
@@ -995,47 +859,28 @@ function addInstance(url, token, at, server = null) {
 
 function changed(i, what) {
   // a copy that comes back on another port is followed by name, but never away from a live one
-  if (what === "hello" && !i.demo && i.name === app.want && i !== inst() && !(inst() && inst().state === "live")) {
+  if (what === "hello" && i.name === app.want && i !== inst() && !(inst() && inst().state === "live")) {
     setCurrent(app.instances.indexOf(i)); return;
   }
-  if (what === "hello" && !i.demo && i === inst() && !app.want) { app.want = i.name; save("current", i.name); }
+  if (what === "hello" && i === inst() && !app.want) { app.want = i.name; save("current", i.name); }
   if (what === "state") { renderConns(); if (i === inst()) renderState(); return; }
   if (i !== inst()) { if (what === "hello") { renderConns(); renderBands(); } return; }
   if (what === "hello") { wf.fit(); renderBands(); renderState(); renderStation(); renderSettings(); renderConns(); renderLadder(); }
-  else if (what === "status") { renderStatus(); if (!$("statusModal").hidden && !selecting($("statusModal"))) renderStatusPage(); }
+  else if (what === "status") { renderStatus(); if (app.mode === "info") renderSettings(); }
   else if (what === "ladder") renderLadder();
   else if (what === "detail") { renderDetail(); renderStatus(); }
-}
-
-// a server picked, added, edited or removed while demo shows: demo goes off first
-function leaveDemo() {
-  if (app.instances.some(i => i.demo)) setDemo(false);
 }
 
 function setCurrent(n) {
   app.current = Math.max(0, Math.min(n, app.instances.length - 1));
   const i = inst();
-  if (i && !i.demo && i.hello.run) { app.want = i.name; save("current", i.name); }
+  if (i && i.hello.run) { app.want = i.name; save("current", i.name); }
   app.selectedKhz = -1;
   wf.sel = -1;
   wf.setInstance(inst());
   renderAll();
 }
 
-// demo is a view: the servers stay connected (and keep their history) while it shows
-function setDemo(on) {
-  save("demo", on);
-  app.editing = -2; app.form = null;
-  const at = app.instances.findIndex(i => i.demo);
-  if (on && at < 0) {
-    app.back = app.current;
-    addInstance(DEMO_URL, "");
-    setCurrent(app.instances.length - 1);
-  } else if (!on && at >= 0) {
-    app.instances.splice(at, 1)[0].close();
-    setCurrent(app.back || 0);
-  }
-}
 
 // servers are agents; one saved before them (a copy's own address and code) is dropped with a note
 function loadServers() {
@@ -1111,7 +956,7 @@ function renderState() {
   dot.style.background = cs.getPropertyValue(i.state === "live" ? "--good" : i.state === "connecting" ? "--accent" : "--bad");
   const word = { live: "Live", connecting: "Connecting", refused: "Refused" }[i.state] || "Reconnecting";
   // the station by the state only when no picker shows it
-  $("stateText").textContent = i.demo ? "DEMO MODE" : word + (i.station && $("bandSel").hidden ? "  " + i.station : "")
+  $("stateText").textContent = word + (i.station && $("bandSel").hidden ? "  " + i.station : "")
     + (i.state !== "live" && i.error ? "  ·  " + i.error : "");
   let msg = "";
   if (i.state !== "live") msg = i.station ? "Connecting to " + i.station : "Connecting";
@@ -1150,15 +995,10 @@ function copyText(text) {
   return Promise.resolve(ok);
 }
 
-function renderStatusPage() {
-  const i = inst(), s = (i && i.status) || {}, h = (i && i.hello) || {}, run = h.run || {}, r = s.radio || {};
+// a copy's status from its own feed, as HTML; a: what its agent says of it (top calls), or null
+function statusHtml(i, a) {
+  const s = (i && i.status) || {}, h = (i && i.hello) || {}, run = h.run || {}, r = s.radio || {};
   const clock = s.clock_synced === true ? "NTP synchronised" : s.clock_synced === false ? "not synchronised" : "unknown";
-  $("statusFoot").innerHTML = !i || i.demo ? "" : `Server Build: <b>${esc(h.build || "-")}</b>.  Clock: <b>${clock}</b>.`;
-  if (!i || i.demo) {
-    $("statusHead").innerHTML = "";
-    $("statusBody").innerHTML = '<div class="small muted">Status is shown for a connected SparkGap, not demo mode.</div>';
-    return;
-  }
   const num = v => (v === null || v === undefined ? "-" : Number(v).toLocaleString("en-US"));
   // one row: label left, value right; mono for numbers; sub is a muted second line (a file's folder)
   // o.key: a value that signals trouble (full weight); o.ref: reference detail (muted); o.bad: red
@@ -1174,8 +1014,8 @@ function renderStatusPage() {
   const card = (title, rows, wide, tag) => `<section class="scard${wide ? " wide" : ""}"><h3><span>${title}</span>${tag || ""}</h3>${rows.join("")}</section>`;
 
   const live = ["live", "replaying"].includes(r.state);
-  $("statusHead").innerHTML = `<span class="sname">${esc(i.station || "")}</span>`
-    + (r.state ? `<span class="pill ${live ? "ok" : "warn"}">${esc(String(r.state).toUpperCase())}</span>` : "");
+  const head = `<div class="infohead"><span class="sname">${esc(i.station || "")}</span>`
+    + (r.state ? `<span class="pill ${live ? "ok" : "warn"}">${esc(String(r.state).toUpperCase())}</span>` : "") + "</div>";
   const tile = (k, v, sub, bad, primary) => `<div class="stat${bad ? " bad" : ""}${primary ? " primary" : ""}"><div class="label">${k}</div><div class="mono">${esc(dash(v))}</div>`
     + `${sub ? `<div class="tsub">${esc(sub)}</div>` : ""}</div>`;
   const tiles = [tile("UPTIME", duration(s.uptime_s)),
@@ -1201,17 +1041,17 @@ function renderStatusPage() {
   if ("position_s" in r) radio.push(row("Position", duration(r.position_s), { mono: true }));
 
   const rec = s.recording, near = rec && rec.bytes > NEAR_WAV_LIMIT;
-  const sg = [row("Host", `${h.host}, port ${urlParts(i.url)[1]}`, { ref: true }),
-    i.token ? row("Join code", app.codeShown ? i.token : "•••-•••", { mono: true, ref: true, act: "code", title: app.codeShown ? "Click to hide" : "Click to show and copy" })
-      : row("Join code", "none (local only)", { ref: true }), row("Decoder", h.decoder, { ref: true }),
+  const top = a && (a.top_calls || []).length ? a.top_calls.slice(0, 8).map(([c, k]) => `${c} ${num(k)}`).join(", ") : "";
+  const sg = [row("Host", h.host, { ref: true }), row("Build", h.build, { mono: true, ref: true }), row("Clock", clock, { ref: true }),
+    row("Decoder", h.decoder, { ref: true }),
     row("Bands", (h.bands || []).map(bandLabel).join(", "), { key: true }),
     fileRow("Config", run.config, "-", { ref: true }), fileRow("Log", run.log, "terminal", { ref: true }),
     rec ? fileRow("Recording", rec.file, "off", { bad: near, ref: !near }) : row("Recording", "off", { ref: true }),
     ...(rec ? [row("Recording size", gb(rec.bytes) + (near ? "  (near the 4 GiB limit)" : ""), { mono: true, key: true, bad: near })] : []),
     row("IQ trimmed", s.iq_trimmed_s !== undefined ? s.iq_trimmed_s + " s" + (s.iq_trimmed_s > 0 ? "  (decoder behind)" : "") : null, { mono: true, key: true, bad: s.iq_trimmed_s > 0 })];
 
-  const out = s.telnet ? [row("Telnet port", s.telnet.port, { mono: true, ref: true }), row("Telnet clients", s.telnet.clients, { mono: true, key: true })]
-    : [row("Telnet", "not reported")];
+  const out = (s.telnet ? [row("Telnet port", s.telnet.port, { mono: true, ref: true }), row("Telnet clients", s.telnet.clients, { mono: true, key: true })]
+    : [row("Telnet", "not reported")]).concat(top ? [row("Top calls", top, { ref: true })] : []);
 
   const rate = i.statTotal !== undefined ? (i.total - i.statTotal) / Math.max(0.5, now() - i.statAt) : null;
   i.statTotal = i.total; i.statAt = now();
@@ -1241,7 +1081,7 @@ function renderStatusPage() {
   const tagSg = s.clock_synced === false ? pill("CLOCK OFF", "warn") : s.clock_synced ? pill("CLOCK OK", "ok") : "";
   const tagProb = p.errors ? pill(`${num(p.errors)} ERRORS`, "warn") : pill("NONE", "ok");
 
-  $("statusBody").innerHTML = banner + `<div class="stats stiles">${tiles.join("")}</div><div class="scards">`
+  return head + banner + `<div class="stats stiles">${tiles.join("")}</div><div class="scards">`
     + card("RADIO", radio, false, tagRadio) + card("SPARKGAP", sg, false, tagSg) + card("SPOT OUTPUT", out) + card("CONSOLES", cons)
     + card("PROBLEMS", probs, true, tagProb) + "</div>";
 }
@@ -1259,7 +1099,6 @@ function bandLabel(b) {
 function bandChoices() {
   const out = [];
   app.instances.forEach((i, n) => {
-    if (i.demo) return;
     const host = i.name || shortUrl(i.url);
     const bands = i.bands.length ? i.bands : [null];
     bands.forEach((b, k) => out.push({ n, band: k, label: b ? `${host} ${bandLabel(b)}` : host }));
@@ -1268,7 +1107,7 @@ function bandChoices() {
 }
 
 function renderBands() {
-  const i = inst(), all = i && !i.demo ? bandChoices() : [], sel = $("bandSel");
+  const i = inst(), all = i ? bandChoices() : [], sel = $("bandSel");
   sel.hidden = all.length < 2;
   if (all.length < 2) return;
   sel.innerHTML = all.map((c, k) => `<option value="${k}">${esc(c.label)}</option>`).join("");
@@ -1290,7 +1129,7 @@ function setBand(n) {
 }
 
 function renderStation() {
-  const i = inst(), c = (i && !i.demo && i.hello.config) || {};  // demo: the status says DEMO MODE
+  const i = inst(), c = (i && i.hello.config) || {};
   $("station").textContent = [c.callsign, c.enable_ft8 ? "FT8 on" : ""].filter(x => x).join("  ·  ");
 }
 
@@ -1405,7 +1244,7 @@ function renderDetail() {
 
 function renderStatus() {
   const i = inst(), s = i ? i.status : {}, up = s.uptime_s || 0;
-  const rec = i && !i.demo && s && s.recording;  // the server is writing IQ: REC beside the state
+  const rec = i && s && s.recording;  // the server is writing IQ: REC beside the state
   $("rec").hidden = !rec;
   $("rec").title = rec ? `Recording IQ to ${rec.file}` : "";
   const items = [["Load", s.cpu !== undefined && s.cpu !== null ? s.cpu + "%" : "-"], ["Memory", s.rss_mb ? s.rss_mb + " MB" : "-"],
@@ -1426,22 +1265,92 @@ function seg(el, labels, current, onPick) {
   });
 }
 
+// Settings: an Agent tab (agents, this browser) and a tab for each copy an agent runs
+function settingsTabs() {
+  const tabs = [["agent", "Agent"]], agents = app.servers.filter(sv => sv.agent);
+  for (const sv of agents) {
+    const k = app.servers.indexOf(sv), host = (sv.agent.hello && sv.agent.hello.host) || sv.address;
+    for (const i of (sv.agent.seat && sv.agent.seat.instances) || []) {
+      tabs.push([`${k}:${i.name}`, agents.length > 1 ? `${i.name} · ${host}` : i.name]);
+    }
+  }
+  return tabs;
+}
+
+// the copy behind a copy tab: [server index, server, agent's instance, its feed (null while stopped)]
+function tabCopy(key) {
+  const k = Number(key.split(":")[0]), name = key.slice(key.indexOf(":") + 1), sv = app.servers[k];
+  const a = sv && sv.agent && sv.agent.seat && sv.agent.seat.instances.find(x => x.name === name);
+  const feed = a ? app.instances.find(x => x.server === sv && agentName(x) === name) || null : null;
+  return [k, sv, a, feed];
+}
+
+// the tab of the copy on screen, so the dialog opens on it
+function currentTab() {
+  const i = inst(), name = agentName(i);
+  return name ? `${app.servers.indexOf(i.server)}:${name}` : "agent";
+}
+
 function renderSettings() {
-  const demo = app.instances.some(x => x.demo);
-  seg($("demoSeg"), ["Off", "On"], demo ? 1 : 0, n => { if ((n === 1) !== demo) setDemo(n === 1); });
-  seg($("decSeg"), ["Both", "Wide", "Narrow", "Lowest cost"], DECODED.indexOf(app.decoded), n => {
-    app.decoded = DECODED[n]; save("decoded", app.decoded); renderSettings(); renderDetail();
-  });
-  const c = (inst() && inst().hello.config) || {}, v = ["off", "permissive", "normal", "aggressive"];
-  seg($("sRule"), ["off", "on"], c.spot_rule === "repeat" ? 1 : c.spot_rule ? 0 : -1);
-  const name = agentName(inst()), link = name && inst().server.agent;
-  const set = (key, value) => link && changeSetting(link, name, { [key]: value });
-  seg($("sValid"), v, v.indexOf(c.spot_validation || (c.spot_rule ? "off" : "")), link ? k => set("validation", v[k]) : null);
-  seg($("sCalls"), ["SCP", "RBN", "RBN + SKCC"], ["scp", "rbn", "rbn+skcc"].indexOf(c.spot_validation_calls),
-    link ? k => set("call_source", CALL_SOURCES[k][0]) : null);
-  for (const id of ["sValid", "sCalls"]) $(id).classList.toggle("ro", !link);
-  $("sFrom").textContent = link ? `Changes restart ${name}, through its machine's agent.` : "From the selected server's config.";
-  for (const id of ["lValid", "sValid", "lCalls", "sCalls"]) $(id).hidden = !("spot_validation" in c);  // a SparkGap without call validation
+  if ($("modal").hidden) return;
+  const tabs = settingsTabs(), info = app.mode === "info";
+  if (!tabs.some(t => t[0] === app.tab)) app.tab = "agent";
+  seg($("modeSeg"), ["Settings", "Info"], info ? 1 : 0, n => { app.mode = n ? "info" : "settings"; save("mode", app.mode); renderSettings(); });
+  $("tabs").innerHTML = tabs.map(([key, label]) => `<button class="tab${key === app.tab ? " on" : ""}" data-tab="${esc(key)}">${esc(label)}</button>`).join("");
+  $("tabAgent").hidden = info || app.tab !== "agent";
+  $("tabCopy").hidden = info || app.tab === "agent";
+  $("infoBody").hidden = !info;
+  if (info) {
+    const box = $("infoBody");
+    if (selecting(box)) return;
+    if (app.here && app.tab === "agent") { box.innerHTML = statusHtml(app.instances[0], null); return; }
+    if (app.tab === "agent") { box.innerHTML = agentInfoHtml(); return; }
+    const [, , a, feed] = tabCopy(app.tab);
+    box.innerHTML = feed && feed.status ? statusHtml(feed, a) : stoppedInfoHtml(a);
+    return;
+  }
+  $("setNote").textContent = app.seatNote || "";
+  $("setNote").className = "small " + (app.seatBad ? "err" : "muted");
+  if (app.tab === "agent") {
+    if (!selecting($("conns"))) renderConns();
+    seg($("themeSeg"), ["Dark", "Light"], document.documentElement.dataset.theme === "light" ? 1 : 0, n => setTheme(n ? "light" : "dark"));
+    seg($("decSeg"), ["Both", "Wide", "Narrow", "Lowest cost"], DECODED.indexOf(app.decoded), n => {
+      app.decoded = DECODED[n]; save("decoded", app.decoded); renderSettings(); renderDetail();
+    });
+    return;
+  }
+  const box = $("tabCopy");
+  if (selecting(box) || (document.activeElement && box.contains(document.activeElement) && document.activeElement.tagName === "SELECT")) return;
+  const [k, sv, i] = tabCopy(app.tab);
+  box.innerHTML = i ? copyCards(k, sv, i) : "";
+}
+
+// Info on the Agent tab: each agent, its station and a line for each copy
+function agentInfoHtml() {
+  const agents = app.servers.filter(sv => sv.agent);
+  if (!agents.length) return '<div class="small muted">No agent yet: add one under Settings.</div>';
+  return '<div class="scards">' + agents.map(sv => {
+    const a = sv.agent, seat = a.seat || { instances: [], stations: [] };
+    const rows = [`<div class="srow"><span class="k">Agent</span><span class="v">${esc(a.state === "live" ? `${(a.hello && a.hello.host) || ""} (${a.hello && a.hello.build ? a.hello.build : "-"})` : a.state)}</span></div>`];
+    for (const st of seat.stations || []) {
+      const loss = st.last_loss ? `, last ${utcTime(st.last_loss[0])}: ${st.last_loss[1]}` : "";
+      rows.push(`<div class="srow"><span class="k">Station</span><span class="v">${esc(`${st.station || st.radio}: ${st.live || st.state}${typeof st.rtt_ms === "number" ? `, ping ${st.rtt_ms} ms` : ""}, ${Number(st.losses_hour) || 0} losses in the last hour${loss}`)}</span></div>`);
+    }
+    for (const i of seat.instances || []) {
+      const up = i.state === "running" && i.started ? `, up ${duration(now() - i.started)}` : "";
+      rows.push(`<div class="srow"><span class="k">${esc(i.name)}</span><span class="v">${esc(`${i.band}, ${i.busy || i.state}${up}, ${Number(i.spots) || 0} spots${i.errors ? `, ${Number(i.errors) || 0} errors` : ""}`)}</span></div>`);
+    }
+    return `<section class="scard wide"><h3><span>${esc(sv.address)}</span></h3>${rows.join("")}</section>`;
+  }).join("") + "</div>";
+}
+
+// Info on a stopped copy's tab: what its agent knows
+function stoppedInfoHtml(a) {
+  if (!a) return "";
+  const row = (k, v) => `<div class="srow"><span class="k">${esc(k)}</span><span class="v">${esc(dash(v))}</span></div>`;
+  return `<section class="scard wide"><h3><span>${esc(a.name)} · ${esc(String(a.band))}</span></h3>`
+    + row("State", a.busy || a.state) + row("Build", a.build) + row("Last log", a.log)
+    + (a.last_error ? `<div class="small err">${esc(a.last_error)}</div>` : "") + "</section>";
 }
 
 // Settings lists servers (address and join code); each line shows the copies found on it
@@ -1451,7 +1360,7 @@ function renderConns() {
   const cs = getComputedStyle(document.documentElement);
   const here = app.here ? [{ address: location.host, here: true }] : [];
   here.concat(app.servers).forEach((sv, n) => {
-    const copies = sv.here ? app.instances.filter(i => !i.demo) : app.instances.filter(i => i.server === sv);
+    const copies = sv.here ? app.instances : app.instances.filter(i => i.server === sv);
     const live = copies.filter(i => i.state === "live");
     const a = sv.agent, ok = sv.here ? live.length > 0 : a && a.state === "live";
     const row = document.createElement("div");
@@ -1473,8 +1382,19 @@ function renderConns() {
       del.onclick = e => { e.stopPropagation(); removeConn(n - here.length); };
       row.append(del);
     }
-    row.onclick = () => { leaveDemo(); if (copies.length) setCurrent(app.instances.indexOf(copies[0])); };
-    box.appendChild(row);
+    row.onclick = () => { if (copies.length) setCurrent(app.instances.indexOf(copies[0])); };
+    const card = document.createElement("section");
+    card.className = "scard wide";
+    card.appendChild(row);
+    if (a && a.state === "live") {
+      const lines = [`Agent on ${(a.hello && a.hello.host) || sv.address}`];
+      for (const st of (a.seat && a.seat.stations) || []) {
+        const loss = st.last_loss ? `, last ${utcTime(st.last_loss[0])}: ${st.last_loss[1]}` : "";
+        lines.push(`Station ${st.station || st.radio}: ${st.live || st.state}${typeof st.rtt_ms === "number" ? `, ping ${st.rtt_ms} ms` : ""}, losses in the last hour ${Number(st.losses_hour) || 0}${loss}`);
+      }
+      for (const text of lines) { const d = document.createElement("div"); d.className = "small muted"; d.textContent = text; card.appendChild(d); }
+    }
+    box.appendChild(card);
   });
   if (!app.servers.length && !app.here && app.editing === -2) {
     const p = document.createElement("div"); p.className = "small muted"; p.textContent = "No servers yet."; box.appendChild(p);
@@ -1490,7 +1410,6 @@ function renderConns() {
 }
 
 function editConn(n) {
-  leaveDemo();
   const sv = app.servers[n];
   // a new agent defaults to the machine that served this page, if one did
   const served = /^https?:$/.test(location.protocol);
@@ -1544,13 +1463,12 @@ async function saveConn() {
   saveServers();
   sv.agent = new AgentLink(sv);
   sv.agent.open();
-  renderConns();
-  renderSeat();
+  renderSettings();
 }
 
 function removeConn(n) {
-  leaveDemo();
   if (app.servers[n].agent) app.servers[n].agent.close();
+  dropPending(app.servers[n].address, () => true);
   app.instances.filter(i => i.server === app.servers[n]).forEach(removeInstance);
   app.servers.splice(n, 1);
   app.editing = -2; app.form = null;
@@ -1558,61 +1476,77 @@ function removeConn(n) {
   setCurrent(app.current);
 }
 
-// the seat page: every machine with an agent, its station and its instances, running or not
-function renderSeat() {
-  if (!$("seatModal") || $("seatModal").hidden) return;
-  const body = $("seatBody");
-  if (selecting(body) || (document.activeElement && body.contains(document.activeElement) && document.activeElement.tagName === "SELECT")) return;
-  const agents = app.servers.filter(sv => sv.agent);
-  $("seatNote").textContent = app.seatNote || "";
-  $("seatNote").className = "small " + (app.seatBad ? "err" : "muted");
-  body.innerHTML = agents.length ? agents.map(seatCard).join("")
-    : `<p class="small muted">No agent yet. In Settings, + Add agent with the machine's address and its agent's join code (the agent answers on port ${AGENT_PORT}).</p>`;
-}
-
-function seatCard(sv) {
-  const a = sv.agent, k = app.servers.indexOf(sv), seat = a.seat || { instances: [], stations: [] };
-  const who = a.state === "live" ? (a.hello && a.hello.host) || "" : a.state;
-  const stations = (seat.stations || []).map(st => {
-    const loss = st.last_loss ? `, last ${utcTime(st.last_loss[0])}: ${st.last_loss[1]}` : "";
-    return `<div class="small muted">Station ${esc(String(st.station || st.radio))}: ${esc(String(st.live || st.state))}${typeof st.rtt_ms === "number" ? `, ping ${st.rtt_ms} ms` : ""}, losses in the last hour ${Number(st.losses_hour) || 0}${esc(loss)}</div>`;
-  }).join("");
-  return `<section class="scard wide"><h3><span>${esc(sv.address)}</span><span class="${a.state === "live" ? "" : "err"}">${esc(who)}</span></h3>${stations}${(seat.instances || []).map(i => seatRow(k, i)).join("")}</section>`;
-}
-
-function seatRow(k, i) {
-  const run = i.state === "running", busy = i.busy, st = i.settings || {};
+// a copy's tab: its state and actions, its everyday settings, then the spot rule's finer options
+function copyCards(k, sv, i) {
+  const run = i.state === "running", busy = i.busy, saved = i.settings || {};
+  const pend = app.pending[pendKey(sv, i.name)] || {}, st = { ...saved, ...pend }, n = Object.keys(pend).length;
   const at = `data-agent="${k}" data-name="${esc(i.name)}"`;
   const btn = (cmd, label, on) => `<button class="btn small" ${at} data-cmd="${cmd}"${on && !busy ? "" : " disabled"}>${label}</button>`;
-  const choices = (key, opts, cur) => `<div class="seg" ${at} data-key="${key}">${opts.map(([v, l]) =>
+  const choices = (k2, opts, cur) => `<div class="seg${k2 in pend ? " pend" : ""}" ${at} data-key="${k2}">${opts.map(([v, l]) =>
     `<span data-value="${esc(JSON.stringify(v))}"${v === cur ? ' class="on"' : ""}>${esc(l)}</span>`).join("")}</div>`;
-  const onOff = (key, cur) => choices(key, [[false, "off"], [true, "on"]], !!cur);
-  const bands = `<select class="bandsel" ${at} data-key="band"${busy ? " disabled" : ""}>${(st.bands_known && st.bands_known.length ? st.bands_known : [st.band])
-    .map(b => `<option${b === st.band ? " selected" : ""}>${esc(b)}</option>`).join("")}</select>`;
-  const state = busy ? `${busy}...` : run ? `running${i.started ? ", up " + duration(now() - i.started) : ""}, ${Number(i.spots) || 0} spots${i.errors ? `, ${Number(i.errors) || 0} errors` : ""}` : "stopped";
+  const onOff = (k2, cur) => choices(k2, [[false, "off"], [true, "on"]], !!cur);
+  const row = (label, control, hint) => `<span class="label"${hint ? ` title="${esc(hint)}"` : ""}>${label}</span>${control}`;  // hint: on hover
+  const bands = `<select class="bandsel${"band" in pend ? " pend" : ""}" ${at} data-key="band"${busy ? " disabled" : ""}>${(saved.bands_known && saved.bands_known.length ? saved.bands_known : [saved.band])
+    .map(b => `<option${b === st.band ? " selected" : ""}>${esc(String(b))}</option>`).join("")}</select>`;
+  const state = busy ? `${busy}...` : run ? "running" : "stopped";
   const err = !run && i.last_error ? `<div class="small err">${esc(i.last_error)}</div>`
     : run && i.feed_failed ? '<div class="small err">Its feed did not start (port in use): no waterfall until it restarts.</div>' : "";
-  const valid = st.validation || "off";
-  return `<div class="seatrow"><div class="seathead"><b>${esc(i.name)}</b>${bands}<span class="small ${run ? "" : "muted"}">${esc(state)}</span><span class="grow"></span>${btn("start", "Start", !run)}${btn("restart", "Restart", run)}${btn("stop", "Stop", run)}</div>${err}
-    <div class="grid seatgrid"><span class="label">VALIDATION</span>${choices("validation", VALIDATION.map(v => [v, v]), valid)}
-    ${valid !== "off" ? `<span class="label">CALL SOURCE</span>${choices("call_source", CALL_SOURCES, st.call_source)}` : ""}
-    ${RULE_FLAGS.map(([key, l]) => `<span class="label">${l.toUpperCase()}</span>${onOff(key, st[key])}`).join("")}
-    <span class="label">RECORDING</span>${onOff("record", st.record)}</div></div>`;
+  const shown = !!inst() && inst().server === sv && agentName(inst()) === i.name;
+  const host = (sv.agent.hello && sv.agent.hello.host) || sv.address, valid = st.validation || "off";
+  const bar = n ? `<div class="applybar"><span class="small">${n} change${n > 1 ? "s" : ""}</span><span class="grow"></span>`
+    + `<button class="btn small primary" ${at} data-cmd="apply"${busy ? " disabled" : ""}>${run ? `Apply (restarts ${esc(i.name)})` : "Save"}</button>`
+    + `<button class="btn small" ${at} data-cmd="discard">Discard</button></div>` : "";
+  return `<section class="scard wide"><h3><span>${esc(i.name)} · ${esc(String(saved.band || i.band || ""))}</span><span>${esc(host)}</span></h3>
+    <div class="actions"><span class="${run ? "good" : "muted"}">${esc(state)}</span><span class="grow"></span>${btn("show", shown ? "Shown" : "Show", run && !shown)}
+      <span class="group">${btn("start", "Start", !run)}${btn("restart", "Restart", run)}${btn("stop", "Stop", run)}</span></div>${err}</section>
+    <section class="scard wide"><h3><span>SETTINGS</span><span>${run ? `applied by restarting ${esc(i.name)}` : "used at its next start"}</span></h3>
+    <div class="grid setgrid">${row("BAND", bands)}${row("RECORDING", onOff("record", st.record))}${row("CALL VALIDATION", `<div class="inline">${choices("validation", VALIDATION.map(v => [v, v]), valid)}${valid === "off" ? '<span class="small faint">off (set in its config)</span>' : ""}</div>`, HINTS.validation)}${row("KNOWN CALL LIST", choices("call_source", CALL_SOURCES, st.call_source), HINTS.call_source)}</div>
+    <details class="adv"${app.advOpen ? " open" : ""}><summary>ADVANCED: SPOT RULE</summary>
+    <div class="grid setgrid">${RULE_FLAGS.map(([k2, l, hint]) => row(l.toUpperCase(), onOff(k2, st[k2]), hint)).join("")}</div></details>${bar}</section>`;
+}
+
+// drop the pending settings of an agent's copies that gone(name) says are gone
+function dropPending(address, gone) {
+  for (const k of Object.keys(app.pending)) {
+    const bar = k.lastIndexOf("|");
+    if (k.slice(0, bar) === address && gone(k.slice(bar + 1))) delete app.pending[k];
+  }
+}
+
+// pending settings belong to an agent by its address, which does not move when the list changes
+function pendKey(sv, name) { return `${sv.address}|${name}`; }
+
+// a setting picked: pending until Apply; picked back to what the copy runs, it is no longer pending
+function pickSetting(link, name, key, value) {
+  const k = pendKey(link.server, name), i = ((link.seat && link.seat.instances) || []).find(x => x.name === name);
+  const saved = (i && i.settings) || {}, pend = app.pending[k] || (app.pending[k] = {});
+  if (saved[key] === value || (key === "validation" && (saved[key] || "off") === value)) delete pend[key]; else pend[key] = value;
+  if (!Object.keys(pend).length) delete app.pending[k];
+  renderSettings();
 }
 
 async function seatRequest(link, cmd, name, settings) {
-  app.seatNote = `${cmd === "set" ? "changing" : cmd} ${name}...`; app.seatBad = false; renderSeat();
+  app.seatNote = `${cmd === "set" ? "changing" : cmd} ${name}...`; app.seatBad = false; renderSettings();
   const r = await link.request(cmd, name, settings);
   app.seatNote = r.ok ? r.message : `${name}: ${r.error}`; app.seatBad = !r.ok;
-  renderSeat();
+  renderSettings();
+  return r.ok;
 }
 
-// a running copy restarts to take a setting: say so first
-async function changeSetting(link, name, settings) {
+// Apply: every pending change in one request, so a running copy restarts once; asked first
+async function applySettings(link, name) {
+  const k = pendKey(link.server, name), settings = app.pending[k] ? { ...app.pending[k] } : null;  // what is sent
+  if (!settings) return;
   const i = ((link.seat && link.seat.instances) || []).find(x => x.name === name);
   const what = Object.entries(settings).map(([key, v]) => `${key.replace(/^spot_rule_/, "").replace(/_/g, " ")} ${v === true ? "on" : v === false ? "off" : v}`).join(", ");
-  if (i && i.state === "running" && !confirm(`${name}: ${what}. This restarts ${name}. Go ahead?`)) { renderSeat(); renderSettings(); return; }
-  await seatRequest(link, "set", name, settings);
+  if (i && i.state === "running" && !confirm(`${name}: ${what}. This restarts ${name}. Go ahead?`)) return;
+  const ok = await seatRequest(link, "set", name, settings);
+  const now = app.pending[k];
+  if (ok && now) {  // clear what was sent; a choice picked while it was sent stays pending
+    for (const [key, v] of Object.entries(settings)) if (now[key] === v) delete now[key];
+    if (!Object.keys(now).length) delete app.pending[k];
+  }
+  renderSettings();
 }
 
 function seatTarget(t) {
@@ -1621,53 +1555,48 @@ function seatTarget(t) {
   return sv && sv.agent ? [sv.agent, holder.dataset.name, holder] : [null, "", null];
 }
 
-function openSeat() { $("seatModal").hidden = false; renderSeat(); }
-
-function openSettings() { renderSettings(); renderConns(); $("modal").hidden = false; }
+function openSettings() { app.tab = currentTab(); $("modal").hidden = false; renderSettings(); }
 function closeSettings() { $("modal").hidden = true; app.editing = -2; app.form = null; $("fSave").disabled = false; }
 
 // ---- input ----
 
 function bindInput() {
   $("gear").onclick = () => ($("modal").hidden ? openSettings() : closeSettings());
-  $("statusBtn").onclick = () => { renderStatusPage(); $("statusModal").hidden = !$("statusModal").hidden; };
-  $("seatBtn").onclick = () => { if ($("seatModal").hidden) openSeat(); else $("seatModal").hidden = true; };
-  $("seatClose").onclick = () => { $("seatModal").hidden = true; };
-  $("seatModal").onmousedown = e => { if (e.target === $("seatModal")) $("seatModal").hidden = true; };
-  $("seatBody").onclick = e => {
+  $("tabs").onclick = e => {
+    const t = e.target.closest("[data-tab]");
+    if (t) { app.tab = t.dataset.tab; app.editing = -2; renderSettings(); }
+  };
+  $("tabCopy").onclick = e => {
     const t = e.target.closest("[data-cmd], [data-value]");
     if (!t || t.disabled) return;
     const [link, name, holder] = seatTarget(t);
     if (!link) return;
-    if (t.dataset.cmd) {
+    if (t.dataset.cmd === "show") {
+      const n = app.instances.findIndex(x => x.server === link.server && agentName(x) === name);
+      if (n >= 0) { setCurrent(n); closeSettings(); }
+    } else if (t.dataset.cmd === "apply") applySettings(link, name);
+    else if (t.dataset.cmd === "discard") { delete app.pending[pendKey(link.server, name)]; renderSettings(); }
+    else if (t.dataset.cmd) {
       if (t.dataset.cmd !== "start" && !confirm(`${t.dataset.cmd === "stop" ? "Stop" : "Restart"} ${name}?`)) return;
       seatRequest(link, t.dataset.cmd, name);
-    } else if (!t.classList.contains("on")) changeSetting(link, name, { [holder.dataset.key]: JSON.parse(t.dataset.value) });
+    } else if (!t.classList.contains("on")) pickSetting(link, name, holder.dataset.key, JSON.parse(t.dataset.value));
   };
-  $("seatBody").onchange = e => {
+  $("tabCopy").addEventListener("toggle", e => { if (e.target.classList.contains("adv")) app.advOpen = e.target.open; }, true);
+  $("tabCopy").onchange = e => {
     const [link, name, holder] = seatTarget(e.target);
-    if (link && holder.dataset.key === "band") changeSetting(link, name, { band: e.target.value });
+    if (link && holder.dataset.key === "band") pickSetting(link, name, "band", e.target.value);
   };
-  $("statusClose").onclick = () => { $("statusModal").hidden = true; };
   $("dCopy").onclick = () => copyText($("dWins").innerText).then(ok => {
     $("dCopy").textContent = ok ? "Copied" : "Copy failed";
     setTimeout(() => { $("dCopy").textContent = "Copy"; }, 1500);
   });
   $("help").href = HELP_URL;
-  $("statusBody").onclick = e => {
-    if (!e.target.closest('[data-act="code"]')) return;
-    app.codeShown = !app.codeShown;
-    if (app.codeShown) copyText(inst().token);
-    renderStatusPage();
-  };
-  $("statusModal").onmousedown = e => { if (e.target === $("statusModal")) $("statusModal").hidden = true; };
   $("close").onclick = closeSettings;
   $("modal").onmousedown = e => { if (e.target === $("modal")) closeSettings(); };
   $("addConn").onclick = () => editConn(-1);
   $("fSave").onclick = saveConn;
   $("fCancel").onclick = () => { app.editing = -2; app.form = null; $("fSave").disabled = false; renderConns(); };
   for (const id of ["fAddr", "fCode"]) $(id).onkeydown = e => { if (e.key === "Enter") saveConn(); };
-  $("theme").onclick = () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
 
   const search = $("search"), list = $("matches");
   const showMatches = () => {
@@ -1694,7 +1623,6 @@ function bindInput() {
   document.addEventListener("keydown", e => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") { e.preventDefault(); search.focus(); search.select(); }
     else if (e.key === "Escape" && !$("modal").hidden) closeSettings();
-    else if (e.key === "Escape") { $("statusModal").hidden = true; $("seatModal").hidden = true; }
   });
 
   // waterfall: a tap picks the nearest signal, a drag pans, the wheel pans, Ctrl+wheel or a pinch zooms
@@ -1779,8 +1707,7 @@ function start() {
   app.decoded = DECODED.includes(load("decoded", "lowest")) ? load("decoded", "lowest") : "lowest";
   startHere().then(here => {
     if (!here) loadServers();
-    // no agent saved yet: start in demo, with Add server open
-    setDemo(load("demo", !here && !app.servers.length));
+    // no agent saved yet: Settings opens on Add agent
     setCurrent(app.current);
     if (!here && !app.servers.length) { openSettings(); editConn(-1); }
   });

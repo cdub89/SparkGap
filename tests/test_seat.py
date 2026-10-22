@@ -184,3 +184,33 @@ def test_a_feed_that_failed_to_start_has_no_port(seat: Seat) -> None:
     seat.start("dallas1")
     d1 = seat.status(seat.instance("dallas1"))
     assert d1["feed_port"] is None and d1["feed_failed"] is True
+
+
+def test_uptime_comes_from_the_process_not_the_log(seat: Seat) -> None:
+    import time
+
+    seat.start("dallas1")
+    started = seat.status(seat.instance("dallas1"))["started"]
+    assert started is not None and 0 <= time.time() - started < 30
+    time.sleep(1.2)
+    (seat.logs / seat.status(seat.instance("dallas1"))["log"]).open("a").write(
+        "12:00:03 INFO more\n"
+    )
+    assert (
+        seat.status(seat.instance("dallas1"))["started"] == started
+    )  # a log write does not move it
+
+
+def test_build_is_read_from_git_files(tmp_path: Path) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "f").write_text("x")
+    git = ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "add", "f"], check=True)
+    subprocess.run([*git, "commit", "-qm", "x"], check=True)
+    sha = subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True).stdout
+    assert Seat.build(tmp_path) == sha[:7]
+    subprocess.run([*git, "checkout", "-q", "--detach"], check=True)
+    assert Seat.build(tmp_path) == sha[:7]
+    assert Seat.build(tmp_path / "nowhere") is None
