@@ -229,3 +229,31 @@ def test_help_is_the_guide_shipped_with_the_code(server: Server) -> None:
     assert get("/help").startswith(b"HTTP/1.1 200") and b"SparkGap Web" in get("/help")
     assert get("/help/SERVER_PROTOCOL.md").startswith(b"HTTP/1.1 200")
     assert get("/help/../sparkgap.py").startswith(b"HTTP/1.1 404")
+
+
+def test_the_server_exits_on_sigterm_with_a_browser_still_connected(seat: Seat) -> None:  # noqa: F811
+    """A connected browser kept the process alive after SIGTERM (Dallas, 2026-10-22)."""
+    import os
+    import signal
+    import subprocess
+    import sys
+
+    (seat.root / "server.json").write_text(
+        json.dumps({"bind": "127.0.0.1", "port": 0, "join_code": CODE})
+    )
+    p = subprocess.Popen(
+        [sys.executable, "sparkgap_server.py", "--root", str(seat.root)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    port = 0
+    assert p.stdout is not None
+    for line in p.stdout:
+        if "Server on" in line:
+            port = int(line.split("127.0.0.1:")[1].split()[0])
+            break
+    ws = WS(port, path="/server", protocols=f"{SERVER_PROTOCOL}, sparkgap.code.{CODE}")
+    ws.json("hello")
+    os.kill(p.pid, signal.SIGTERM)
+    assert p.wait(timeout=5) == 0

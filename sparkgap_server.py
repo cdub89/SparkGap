@@ -157,6 +157,8 @@ class Server:
         self.ops: concurrent.futures.ThreadPoolExecutor = concurrent.futures.ThreadPoolExecutor(1)
         self.queued = 0
         self.pending = 0
+        self.conns: set[asyncio.StreamWriter] = set()  # every open connection, closed at shutdown
+        self.listener: asyncio.Server | None = None
         self.busy: dict[str, str] = {}  # instance -> operation in progress or queued
         self.state: dict[str, Any] = {}
         self.ready = threading.Event()  # set once listening (for tests and callers)
@@ -189,8 +191,17 @@ class Server:
         )
         self.ready.set()  # after the line above, which the web console shows
         asyncio.get_running_loop().create_task(self._state_loop())
-        async with server:
-            await server.serve_forever()
+        self.listener = server
+        await server.serve_forever()
+
+    def close_connections(self) -> None:
+        """Stop listening and close every open connection.  Before serve() is cancelled: in Python
+        3.12 a cancelled serve_forever waits for open connections, so a browser left connected
+        kept the process alive after SIGTERM (Dallas, 2026-10-22)."""
+        if self.listener:
+            self.listener.close()
+        for w in list(self.conns):
+            w.close()
 
     async def _state_loop(self) -> None:
         last_ping = time.monotonic()
@@ -220,6 +231,7 @@ class Server:
         if self.pending >= MAX_PENDING:  # before any code check: a crowd of half-open requests
             writer.close()
             return
+        self.conns.add(writer)
         try:
             self.pending += 1
             try:
@@ -262,6 +274,7 @@ class Server:
         ):
             pass
         finally:
+            self.conns.discard(writer)
             with contextlib.suppress(Exception):
                 await writer.drain()
             writer.close()
@@ -553,6 +566,7 @@ async def _serve_until_signalled(server: Server) -> None:
     await asyncio.wait(
         [task, asyncio.ensure_future(stop.wait())], return_when=asyncio.FIRST_COMPLETED
     )
+    server.close_connections()
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
