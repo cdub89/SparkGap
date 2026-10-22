@@ -1608,7 +1608,9 @@ function bindInput() {
   $("tabCopy").addEventListener("toggle", e => { if (e.target.classList.contains("adv")) app.advOpen = e.target.open; }, true);
   $("tabCopy").onchange = e => {
     const [link, name, holder] = seatTarget(e.target);
-    if (link && holder.dataset.key === "band") pickSetting(link, name, "band", e.target.value);
+    if (!link || holder.dataset.key !== "band") return;
+    e.target.blur();  // a focused select holds back the redraw that shows Apply
+    pickSetting(link, name, "band", e.target.value);
   };
   $("dCopy").onclick = () => copyText($("dWins").innerText).then(ok => {
     $("dCopy").textContent = ok ? "Copied" : "Copy failed";
