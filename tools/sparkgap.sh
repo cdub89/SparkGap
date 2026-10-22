@@ -30,7 +30,7 @@ sparkgap.sh: run the SparkGap instances on this machine.
                                    a worktree of code/ in <name>/, config/template.json copied to
                                    config/<name>.local.json with that channel, the band and the first
                                    free telnet and UDP ports from the template's; the GUI feed takes the
-                                   first free port from 7320 when it starts (an existing
+                                   first free port from 7321 when it starts, 7320 being the agent's (an existing
                                    config/<name>.local.json is reused); not started
   sparkgap.sh remove <name>        take a stopped instance out: its worktree goes, its config stays in config/
   sparkgap.sh rename <old> <new>   rename a stopped instance, keeping its digit (the DAX-IQ channel):
@@ -193,7 +193,7 @@ g = c.get("gui_feed")
 if g:
     host = g.get("bind", "127.0.0.1")
     host = socket.gethostname() if host in ("0.0.0.0", "::") else host
-    port = g.get("port", 7320)
+    port = g.get("port", "auto")
     if port == "auto":  # the port it got is in its log; stopped, it gets one at the next start
         got = re.findall(r"GUI feed on wss?://\S+?:(\d+)/", open(sys.argv[4]).read()) if sys.argv[4] else []
         port = got[-1] if got else "auto"
@@ -225,6 +225,24 @@ PY
   [ "$spots" -gt 0 ] && grep -h 'SPOT:' "$log" | awk '{print $6}' | sort | uniq -c | sort -rn | head -10 |
     awk 'BEGIN {printf "   top calls:"} {printf " %s(%s)", $2, $1} END {print ""}'
   echo "   log $log"
+}
+
+agent_status() {  # the machine's agent (sparkgap_agent.py): running or not, its address, join code and web page
+  local p
+  [ -f "$R/agent.json" ] || { echo "${BOLD}agent$OFF: not set up (sparkgap_agent.py writes agent.json at its first start)"; return; }
+  local cmd  # running only while that pid is an agent for this root (its --root, or none given)
+  p=$(cat "$R/logs/agent.pid" 2>/dev/null) && cmd=$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null) || cmd=
+  [[ $cmd == *sparkgap_agent.py* ]] && { [[ $cmd != *--root* ]] || [[ $cmd == *"--root $R "* ]]; } || p=
+  python3 - "$R/agent.json" "$p" "$BOLD" "$GREEN" "$RED" "$YELLOW" "$OFF" <<'PY'
+import json, sys
+c = json.load(open(sys.argv[1])); pid, B, G, R, Y, O = sys.argv[2:8]
+code = str(c.get("join_code", "")).upper().replace("-", "")
+show = f"{code[:3]}-{code[3:]}" if len(code) == 6 else code
+host, port = c.get("bind", "127.0.0.1"), c.get("port", 7320)
+web = "https" if c.get("tls_cert") else "http"
+state = f"{G}running{O}, pid {pid}" if pid else f"{R}stopped{O}"
+print(f"{B}agent{O}: {state}, {host}:{port}, join code {B}{Y}{show}{O}, browser {web}://{host}:{port}/")
+PY
 }
 
 setcfg() {  # setcfg <name> <key> <json value or null>; keeps the file's own indentation
@@ -308,7 +326,7 @@ else:
                 c[k] += 1
             used.add(c[k])
     if "gui_feed" in c:
-        c["gui_feed"]["port"] = "auto"  # the first free one from 7320 when it starts
+        c["gui_feed"]["port"] = "auto"  # the first free one from 7321 when it starts
     c["flex_daxiq_channel"] = num
     c.pop("flex_station", None)  # the station comes from the radio's nickname
     c["rbn_known_dir"] = f"{root}/rbn_known"  # one RBN cache for every instance on this machine
@@ -505,7 +523,7 @@ esac
 for a in "$@"; do [[ $a == -h || $a == --help ]] && { cmd_usage "$cmd"; exit 0; }; done
 case $cmd in
   start|stop) [ $# -gt 0 ] || set -- $ALL; for i in "$@"; do dir "$i" > /dev/null; $cmd "$i"; done ;;
-  status) [ $# -gt 0 ] || set -- $ALL; sep=; for i in "$@"; do dir "$i" > /dev/null; [ -n "$sep" ] && echo; sep=1; status "$i"; done ;;
+  status) [ $# -gt 0 ] || { agent_status; echo; set -- $ALL; }; sep=; for i in "$@"; do dir "$i" > /dev/null; [ -n "$sep" ] && echo; sep=1; status "$i"; done ;;
   restart) [ $# -gt 0 ] || set -- $ALL; for i in "$@"; do dir "$i" > /dev/null; stop "$i" && start "$i"; done ;;
   band)
     [ $# -eq 2 ] || { cmd_usage band; exit 2; }

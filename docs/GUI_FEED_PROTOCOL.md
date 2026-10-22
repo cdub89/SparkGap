@@ -9,7 +9,9 @@ Protocol `sparkgap.v1`, feed version 1.
 
 ## Connecting
 
-One endpoint per SparkGap: `ws://<host>:7320/feed`, or `wss://` when the config
+One endpoint per SparkGap: `ws://<host>:<port>/feed` (the port is the first free
+one from 7321 to 7339 unless the config sets one; 7320 is the machine's agent's,
+which passes the feed through as `/feed/<name>`), or `wss://` when the config
 has `tls_cert` and `tls_key`. A standard WebSocket handshake (RFC 6455,
 version 13):
 
@@ -24,7 +26,7 @@ version 13):
   server echoes only `sparkgap.v1`.
 - A feed without a join code accepts a request with an `Origin` header only
   when that origin is a loopback address (`localhost`, `127.0.0.1`, `::1`) on
-  the feed's own port or on 7320-7339 (another copy's page, which lists this
+  the feed's own port or on 7321-7339 (another copy's page, which lists this
   copy too), so a web page from elsewhere cannot read a feed on this machine,
   even through a name that resolves to 127.0.0.1.
 

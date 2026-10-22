@@ -14,28 +14,24 @@ config, startup and shutdown, and Settings shows its config read-only.
 
 ## Getting connected
 
-1. In SparkGap's config, add a `gui_feed` block with `"web": true`, where
-   `<host-ip>` is the IP address of the machine SparkGap runs on, `<port>`
-   the feed's port (7320 unless you pick another) and `XXX-XXX` your own join
-   code (details under
-   [Server: the feed](#server-the-feed)):
+SparkGap Web connects to a machine's agent (`sparkgap_agent.py`), which runs
+that machine's SparkGap copies and passes their feeds through. Protocol and
+settings: [AGENT_PROTOCOL.md](AGENT_PROTOCOL.md).
 
-   ```json
-   "gui_feed": {"bind": "<host-ip>", "port": <port>,
-                "join_code": "XXX-XXX", "web": true}
-   ```
+1. On the machine running SparkGap, start the agent:
+   `python3 sparkgap_agent.py`. At its first start it writes `agent.json` in
+   the run folder (`~/sparkgap` unless `--root` or `$SPARKGAP_ROOT` says
+   otherwise) with a new join code, and prints the code. Set `bind` there to
+   the machine's VPN or local IP address to reach it from another machine.
+2. Open `http://<agent-ip>:7320/` in a browser.
+3. Open Settings (⚙), choose **+ Add agent**, and enter the address and the
+   agent's join code. Every copy the agent runs appears in the band list, and
+   the seat page (⏻) starts, stops and restarts them and changes their
+   settings.
 
-2. Start SparkGap. It logs the browser address and the join code:
-
-   ```text
-   GUI feed on ws://<host-ip>:<port>/feed, join code XXX-XXX
-   GUI feed: browser console at http://<host-ip>:<port>/
-   ```
-
-3. Open that address in a browser, or start the desktop console.
-4. Open Settings (⚙), choose **+ Add server**, and enter the address and the
-   join code. Leave the port blank to find every SparkGap on that machine
-   (ports 7320 to 7339); each one that accepts the code is added.
+Without an agent, a copy whose `gui_feed` has `"web": true` serves the page
+itself, and that page shows only that copy (Settings asks for its join code).
+Live replays (`--file`) work this way.
 
 A console with no servers starts in demo mode, with made-up signals, so it can
 be tried before any server is set up.
@@ -128,13 +124,14 @@ is opened from.
 The feed is off unless the config has a `gui_feed` block:
 
 ```json
-"gui_feed": {"bind": "127.0.0.1", "port": 7320, "join_code": null, "web": false}
+"gui_feed": {"bind": "127.0.0.1", "port": "auto", "join_code": null, "web": false}
 ```
 
 - `bind`: the address to listen on. `127.0.0.1` serves only the same machine. To
   watch from other machines, use the IP address of the machine SparkGap runs on.
   For remote access, use a VPN that encrypts the link.
-- `port`: 7320 by default.
+- `port`: `"auto"` by default, the first free port from 7321 to 7339. 7320 is
+  the machine's agent's.
 - `join_code`: required whenever `bind` is not a loopback address. Six
   characters, minted without any pair easily confused by eye or over the air
   (O/0, I/1 and similar); case, spaces and dashes are ignored on entry. Make one

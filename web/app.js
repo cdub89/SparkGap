@@ -7,15 +7,12 @@ const FEED_VERSION = 1;
 const MAX_BINS = 16_384;
 const DEFAULT_PORT = 7320;
 const HELP_URL = "https://github.com/hotairfred/SparkGap/blob/main/docs/CONSOLE.md";  // the guide, from Settings
-const SCAN_PORTS = Array.from({ length: 20 }, (_, k) => DEFAULT_PORT + k);  // searched for copies on a server (feed "port": "auto")
 const SCAN_TIMEOUT_S = 3;
 const AGENT_PORT = 7320;  // a machine's agent: it runs that machine's copies and passes their feeds through
 const AGENT_PROTOCOL = "sparkgap.agent.v1";
 const VALIDATION = ["off", "permissive", "normal", "aggressive"];
 const CALL_SOURCES = [["scp", "SCP"], ["rbn", "RBN"], ["rbn+skcc", "RBN + SKCC"]];
 const RULE_FLAGS = [["spot_rule_split_runs", "Split runs"], ["spot_rule_contest_words", "Contest words"], ["spot_rule_cq_repeats", "CQ repeats"]];
-const RESCAN_S = 60;  // a server is searched again this often, for copies started since
-const RESCAN_DROP_S = 3;  // and this long after one of its copies drops
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 const CODE_LENGTH = 6;
 const SPECTRUM_HZ = 60;
@@ -842,7 +839,7 @@ class Waterfall {
 // ---- the page ----
 
 const app = {
-  servers: [],  // {address, token}: an address and join code; its copies are found by searching SCAN_PORTS
+  servers: [],  // {address, token}: a machine's agent and its join code; its copies come from its seat
   want: load("current", ""),  // the copy shown, by name, wherever its port is today
   instances: [],
   current: 0,
@@ -858,27 +855,26 @@ const wf = new Waterfall($("wf"));
 
 function inst() { return app.instances[app.current] || null; }
 
-function feedUrl(address, port) {
-  const secure = location.protocol === "https:";
-  return `${secure ? "wss" : "ws"}://${address.trim()}:${port}/feed`;
+// "host" is an agent on AGENT_PORT; "host:port" one on another port
+function hostPort(address) {
+  const m = address.trim().match(/^(.*?)(?::(\d+))?$/);
+  return [m[1], m[2] ? Number(m[2]) : 0];
+}
+function agentUrl(address, path = "/agent") {
+  const [host, port] = hostPort(address);
+  return `${location.protocol === "https:" ? "wss" : "ws"}://${host}:${port || AGENT_PORT}${path}`;
 }
 function urlParts(url) {
   try { const u = new URL(url); return [u.hostname.replace(/^\[|\]$/g, ""), Number(u.port) || DEFAULT_PORT]; } catch { return ["", DEFAULT_PORT]; }
 }
 function normalizeCode(code) { return code.toUpperCase().replace(/[ -]/g, ""); }
-// "host" searches SCAN_PORTS; "host:port" is one feed outside that range
-function hostPort(address) {
-  const m = address.trim().match(/^(.*?)(?::(\d+))?$/);
-  return [m[1], m[2] ? Number(m[2]) : 0];
-}
 function checkServer(address, code) {
   const m = address.trim().match(/^([^\s/:#?@]+)(?::(\d+))?$/);
-  if (!m) return "address: a VPN or local IP address (host:port only for a feed outside 7320 to 7339)";
+  if (!m) return "address: the machine's VPN or local IP address (host:port only for an agent off " + AGENT_PORT + ")";
   if (m[2] && !(Number(m[2]) > 0 && Number(m[2]) < 65_536)) return "port: 1 to 65535";
-  if (m[2] && SCAN_PORTS.includes(Number(m[2]))) return `leave the port off: ${SCAN_PORTS[0]} to ${SCAN_PORTS[SCAN_PORTS.length - 1]} are searched`;
   const c = normalizeCode(code);
-  if (c && (c.length !== CODE_LENGTH || [...c].some(ch => !CODE_ALPHABET.includes(ch)))) {
-    return `join code: ${CODE_LENGTH} letters and digits, as SparkGap's log shows it`;
+  if (c.length !== CODE_LENGTH || [...c].some(ch => !CODE_ALPHABET.includes(ch))) {
+    return `join code: the agent's ${CODE_LENGTH} letters and digits (in its agent.json, and its log at first start)`;
   }
   return "";
 }
@@ -910,22 +906,19 @@ function probeFeed(url, token) {
   });
 }
 
-function agentUrl(host, path = "/agent") {
-  return `${location.protocol === "https:" ? "wss" : "ws"}://${host.trim()}:${AGENT_PORT}${path}`;
-}
 // the agent answers on its port with hello {agent: true}; a wrong code closes as a feed's does
-function probeAgent(host, token) {
+function probeAgent(address, token) {
   return new Promise(resolve => {
     let ws = null, done = false;
     const finish = r => { if (done) return; done = true; clearTimeout(timer); if (ws) ws.close(); resolve(r); };
     const timer = setTimeout(() => finish("none"), SCAN_TIMEOUT_S * 1000);
-    try { ws = new WebSocket(agentUrl(host), [AGENT_PROTOCOL, CODE_PROTOCOL + token]); } catch { finish("none"); return; }
+    try { ws = new WebSocket(agentUrl(address), [AGENT_PROTOCOL, CODE_PROTOCOL + token]); } catch { finish("none"); return; }
     ws.onmessage = e => { try { const m = JSON.parse(e.data); if (m.type === "hello" && m.agent) finish("agent"); } catch { /* not an agent */ } };
     ws.onclose = e => finish({ [CLOSE_WRONG_CODE]: "code", [CLOSE_LOCKED_OUT]: "lockout" }[e.code] || "none");
   });
 }
 
-// the agent connection of a server: its seat (every instance, running or not) and requests to it
+// a machine's agent: its seat (every instance, running or not), its copies' feeds, and requests to it
 class AgentLink {
   constructor(server) {
     this.server = server;
@@ -939,29 +932,29 @@ class AgentLink {
     this.closed = false;
   }
   open() {
-    const [host] = hostPort(this.server.address);
     let ws;
-    try { ws = new WebSocket(agentUrl(host), [AGENT_PROTOCOL, CODE_PROTOCOL + this.server.token]); } catch { this.dropped(); return; }
+    try { ws = new WebSocket(agentUrl(this.server.address), [AGENT_PROTOCOL, CODE_PROTOCOL + this.server.token]); } catch { this.dropped(); return; }
     this.ws = ws;
     ws.onmessage = e => { try { this.message(JSON.parse(e.data)); } catch { /* not JSON */ } };
     ws.onclose = e => {
       if (this.ws !== ws) return;
       this.ws = null;
-      this.state = e.code === CLOSE_WRONG_CODE ? "wrong code" : e.code === CLOSE_LOCKED_OUT ? "locked out" : "dropped";
+      this.state = e.code === CLOSE_WRONG_CODE ? "wrong join code" : e.code === CLOSE_LOCKED_OUT ? "locked out" : "no answer";
       this.dropped();
     };
   }
   dropped() {
     for (const resolve of this.waiting.values()) resolve({ ok: false, error: "agent connection lost" });
     this.waiting.clear();
-    renderSeat();
-    if (this.closed) return;
+    renderSeat(); renderConns();
+    // a wrong code is never retried: every try counts toward the agent's lockout; Edit fixes it
+    if (this.closed || this.state === "wrong join code") return;
     const wait = this.state === "locked out" ? LOCKOUT_S : RECONNECT_S[Math.min(this.retry++, RECONNECT_S.length - 1)];
     this.timer = setTimeout(() => this.open(), wait * 1000);
   }
   close() { this.closed = true; clearTimeout(this.timer); if (this.ws) this.ws.close(); }
   message(m) {
-    if (m.type === "hello") { this.hello = m; this.state = "live"; this.retry = 0; }
+    if (m.type === "hello") { this.hello = m; this.state = "live"; this.retry = 0; renderConns(); }
     else if (m.type === "seat") { this.seat = m; agentCopies(this.server); renderSeat(); }
     else if (m.type === "agent_result" && this.waiting.has(m.id)) { this.waiting.get(m.id)(m); this.waiting.delete(m.id); }
   }
@@ -975,11 +968,10 @@ class AgentLink {
   }
 }
 
-// a server with an agent: its running copies, each opened through the agent
+// an agent's running copies, each opened through it with the agent's code
 function agentCopies(s) {
-  const [host] = hostPort(s.address);
   const urls = (s.agent.seat.instances || []).filter(i => i.state === "running" && i.feed_port)
-    .map(i => agentUrl(host, "/feed/" + encodeURIComponent(i.name)));
+    .map(i => agentUrl(s.address, "/feed/" + encodeURIComponent(i.name)));
   reconcileUrls(s, urls);
 }
 // the agent's name for a copy opened through it, or "" for a copy found by searching ports
@@ -988,21 +980,8 @@ function agentName(i) {
   return m ? decodeURIComponent(m[1]) : "";
 }
 
-// what a search found, in a line for the operator
-function scanReport(found) {
-  const n = r => found.filter(f => f[1] === r).length;
-  const parts = [];
-  if (n("agent")) parts.push("Found a SparkGap agent: its copies are listed under ⏻.");
-  if (n("ok")) parts.push(`Found ${n("ok")} SparkGap${n("ok") > 1 ? "s" : ""}.`);
-  if (n("code")) parts.push(`Different join code on ${n("code")}.`);
-  if (n("lockout")) parts.push(`Locked out for ${LOCKOUT_S / 60} min on ${n("lockout")}.`);
-  if (n("full")) parts.push(`Too many clients on ${n("full")}.`);
-  if (!parts.length) parts.push("No SparkGap answered at that address.");
-  return parts.join(" ");
-}
-
 function saveServers() {
-  save("servers", app.servers.map(({ address, token, refused }) => ({ address, token, refused: [...(refused || [])] })));
+  save("servers", app.servers.map(({ address, token }) => ({ address, token, kind: "agent" })));
 }
 
 function addInstance(url, token, at, server = null) {
@@ -1015,10 +994,6 @@ function addInstance(url, token, at, server = null) {
 }
 
 function changed(i, what) {
-  if (what === "state" && i.state === "dropped" && i.server && !i.server.rescan) {
-    const sv = i.server;
-    sv.rescan = setTimeout(() => { sv.rescan = 0; scanServer(sv); }, RESCAN_DROP_S * 1000);
-  }
   // a copy that comes back on another port is followed by name, but never away from a live one
   if (what === "hello" && !i.demo && i.name === app.want && i !== inst() && !(inst() && inst().state === "live")) {
     setCurrent(app.instances.indexOf(i)); return;
@@ -1062,70 +1037,35 @@ function setDemo(on) {
   }
 }
 
-// servers saved before they were searched by address: one per address and code, the port dropped
-function oldServers() {
-  const out = [];
-  for (const f of load("connections", [])) {
-    if (!f || !f.url) continue;
-    const [host, port] = urlParts(f.url);
-    const address = SCAN_PORTS.includes(port) ? host : `${host}:${port}`, token = f.token || "";
-    if (!out.some(s => s.address === address && s.token === token)) out.push({ address, token });
-  }
-  return out;
-}
-
+// servers are agents; one saved before them (a copy's own address and code) is dropped with a note
 function loadServers() {
-  app.servers = (load("servers", null) || oldServers()).map(s => ({ ...s, refused: new Set(s.refused || []) }));
+  const saved = load("servers", []) || [];
+  app.servers = saved.filter(s => s && s.kind === "agent" && s.address).map(s => ({ address: s.address, token: s.token || "" }));
+  if (saved.length > app.servers.length || load("connections", null)) {
+    app.migrated = "Servers saved before the agent were removed: add each machine's agent (its address and the agent's join code).";
+  }
+  save("connections", null);
   saveServers();
-  app.servers.forEach(scanServer);
+  for (const s of app.servers) { s.agent = new AgentLink(s); s.agent.open(); }
 }
 
-// a search offers the code to each port; a port that refused it is left out of the automatic
-// searches until the server is edited, so a stale code never earns the feed's lockout
-async function probeServer(s, every = false) {
-  const [host, port] = hostPort(s.address);
-  s.refused = every || !s.refused ? new Set() : s.refused;
-  if (!port && !s.refused.has(AGENT_PORT)) {
-    const agent = await probeAgent(host, s.token);
-    if (agent === "agent") return [[AGENT_PORT, "agent"]];
-    if (agent === "code" || agent === "lockout") {  // remembered: a stale code must not earn the agent's lockout
-      s.refused.add(AGENT_PORT);
-      if (app.servers.includes(s)) saveServers();
-      if (every) return [[AGENT_PORT, agent]];
-    }
-  }
-  // a port with a live copy of this server is not probed again: it would send a whole snapshot
-  const live = every ? [] : app.instances.filter(i => i.server === s && i.state === "live").map(i => urlParts(i.url)[1]);
-  const ports = (port ? [port] : SCAN_PORTS).filter(p => !s.refused.has(p) && !live.includes(p));
-  const found = await Promise.all(ports.map(p => probeFeed(feedUrl(host, p), s.token).then(r => [p, r])));
-  for (const [p, r] of found) if (r === "code" || r === "lockout") s.refused.add(p);
-  if (found.some(([, r]) => r === "code" || r === "lockout") && app.servers.includes(s)) saveServers();
-  return found.concat(live.map(p => [p, "ok"]));
+// a page served by a copy (its feed's "web": true, no agent) shows that copy and nothing else
+async function startHere() {
+  if (!/^https?:$/.test(location.protocol)) return false;
+  const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/feed`, token = load("here", "");
+  const r = await probeFeed(url, token);
+  if (r === "none") return false;  // an agent's page, or no SparkGap: the server list
+  app.here = { url };
+  addInstance(url, token);
+  return true;
 }
 
-// the copies a search found join the list; a copy that no longer answers leaves it
-function reconcile(s, found) {
-  if (found.some(f => f[1] === "agent")) {
-    if (!s.agent) { s.agent = new AgentLink(s); s.agent.open(); }
-    return;
-  }
-  const [host] = hostPort(s.address);
-  reconcileUrls(s, found.filter(f => f[1] === "ok").map(f => feedUrl(host, f[0])));
-}
 function reconcileUrls(s, ok) {
   const was = inst();
   app.instances.filter(i => i.server === s && !ok.includes(i.url) && i.state !== "live").forEach(removeInstance);
   for (const url of ok) if (!app.instances.some(i => i.url === url)) addInstance(url, s.token, undefined, s);
   if (inst() !== was || (!inst() && app.instances.length)) setCurrent(app.current);
   renderAll();
-}
-
-async function scanServer(s) {
-  if (s.scanning || s.agent) return;  // an agent's copies come from its seat
-  s.scanning = true;
-  const found = await probeServer(s);
-  s.scanning = false;
-  if (app.servers.includes(s)) reconcile(s, found);
 }
 
 function removeInstance(i) {
@@ -1509,43 +1449,53 @@ function renderConns() {
   const box = $("conns");
   box.textContent = "";
   const cs = getComputedStyle(document.documentElement);
-  app.servers.forEach((sv, n) => {
-    const copies = app.instances.filter(i => i.server === sv);
+  const here = app.here ? [{ address: location.host, here: true }] : [];
+  here.concat(app.servers).forEach((sv, n) => {
+    const copies = sv.here ? app.instances.filter(i => !i.demo) : app.instances.filter(i => i.server === sv);
     const live = copies.filter(i => i.state === "live");
+    const a = sv.agent, ok = sv.here ? live.length > 0 : a && a.state === "live";
     const row = document.createElement("div");
     row.className = "conn" + (copies.includes(inst()) ? " cur" : "");
     const dot = document.createElement("span");
     dot.className = "sdot";
-    dot.style.background = cs.getPropertyValue(live.length ? "--good" : sv.scanning ? "--accent" : "--bad");
-    const name = document.createElement("span"); name.className = "n"; name.textContent = sv.address;
-    const what = document.createElement("span"); what.className = "u" + (copies.length ? "" : " bad");
-    what.textContent = copies.length ? copies.map(i => i.title).join(", ") : sv.scanning ? "searching..." : "no SparkGap answering";
+    dot.style.background = cs.getPropertyValue(ok ? "--good" : !sv.here && a && a.state === "connecting" ? "--accent" : "--bad");
+    const name = document.createElement("span"); name.className = "n"; name.textContent = sv.here ? `This SparkGap (${sv.address})` : sv.address;
+    const what = document.createElement("span"); what.className = "u" + (ok ? "" : " bad");
+    what.textContent = sv.here ? (copies[0] ? copies[0].error || copies[0].title : "")
+      : a && a.state !== "live" ? (a.state === "connecting" ? "connecting..." : `agent: ${a.state}`)
+      : copies.length ? copies.map(i => i.title).join(", ") : "agent: no copies running";
     row.append(dot, name, what);
-    const edit = document.createElement("button"); edit.className = "btn small"; edit.textContent = "Edit";
-    edit.onclick = e => { e.stopPropagation(); editConn(n); };
-    const del = document.createElement("button"); del.className = "btn small"; del.textContent = "✕";
-    del.onclick = e => { e.stopPropagation(); removeConn(n); };
-    row.append(edit, del);
+    const edit = document.createElement("button"); edit.className = "btn small"; edit.textContent = sv.here ? "Join code" : "Edit";
+    edit.onclick = e => { e.stopPropagation(); editConn(sv.here ? -3 : n - here.length); };
+    row.append(edit);
+    if (!sv.here) {
+      const del = document.createElement("button"); del.className = "btn small"; del.textContent = "✕";
+      del.onclick = e => { e.stopPropagation(); removeConn(n - here.length); };
+      row.append(del);
+    }
     row.onclick = () => { leaveDemo(); if (copies.length) setCurrent(app.instances.indexOf(copies[0])); };
     box.appendChild(row);
   });
-  if (!app.servers.length && app.editing === -2) {
+  if (!app.servers.length && !app.here && app.editing === -2) {
     const p = document.createElement("div"); p.className = "small muted"; p.textContent = "No servers yet."; box.appendChild(p);
   }
-  if (app.note && app.editing === -2) {
-    const p = document.createElement("div"); p.className = "small muted"; p.textContent = app.note; box.appendChild(p);
+  for (const note of [app.migrated, app.editing === -2 ? app.note : ""]) {  // the migration note stays until an agent is added
+    if (!note) continue;
+    const p = document.createElement("div"); p.className = "small muted"; p.textContent = note; box.appendChild(p);
   }
   $("connForm").hidden = app.editing === -2;
-  $("addConn").hidden = app.editing !== -2;
+  $("addConn").hidden = app.editing !== -2 || !!app.here;
+  $("fAddr").hidden = app.editing === -3;
   $("fSave").textContent = $("fSave").disabled ? "Searching..." : app.editing === -1 ? "Add" : "Save";
 }
 
 function editConn(n) {
   leaveDemo();
   const sv = app.servers[n];
-  // a new server defaults to the machine that served this page, if one did
+  // a new agent defaults to the machine that served this page, if one did
   const served = /^https?:$/.test(location.protocol);
-  $("fAddr").value = sv ? sv.address : served ? location.hostname : ""; $("fCode").value = sv ? sv.token : "";
+  $("fAddr").value = sv ? sv.address : served ? location.hostname : "";
+  $("fCode").value = n === -3 ? load("here", "") : sv ? sv.token : "";
   $("fErr").hidden = true;
   app.editing = n;
   app.form = {};  // this form; a search finished after it closed is dropped
@@ -1557,29 +1507,44 @@ function editConn(n) {
 
 // a server is kept once a search of its address finds a SparkGap that takes the code
 async function saveConn() {
-  const n = app.editing, form = app.form, address = $("fAddr").value.trim(), token = normalizeCode($("fCode").value);
+  const n = app.editing, form = app.form, token = normalizeCode($("fCode").value);
+  if (app.here) {  // a page served by a copy: only its code
+    save("here", token);
+    location.reload();
+    return;
+  }
+  const address = $("fAddr").value.trim();
   let err = checkServer(address, token);
-  if (!err && app.servers.some((sv, k) => k !== n && sv.address === address && sv.token === token)) err = "already in the list";
+  if (!err && app.servers.some((sv, k) => k !== n && sv.address === address)) err = "already in the list";
   if (err) { $("fErr").textContent = err; $("fErr").hidden = false; return; }
   $("fErr").hidden = true;
   $("fSave").disabled = true;
   $("fSave").textContent = "Searching...";
-  const sv = { address, token };
-  const found = await probeServer(sv, true);
+  const found = await probeAgent(address, token);
   if (app.form !== form) return;  // closed meanwhile; another form may be open
   $("fSave").disabled = false;
-  const text = scanReport(found);
-  if (!found.some(f => f[1] === "ok" || f[1] === "agent")) { $("fErr").textContent = text; $("fErr").hidden = false; renderConns(); return; }
+  if (found !== "agent") {
+    $("fErr").textContent = {
+      code: "wrong join code for that agent",
+      lockout: `locked out after wrong join codes: try again in ${LOCKOUT_S / 60} min`,
+    }[found] || `no SparkGap agent answered at that address (port ${hostPort(address)[1] || AGENT_PORT})`;
+    $("fErr").hidden = false;
+    renderConns();
+    return;
+  }
+  const sv = { address, token };
   if (n >= 0) {
-    if (app.servers[n].agent) app.servers[n].agent.close();
+    app.servers[n].agent.close();
     app.instances.filter(i => i.server === app.servers[n]).forEach(removeInstance);
     app.servers[n] = sv;
   } else app.servers.push(sv);
   app.editing = -2; app.form = null;
-  app.note = text;
+  app.note = "";
+  app.migrated = "";
   saveServers();
-  reconcile(sv, found);
-  setCurrent(Math.max(0, app.instances.findIndex(i => i.server === sv)));
+  sv.agent = new AgentLink(sv);
+  sv.agent.open();
+  renderConns();
   renderSeat();
 }
 
@@ -1602,7 +1567,7 @@ function renderSeat() {
   $("seatNote").textContent = app.seatNote || "";
   $("seatNote").className = "small " + (app.seatBad ? "err" : "muted");
   body.innerHTML = agents.length ? agents.map(seatCard).join("")
-    : `<p class="small muted">No agent yet. In Settings, + Add server with the machine's address and its agent's join code (the agent answers on port ${AGENT_PORT}).</p>`;
+    : `<p class="small muted">No agent yet. In Settings, + Add agent with the machine's address and its agent's join code (the agent answers on port ${AGENT_PORT}).</p>`;
 }
 
 function seatCard(sv) {
@@ -1812,12 +1777,13 @@ function start() {
   bindInput();
   setTheme(load("theme", "dark"));
   app.decoded = DECODED.includes(load("decoded", "lowest")) ? load("decoded", "lowest") : "lowest";
-  // no saved servers yet: start in demo
-  loadServers();
-  setDemo(load("demo", !app.servers.length));
-  setCurrent(app.current);
-  if (!app.servers.length) { openSettings(); editConn(-1); }
-  setInterval(() => app.servers.forEach(scanServer), RESCAN_S * 1000);
+  startHere().then(here => {
+    if (!here) loadServers();
+    // no agent saved yet: start in demo, with Add server open
+    setDemo(load("demo", !here && !app.servers.length));
+    setCurrent(app.current);
+    if (!here && !app.servers.length) { openSettings(); editConn(-1); }
+  });
   setInterval(() => { $("utc").textContent = "UTC: " + new Date().toISOString().substr(11, 8); }, 250);
   setInterval(() => { renderLadder(); }, 1000);
   // instances not on screen still move their rows into history, so switching shows their recent waterfall

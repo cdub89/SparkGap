@@ -682,3 +682,11 @@ def test_auto_port_says_when_none_is_free(monkeypatch: pytest.MonkeyPatch,
             assert f"no free port in {p}-{p + 1}" in caplog.text
         finally:
             f.stop()
+
+
+def test_7320_is_the_agents_and_auto_starts_after_it(caplog: pytest.LogCaptureFixture) -> None:
+    assert FeedServer({"bind": "127.0.0.1"}, HELLO).ports[0] == 7321
+    assert list(feed_server.AUTO_PORTS) == list(range(7321, 7340))
+    with caplog.at_level(logging.WARNING):
+        FeedServer({"bind": "127.0.0.1", "port": 7320}, HELLO)
+    assert "is the agent's" in caplog.text

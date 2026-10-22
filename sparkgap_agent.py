@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from feed_server import (
+    AGENT_PORT,
     CLOSE_LOCKED_OUT,
     CLOSE_WRONG_CODE,
     CODE_PROTOCOL,
@@ -67,7 +68,7 @@ log = logging.getLogger("sparkgap.agent")
 AGENT_PROTOCOL = "sparkgap.agent.v1"
 FEED_PROTOCOL = "sparkgap.v1"
 AGENT_VERSION = 1
-DEFAULT_PORT = 7320  # the first of the feeds' port range: copies on "auto" take the next ones
+DEFAULT_PORT = AGENT_PORT  # 7320: the copies' feeds take 7321-7339
 AGENT_PATH = "/agent"
 FEED_PREFIX = "/feed/"
 STATE_EVERY_S = 2.0
@@ -491,8 +492,16 @@ def main(argv: list[str] | None = None) -> int:
     if not (args.root / "instances").exists():
         raise SystemExit(f"{args.root}: no instances file (sparkgap.sh init makes one)")
     agent = Agent(args.root, load_settings(args.root))
-    with contextlib.suppress(KeyboardInterrupt):
-        asyncio.run(agent.serve())
+    pidfile = args.root / "logs" / "agent.pid"  # sparkgap.sh status reads it
+    pidfile.parent.mkdir(parents=True, exist_ok=True)
+    pidfile.write_text(f"{os.getpid()}\n")
+    try:
+        with contextlib.suppress(KeyboardInterrupt):
+            asyncio.run(agent.serve())
+    finally:
+        with contextlib.suppress(OSError):
+            if pidfile.read_text().strip() == str(os.getpid()):
+                pidfile.unlink()
     return 0
 
 
