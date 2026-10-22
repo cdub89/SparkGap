@@ -308,3 +308,27 @@ def test_feed_control_without_a_feed_is_no_answer() -> None:
     port = s.getsockname()[1]
     s.close()
     assert sparkgap_server.feed_control("127.0.0.1", port, None, {"band": "20m"}, wait_s=1) is None
+
+
+def test_shutdown_drops_a_browser_that_stopped_reading(server: Server) -> None:
+    """A half-closed browser with 63 KB queued kept the old server alive (Beelink, 2026-10-22)."""
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    s.connect(("127.0.0.1", server.port))
+    s.sendall(b"GET /server HTTP/1.1\r\n")  # unfinished, then never reads
+    t = time.monotonic()
+    while not server.conns:
+        assert time.monotonic() - t < 3
+        time.sleep(0.01)
+    w = next(iter(server.conns))
+    assert server.listener is not None
+    loop = server.listener.get_loop()
+    loop.call_soon_threadsafe(w.write, b"x" * 8 * 2**20)
+    time.sleep(0.3)
+    assert w.transport.get_write_buffer_size() > 0  # stuck: the browser takes nothing
+    loop.call_soon_threadsafe(server.close_connections)
+    t = time.monotonic()
+    while w.get_extra_info("socket").fileno() != -1:
+        assert time.monotonic() - t < 2, "connection still open"
+        time.sleep(0.01)
+    s.close()

@@ -199,11 +199,12 @@ class Server:
     def close_connections(self) -> None:
         """Stop listening and close every open connection.  Before serve() is cancelled: in Python
         3.12 a cancelled serve_forever waits for open connections, so a browser left connected
-        kept the process alive after SIGTERM (Dallas, 2026-10-22)."""
+        kept the process alive after SIGTERM (Dallas, 2026-10-22).  Aborted, not closed: a close
+        first sends what is queued, which a browser that stopped reading never takes (Beelink)."""
         if self.listener:
             self.listener.close()
         for w in list(self.conns):
-            w.close()
+            w.transport.abort()
 
     async def _state_loop(self) -> None:
         last_ping = time.monotonic()
