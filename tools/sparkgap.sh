@@ -18,8 +18,11 @@ sparkgap.sh: run the SparkGap instances on this machine.
                                    CPU, memory, band, GUI feed address and join code, telnet port, recording,
                                    spots, errors, warnings, reconnects, IQ trimmed, top calls and its log
   sparkgap.sh start [name ...]     start in the background and wait until it is live;
-                                   the log goes to logs/<name>_<band>_<UTC>.log (UTC to the second, as recordings)
-  sparkgap.sh stop [name ...]      stop cleanly (as Ctrl-C would) and wait up to ${STOP_WAIT_S} s
+                                   the log goes to logs/<name>_<band>_<UTC>.log (UTC to the second, as recordings);
+                                   a Flex instance first starts its radio's station (flex_station.py, log
+                                   logs/station_<radio>_<UTC>.log), one per radio, which every copy binds to
+  sparkgap.sh stop [name ...]      stop cleanly (as Ctrl-C would) and wait up to ${STOP_WAIT_S} s; the last
+                                   Flex instance on a radio stops its station too
   sparkgap.sh restart [name ...]   stop, then start
   sparkgap.sh band <name> <band>   set the band in its config; restarts it if it was running
   sparkgap.sh rec <name> on|off    record IQ to rec/ or stop recording; restarts it if it was running
@@ -91,13 +94,56 @@ newest_log() { ls -t "$R"/logs/"$1"_*.log 2>/dev/null | head -1; }
 # a log's ERROR lines and the exception that ends a traceback
 errors_in() { grep -E '^[0-9:]+ ERROR |^[A-Za-z_.]*(Error|Exception): ' "$1"; }
 
-start() {
+radio() {  # the Flex radio an instance uses (its sdr_ip), empty for any other receiver
+  python3 -c "import json,sys; c=json.load(open(sys.argv[1])); print(c.get('sdr_ip') or '' if c.get('sdr_type') == 'flex' else '')" "$(cfg "$1")"
+}
+spid() { local p; p=$(cat "$R/logs/station_$1.pid" 2>/dev/null) && kill -0 "$p" 2>/dev/null && echo "$p"; }
+
+locked() {  # run "$@" holding the lock of instance $2's radio: one start or stop at a time per radio
+  local ip; ip=$(radio "$2")
+  [ -n "$ip" ] || { "$@"; return; }
+  ( flock 9; "$@" ) 9> "$R/logs/station_$ip.lock"
+}
+
+station_up() {  # the radio's station (flex_station.py), started from instance $1 unless it runs
+  local i=$1 ip log
+  ip=$(radio "$i"); [ -n "$ip" ] || return 0
+  spid "$ip" > /dev/null && return 0
+  log="$R/logs/station_${ip}_$(date -u +%Y%m%d_%H%M%SZ).log"
+  (cd "$(dir "$i")" && exec setsid bash -c 'echo $$ > "$1"; exec "$2" flex_station.py --config "$3" --status "$4" > "$5" 2>&1' \
+     _ "$R/logs/station_$ip.pid" "$(field "$i" 4)" "$(cfg "$i")" "$R/logs/station_$ip.json" "$log" < /dev/null > /dev/null 2>&1 9>&- &)
+  for _ in $(seq 1 "$START_WAIT_S"); do
+    sleep 1
+    grep -q "holds the GUI client" "$log" 2>/dev/null && { echo "station $ip: live (pid $(spid "$ip")), log $log"; return; }
+    spid "$ip" > /dev/null || break
+  done
+  grep -q "already has station" "$log" 2>/dev/null && { echo "station $ip: held by another process"; rm -f "$R/logs/station_$ip.pid"; return; }
+  echo "station $ip: failed to start: $(errors_in "$log" | tail -1)"; echo "   log $log"; rm -f "$R/logs/station_$ip.pid"; return 1
+}
+
+station_down() {  # stop the station of instance $1's radio once no other running instance uses it
+  local i=$1 ip j p
+  ip=$(radio "$i"); [ -n "$ip" ] || return 0
+  for j in $ALL; do [ "$j" != "$i" ] && pid "$j" > /dev/null && [ "$(radio "$j")" = "$ip" ] && return 0; done
+  p=$(spid "$ip") || { rm -f "$R/logs/station_$ip.pid"; return 0; }
+  kill -INT "$p"
+  for _ in $(seq 1 "$STOP_WAIT_S"); do kill -0 "$p" 2>/dev/null || break; sleep 1; done
+  if kill -0 "$p" 2>/dev/null; then echo "station $ip: still running after ${STOP_WAIT_S} s (pid $p)"; return 1; fi
+  rm -f "$R/logs/station_$ip.pid"; echo "station $ip: stopped"
+}
+
+start() { locked start_flex "$1"; }
+start_flex() { station_up "$1" && start_copy "$1"; }
+stop() { locked stop_flex "$1"; }
+stop_flex() { stop_copy "$1" && station_down "$1"; }
+
+start_copy() {
   local i=$1 p t log
   if p=$(pid "$i"); then echo "$i: already running (pid $p)"; return; fi
   t=$(date -u +%Y%m%d_%H%M%SZ); log="$R/logs/${i}_$(band "$i")_$t.log"
   # exec: the subshell becomes the copy, so no sparkgap.sh is left holding the caller's output
   (cd "$(dir "$i")" && exec setsid bash -c 'echo $$ > "$1"; exec "$2" sparkgap.py --config "$3" > "$4" 2>&1' \
-     _ "$R/logs/$i.pid" "$(field "$i" 4)" "$(cfg "$i")" "$log" < /dev/null > /dev/null 2>&1 &)
+     _ "$R/logs/$i.pid" "$(field "$i" 4)" "$(cfg "$i")" "$log" < /dev/null > /dev/null 2>&1 9>&- &)
   for _ in $(seq 1 "$START_WAIT_S"); do
     sleep 1
     grep -q "SparkGap LIVE:" "$log" 2>/dev/null && { echo "$i: live (pid $(pid "$i")), log $log"; return; }
@@ -107,7 +153,7 @@ start() {
   echo "$i: failed to start: $(errors_in "$log" | tail -1)"; echo "   log $log"; rm -f "$R/logs/$i.pid"; return 1
 }
 
-stop() {
+stop_copy() {
   local i=$1 p
   if ! p=$(pid "$i"); then echo "$i: not running"; rm -f "$R/logs/$i.pid"; return; fi
   kill -INT "$p"
@@ -124,6 +170,21 @@ status() {
   else
     echo "$BOLD$i$OFF: ${RED}stopped$OFF, $(git -C "$(dir "$i")" describe --always --dirty), $(bandlabel "$i")"
     [ -n "$log" ] && last=$(errors_in "$log" | tail -1) && [ -n "$last" ] && echo "   ${RED}last error $(date -u -r "$log" +"%m-%d %H:%MZ"): $last$OFF"
+  fi
+  local ip; ip=$(radio "$i")
+  if [ -n "$ip" ] && spid "$ip" > /dev/null; then
+    python3 - "$R/logs/station_$ip.json" <<'PY'
+import json, sys, time
+try:
+    h = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    sys.exit(print("   station: starting"))
+hour = [l for l in h.get("losses", []) if time.time() - l[0] < 3600]
+last = f", last {time.strftime('%H:%MZ', time.gmtime(hour[-1][0]))}: {hour[-1][1]}" if hour else ""
+print(f"   station {h['station']}: {h['state']}, ping {h['rtt_ms']} ms, losses in the last hour {len(hour)}{last}")
+PY
+  elif [ -n "$ip" ]; then
+    echo "   station: not running"
   fi
   python3 - "$(cfg "$i")" "$BOLD$YELLOW" "$OFF" "$([ -n "$p" ] && echo "$log")" "$REC_MIN_GB" <<'PY'
 import json, os, re, shutil, socket, sys
