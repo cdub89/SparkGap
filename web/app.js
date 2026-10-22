@@ -1502,6 +1502,7 @@ function removeConn(n) {
 function copyCards(k, sv, i) {
   const run = i.state === "running", busy = i.busy, saved = i.settings || {};
   const pend = app.pending[pendKey(sv, i.name)] || {}, st = { ...saved, ...pend }, n = Object.keys(pend).length;
+  const live = run && n === 1 && "band" in pend;  // a band change alone moves a running copy in place
   const at = `data-server="${k}" data-name="${esc(i.name)}"`;
   const btn = (cmd, label, on) => `<button class="btn small" ${at} data-cmd="${cmd}"${on && !busy ? "" : " disabled"}>${label}</button>`;
   const choices = (k2, opts, cur) => `<div class="seg${k2 in pend ? " pend" : ""}" ${at} data-key="${k2}">${opts.map(([v, l]) =>
@@ -1516,12 +1517,12 @@ function copyCards(k, sv, i) {
   const shown = !!inst() && inst().server === sv && copyName(inst()) === i.name;
   const host = (sv.link.hello && sv.link.hello.host) || sv.address, valid = st.validation || "off";
   const bar = n ? `<div class="applybar"><span class="small">${n} change${n > 1 ? "s" : ""}</span><span class="grow"></span>`
-    + `<button class="btn small primary" ${at} data-cmd="apply"${busy ? " disabled" : ""}>${run ? `Apply (restarts ${esc(i.name)})` : "Save"}</button>`
+    + `<button class="btn small primary" ${at} data-cmd="apply"${busy ? " disabled" : ""}>${live ? "Apply (changes band live)" : run ? `Apply (restarts ${esc(i.name)})` : "Save"}</button>`
     + `<button class="btn small" ${at} data-cmd="discard">Discard</button></div>` : "";
   return `<section class="scard wide"><h3><span>${esc(i.name)} · ${esc(String(saved.band || i.band || ""))}</span><span>${esc(host)}</span></h3>
     <div class="actions"><span class="${run ? "good" : "muted"}">${esc(state)}</span><span class="grow"></span>${btn("show", shown ? "Shown" : "Show", run && !shown)}
       <span class="group">${btn("start", "Start", !run)}${btn("restart", "Restart", run)}${btn("stop", "Stop", run)}</span></div>${err}</section>
-    <section class="scard wide"><h3><span>SETTINGS</span><span>${run ? `applied by restarting ${esc(i.name)}` : "used at its next start"}</span></h3>
+    <section class="scard wide"><h3><span>SETTINGS</span><span>${run ? `band changes live, the rest by restarting ${esc(i.name)}` : "used at its next start"}</span></h3>
     <div class="grid setgrid">${row("BAND", bands)}${row("RECORDING", onOff("record", st.record))}${row("CALL VALIDATION", `<div class="inline">${choices("validation", VALIDATION.map(v => [v, v]), valid)}${valid === "off" ? '<span class="small faint">off (set in its config)</span>' : ""}</div>`, HINTS.validation)}${row("KNOWN CALL LIST", choices("call_source", CALL_SOURCES, st.call_source), HINTS.call_source)}</div>
     <details class="adv"${app.advOpen ? " open" : ""}><summary>ADVANCED: SPOT RULE</summary>
     <div class="grid setgrid">${RULE_FLAGS.map(([k2, l, hint]) => row(l.toUpperCase(), onOff(k2, st[k2]), hint)).join("")}</div></details>${bar}</section>`;
@@ -1561,7 +1562,8 @@ async function applySettings(link, name) {
   if (!settings) return;
   const i = ((link.seat && link.seat.instances) || []).find(x => x.name === name);
   const what = Object.entries(settings).map(([key, v]) => `${key.replace(/^spot_rule_/, "").replace(/_/g, " ")} ${v === true ? "on" : v === false ? "off" : v}`).join(", ");
-  if (i && i.state === "running" && !confirm(`${name}: ${what}. This restarts ${name}. Go ahead?`)) return;
+  const live = Object.keys(settings).length === 1 && "band" in settings;  // no restart unless the copy cannot
+  if (i && i.state === "running" && !live && !confirm(`${name}: ${what}. This restarts ${name}. Go ahead?`)) return;
   const ok = await seatRequest(link, "set", name, settings);
   const now = app.pending[k];
   if (ok && now) {  // clear what was sent; a choice picked while it was sent stays pending

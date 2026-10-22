@@ -87,7 +87,12 @@ mode used last, and updates every 2 seconds.
   and known call list, and under **Advanced: spot rule** three options of the
   spot rule. A change is held until **Apply**, which restarts the copy once for
   all of them (a stopped copy is only saved), or **Discard**. Hover a label for
-  a line on what it does.
+  a line on what it does. For a running copy the header reads "band changes
+  live, the rest by restarting NAME": a band change alone is applied live
+  (the button reads **Apply (changes band live)** and there is no restart
+  question), and the waterfall and decoded text start over on the new band. If
+  the copy cannot change live (recording, HPSDR, more than one band), it
+  restarts on the new band instead.
   - **Call validation**: a confidence score decides which calls are spotted.
     Permissive spots more, aggressive fewer; normal is the default. A config
     can also set it off, so calls are spotted on the repeat rule's count alone.

@@ -298,7 +298,7 @@ def test_a_refused_retune_puts_the_pan_back_and_raises(radio: FakeRadio) -> None
     _station(radio)
     a = _channel(MHZ_17M, 1)
     radio.refuse["slice tune"] = "50000005"
-    with pytest.raises(RuntimeError, match="refused slice"):
+    with pytest.raises(RuntimeError, match="refused 7.038400 MHz$"):
         a.retune(round(MHZ_40M * 1e6))
     assert _pan_of(radio, a) == MHZ_17M and a.freq_mhz == MHZ_17M
 
@@ -454,3 +454,24 @@ def test_a_refusal_after_a_missed_ping_still_stops_the_station(radio: FakeRadio)
     assert (
         sum(c.startswith("client gui") for _, c in radio.log) == 2
     )  # first start, then one refusal
+
+
+def test_a_retune_the_radio_never_answers_halts_rather_than_decode_an_unknown_frequency(
+    radio: FakeRadio,
+) -> None:
+    _station(radio)
+    a = _channel(MHZ_17M, 1)
+    radio.silent.add("slice tune")  # the slice may have moved, and it cannot be put back
+    with pytest.raises(RuntimeError, match="halted"):
+        a.retune(round(MHZ_40M * 1e6))
+    assert a.state == "halted" and a._pan_id is None and a.freq_mhz == MHZ_17M
+
+
+def test_a_retune_while_not_live_is_refused_and_sends_nothing(radio: FakeRadio) -> None:
+    _station(radio)
+    a = _channel(MHZ_17M, 1)
+    a.state = "reconnecting"
+    n_cmds = len(radio.log)
+    with pytest.raises(RuntimeError, match="Not live"):
+        a.retune(round(MHZ_40M * 1e6))
+    assert len(radio.log) == n_cmds

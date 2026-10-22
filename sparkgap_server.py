@@ -61,6 +61,7 @@ from feed_server import (
     normalize_code,
     read_frame,
     show_code,
+    unmask,
     valid_code,
 )
 from seat import Seat, SeatError
@@ -81,6 +82,7 @@ MAX_QUEUED_OPS = 8
 MAX_PENDING = 32  # connections still sending their request: more are closed at once
 LOG_KEPT = 200  # server log lines kept for the web console
 REQUEST_WAIT_S = 5.0
+CONTROL_WAIT_S = 20.0  # a live band change: the radio's replies, then a new decoder
 COMMANDS = ("start", "stop", "restart", "set")
 NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,31}$")
 
@@ -426,7 +428,11 @@ class Server:
             return result(False, f"{name} is busy: {self.busy[name]}")
         if self.queued >= MAX_QUEUED_OPS:
             return result(False, "too many requests waiting")
-        self.busy[name] = {"set": "restarting"}.get(cmd, cmd + ("ing" if cmd != "stop" else "ping"))
+        band_only = cmd == "set" and set(settings) == {"band"}
+        self.busy[name] = (
+            "changing band" if band_only else
+            {"set": "restarting"}.get(cmd, cmd + ("ing" if cmd != "stop" else "ping"))
+        )
         self.queued += 1
         log.info("Server: %s asks %s %s%s", c.peer, cmd, name, f" {settings}" if settings else "")
         loop = asyncio.get_running_loop()
@@ -453,7 +459,22 @@ class Server:
             return self.seat.stop(name)
         if cmd == "restart":
             return self.seat.restart(name)
-        return self.seat.change(name, settings)
+        return self.seat.change(name, settings, live=self._live_band)
+
+    def _live_band(self, name: str, band: str) -> str | None:
+        """Ask the running copy to move to band in place; its answer, or None to restart it."""
+        target = self._feed_target(name)
+        if target is None:
+            return None
+        answer = feed_control(*target, {"band": band})
+        if answer is None:
+            log.warning("Server: %s gave no answer to a live band change: restarting it", name)
+            return None
+        ok, text = answer
+        if not ok:
+            log.info("Server: %s did not change band live (%s): restarting it", name, text)
+            return None
+        return text
 
     def _send_json(self, c: Client, msg: dict[str, Any]) -> None:
         self._send(c, encode_frame(OP_TEXT, json.dumps(msg).encode()))
@@ -500,19 +521,7 @@ class Server:
         except (OSError, asyncio.TimeoutError):
             self._refuse(writer, True, f"{name}: no answer on its feed port")
             return
-        key = base64.b64encode(secrets.token_bytes(16)).decode()
-        req = [
-            "GET /feed HTTP/1.1",
-            f"Host: {host}:{port}",
-            "Upgrade: websocket",
-            "Connection: Upgrade",
-            f"Sec-WebSocket-Key: {key}",
-            "Sec-WebSocket-Version: 13",
-            f"Sec-WebSocket-Protocol: {FEED_PROTOCOL}",
-        ]
-        if code:
-            req.append(f"Authorization: Bearer {code}")
-        up_w.write(("\r\n".join(req) + "\r\n\r\n").encode())
+        up_w.write(feed_request(host, port, code))
         try:
             reply = await asyncio.wait_for(up_r.readuntil(b"\r\n\r\n"), 5)
         except (asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
@@ -553,6 +562,88 @@ class Server:
         bind = str((self.seat.config(i).get("gui_feed") or {}).get("bind", "127.0.0.1"))
         host = "127.0.0.1" if bind in ("0.0.0.0", "::", "") or is_loopback(bind) else bind
         return host, int(st["feed_port"]), st["feed_code"]
+
+
+def feed_request(host: str, port: int, code: str | None) -> bytes:
+    """The opening request for a copy's feed on this machine, with the copy's own join code."""
+    key = base64.b64encode(secrets.token_bytes(16)).decode()
+    req = [
+        "GET /feed HTTP/1.1",
+        f"Host: {host}:{port}",
+        "Upgrade: websocket",
+        "Connection: Upgrade",
+        f"Sec-WebSocket-Key: {key}",
+        "Sec-WebSocket-Version: 13",
+        f"Sec-WebSocket-Protocol: {FEED_PROTOCOL}",
+    ]
+    if code:
+        req.append(f"Authorization: Bearer {code}")
+    return ("\r\n".join(req) + "\r\n\r\n").encode()
+
+
+def client_frame(opcode: int, payload: bytes) -> bytes:
+    """Client frame: FIN set, masked (a feed refuses unmasked ones)."""
+    mask = secrets.token_bytes(4)
+    n = len(payload)
+    if n < 126:
+        head = struct.pack("!BB", 0x80 | opcode, 0x80 | n)
+    elif n < 65_536:
+        head = struct.pack("!BBH", 0x80 | opcode, 0x80 | 126, n)
+    else:
+        head = struct.pack("!BBQ", 0x80 | opcode, 0x80 | 127, n)
+    return head + mask + unmask(payload, mask)
+
+
+def read_server_frame(f: Any) -> tuple[int, bytes]:
+    """One unmasked frame from a feed: (opcode, payload). EOFError when the feed closes."""
+
+    def exactly(n: int) -> bytes:
+        data = f.read(n)
+        if len(data) < n:
+            raise EOFError
+        return data
+
+    b0, b1 = exactly(2)
+    n = b1 & 0x7F
+    if n == 126:
+        (n,) = struct.unpack("!H", exactly(2))
+    elif n == 127:
+        (n,) = struct.unpack("!Q", exactly(8))
+    return b0 & 0x0F, exactly(n)
+
+
+def feed_control(
+    host: str, port: int, code: str | None, change: dict[str, Any], wait_s: float = CONTROL_WAIT_S
+) -> tuple[bool, str] | None:
+    """Send one control message to a copy's feed and wait for its answer: (ok, text), or None
+    when there is none (no feed, refused, closed, timed out). Blocks: run it off the event loop."""
+    rid = secrets.token_hex(8)
+    end = time.monotonic() + wait_s
+    try:
+        with socket.create_connection((host, port), timeout=5) as sock:
+            sock.sendall(feed_request(host, port, code))
+            f = sock.makefile("rb")
+            if not f.readline().startswith(b"HTTP/1.1 101"):
+                return None
+            while f.readline() not in (b"\r\n", b""):
+                pass
+            msg = {"type": "control", "id": rid, "set": change}
+            sock.sendall(client_frame(OP_TEXT, json.dumps(msg).encode()))
+            while (left := end - time.monotonic()) > 0:
+                sock.settimeout(left)
+                op, data = read_server_frame(f)
+                if op == OP_PING:
+                    sock.sendall(client_frame(OP_PONG, data))
+                elif op == OP_CLOSE:
+                    return None
+                elif op == OP_TEXT:
+                    reply = json.loads(data)
+                    if reply.get("type") == "control_result" and reply.get("id") == rid:
+                        text = reply.get("message") or reply.get("error")
+                        return bool(reply.get("ok")), str(text)
+    except (OSError, EOFError, ValueError, AttributeError):
+        return None
+    return None
 
 
 async def _serve_until_signalled(server: Server) -> None:

@@ -7098,6 +7098,7 @@ class SparkGap:
         # Per-band IQ buffers keyed by rx_index.  For single-band configs
         # rx_index=0 is the only key (same as before).
         self._band_bufs = {}   # rx_index → {'iq': (n, 2) array, 'i': [], 'q': []}
+        self._controls = []    # (change, reply) live changes from the GUI feed, run by run()
         # Software frequency calibration. ppm_offset > 0 means our
         # uncorrected reports run high; we subtract it before emitting.
         # Replaces a hardware GPSDO until/unless we add the R25/R26
@@ -7278,16 +7279,7 @@ class SparkGap:
                 'q': [],
             }
 
-        # Advertise band ranges in SETT response so Aggregator knows
-        # what we cover. Range = center ± half scan bandwidth (kHz).
-        half_bw_khz = float(self.cfg.get('skim_bandwidth_khz', 96)) / 2.0
-        self.telnet.bands = [
-            (round(center_hz / 1000.0 - half_bw_khz, 1),
-             round(center_hz / 1000.0 + half_bw_khz, 1))
-            for _, center_hz, _ in self._band_meta
-        ]
-        if self.telnet_local is not None:
-            self.telnet_local.bands = self.telnet.bands
+        self._set_telnet_bands()
 
         rx_sample_rate = self.cfg.get('sample_rate', 48000)
         rates = (192000,) if self.cfg.get('use_pfb_scanner') or self.cfg.get('pfb_scanner_bands') else (48000, 96000, 192000)
@@ -7430,6 +7422,8 @@ class SparkGap:
         self.manager = self.managers[0]
         _start_gui_feed(self.cfg, [(n, c) for n, c, _ in self._band_meta], rx_sample_rate,
                         self.managers)
+        if _gui_feed is not None and hasattr(self.receiver, 'retune'):
+            _gui_feed.on_control = self._take_control
         for mgr in self.managers:  # a keyed Flex: empty spectrum rows, not the transmitter
             if mgr._spectrum_tap is not None:
                 mgr._spectrum_tap.tx = getattr(self.receiver, 'transmitting_at', None)
@@ -7457,6 +7451,73 @@ class SparkGap:
                 log.warning("Failed to install SIGUSR1 handler: %s", e)
 
         return True
+
+    def _set_telnet_bands(self):
+        # Advertise band ranges in SETT response so Aggregator knows
+        # what we cover. Range = center ± half scan bandwidth (kHz).
+        half_bw_khz = float(self.cfg.get('skim_bandwidth_khz', 96)) / 2.0
+        self.telnet.bands = [
+            (round(center_hz / 1000.0 - half_bw_khz, 1),
+             round(center_hz / 1000.0 + half_bw_khz, 1))
+            for _, center_hz, _ in self._band_meta
+        ]
+        if self.telnet_local is not None:
+            self.telnet_local.bands = self.telnet.bands
+
+    def _take_control(self, change, reply):
+        """From the feed thread: one live change at a time, kept queued until it is done."""
+        if self._controls:
+            return reply(False, "busy: a change is under way")
+        self._controls.append((change, reply))
+
+    async def _live_change(self, change, reply):
+        """A band change from the GUI feed, without a restart: Flex, one band, not recording, no
+        per-band settings. The radio moves first; only then are the old band's IQ, decoders and
+        waterfall dropped."""
+        band = change.get('band')
+        why = None
+        if set(change) != {'band'}:
+            why = "only the band can be changed live"
+        elif len(self._band_meta) != 1:
+            why = "not supported with more than one band"
+        elif self._wav_record:
+            why = "not supported while recording"
+        elif not isinstance(band, str) or band not in BANDS:
+            why = "unknown band %r" % (band,)
+        elif self.cfg.get('per_band_min_snr') or self.cfg.get('pfb_scanner_bands'):
+            why = "not supported with per-band settings"
+        if why:
+            log.info("Live change %s refused: %s", change, why)
+            return reply(False, why)
+        rate = self.cfg.get('sample_rate', 48000)
+        name, center_hz = self._resolve_band(band, rate)
+        old_name, old_hz, rx_idx = self._band_meta[0]
+        if center_hz == old_hz:
+            return reply(True, "already on %s" % name)
+        try:
+            await asyncio.to_thread(self.receiver.retune, center_hz)
+        except Exception as e:
+            log.error("Live change to %s failed: %s", name, e)
+            return reply(False, str(e))
+        with self._iq_lock:
+            buf = self._band_bufs[rx_idx]
+            buf['raw'], buf['iq'], buf['i'], buf['q'] = [], np.empty((0, 2)), [], []
+        mgr = self.managers[0]
+        mgr.kill_all()   # the scanner goes; the next one is made for the new centre
+        mgr._wpm_cache.clear()
+        mgr._pileup_history.clear()
+        mgr.update_signals([], center_hz / 1000)
+        self._band_meta[0] = (name, center_hz, rx_idx)
+        self.cfg['bands'] = [name]
+        self._set_telnet_bands()
+        if _gui_feed is not None and mgr._spectrum_tap is not None:
+            import feed_server
+            tx = mgr._spectrum_tap.tx
+            mgr._spectrum_tap = feed_server.SpectrumTap(_gui_feed, rate, center_hz)
+            mgr._spectrum_tap.tx = tx
+            _gui_feed.set_bands([{'name': name, 'center_khz': center_hz / 1000.0, 'span_khz': rate / 1000.0}])
+        log.info("Live change: %s (%.3f kHz) -> %s (%.3f kHz)", old_name, old_hz / 1000.0, name, center_hz / 1000.0)
+        return reply(True, "retuned to %s" % name)
 
     def _diag_iq_snapshot(self, signum, frame):
         """SIGUSR1 handler — non-destructive snapshot of FT8 capture buffer
@@ -7626,6 +7687,11 @@ class SparkGap:
         while self.running:
             now = time.time()
             live_rate = self.cfg.get('sample_rate', 48000)
+            if self._controls:   # before the drain: nothing of the old band is fed or collected after
+                try:
+                    await self._live_change(*self._controls[0])
+                finally:
+                    self._controls.pop(0)
             # ----------------------------------------------------------------
             # Per-band: drain IQ and push to decoders
             # ----------------------------------------------------------------

@@ -257,3 +257,54 @@ def test_the_server_exits_on_sigterm_with_a_browser_still_connected(seat: Seat) 
     ws.json("hello")
     os.kill(p.pid, signal.SIGTERM)
     assert p.wait(timeout=5) == 0
+
+
+def _copy_on_feed(seat: Seat, answer: tuple[bool, str] | None) -> FeedServer:  # noqa: F811
+    """A stand-in copy whose feed answers a live change with `answer` (None: never answers)."""
+    feed = FeedServer({"bind": "127.0.0.1", "port": 0, "join_code": "ABCDEF"}, {"bands": []})
+    if answer is not None:
+        feed.on_control = lambda change, reply: reply(*answer)
+    feed.start()
+    copy = seat.root / "code" / "sparkgap.py"
+    copy.write_text(copy.read_text().replace("7321", str(feed.port)))
+    return feed
+
+
+def _set_band(server: Server, band: str) -> dict:
+    ws = _ws(server)
+    ws.json("hello")
+    ws.send(OP_TEXT, json.dumps({"type": "server", "id": 1, "cmd": "set", "name": "dallas2",
+                                 "settings": {"band": band}}).encode())
+    return _result(ws, 1)
+
+
+def test_a_band_change_moves_a_running_copy_in_place(server: Server, seat: Seat) -> None:  # noqa: F811
+    feed = _copy_on_feed(seat, (True, "retuned to 20m"))
+    try:
+        seat.start("dallas2")
+        pid = seat.pid("dallas2")
+        r = _set_band(server, "20m")
+        assert r["ok"] and r["message"] == "dallas2: retuned to 20m"
+        assert seat.pid("dallas2") == pid and seat.band(seat.instance("dallas2")) == "20m"
+    finally:
+        feed.stop()
+
+
+def test_a_copy_that_cannot_change_band_live_is_restarted_on_it(server: Server, seat: Seat) -> None:  # noqa: F811
+    feed = _copy_on_feed(seat, (False, "not supported while recording"))
+    try:
+        seat.start("dallas2")
+        pid = seat.pid("dallas2")
+        r = _set_band(server, "20m")
+        assert r["ok"] and "live" in r["message"] and seat.pid("dallas2") not in (None, pid)
+        assert seat.band(seat.instance("dallas2")) == "20m"
+    finally:
+        feed.stop()
+
+
+def test_feed_control_without_a_feed_is_no_answer() -> None:
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    assert sparkgap_server.feed_control("127.0.0.1", port, None, {"band": "20m"}, wait_s=1) is None

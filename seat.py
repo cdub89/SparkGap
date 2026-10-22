@@ -18,7 +18,7 @@ import signal
 import subprocess
 import time
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -383,8 +383,15 @@ class Seat:
             "record": bool(cfg.get("record_wav")),
         }
 
-    def change(self, name: str, settings: dict[str, Any]) -> str:
-        """Check every setting, write them all at once, restart the copy if it runs."""
+    def change(
+        self,
+        name: str,
+        settings: dict[str, Any],
+        live: Callable[[str, str], str | None] | None = None,
+    ) -> str:
+        """Check every setting, write them all at once, restart the copy if it runs. A band change
+        alone first goes to live(name, band), which moves the running copy in place and returns its
+        answer, or None when it could not (then the copy restarts, onto the band just written)."""
         i = self.instance(name)
         changes: dict[str, Any] = {}
         for key, value in settings.items():
@@ -426,6 +433,10 @@ class Seat:
             write_config(i.config, changes)
             if not self.pid(name):
                 return done
+            if live is not None and set(settings) == {"band"}:
+                answer = live(name, settings["band"])
+                if answer:
+                    return f"{name}: {answer}"
             self._stop(i)
             return f"{done}; {self._start(i)}"
 

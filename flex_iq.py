@@ -1106,27 +1106,39 @@ class FlexIQReceiver:
 
     def retune(self, freq_hz):
         """Move our pan and slice to freq_hz in place: nothing is torn down and no other copy is touched.
-        IQ is dropped until RETUNE_SETTLE_S after both replies.  A refusal puts back what changed and raises."""
+        IQ is dropped until RETUNE_SETTLE_S after the move.  A refusal raises once our pan and slice are
+        confirmed back where they were; when that cannot be confirmed, SparkGap halts (decoding a frequency
+        we do not know is worse than stopping) and it raises."""
         with self._lock:
-            if not self.conn or self._pan_id is None or self._slice_id is None:
-                raise RuntimeError("[Flex] Not streaming: nothing to retune")
+            conn, sl = self.conn, self._slice_id
+            if self.state != "live" or not conn or self._pan_id is None or sl is None:
+                raise RuntimeError("[Flex] Not live: nothing to retune")
             old, mhz = self.freq_mhz, freq_hz / 1e6
             bw_mhz = self.sample_rate / 1e6
             pan = f"display pan set 0x{self._pan_id:08x} center=%.6f bandwidth={bw_mhz:.6f}"
             self._discard_until = float('inf')
-            self.conn.ok(f"slice {self._slice_id} unlocked", self.conn.cmd(f"slice unlock {self._slice_id}"))
             try:
-                if not self.conn.ok(f"pan 0x{self._pan_id:08x} center {mhz:.6f} MHz", self.conn.cmd(pan % mhz)):
-                    raise RuntimeError(f"[Flex] The radio refused pan 0x{self._pan_id:08x} at {mhz:.6f} MHz")
-                if not self.conn.ok(f"slice {self._slice_id} tuned to {mhz:.6f} MHz",
-                                    self.conn.cmd(f"slice tune {self._slice_id} {mhz:.6f}")):
-                    self.conn.ok(f"pan 0x{self._pan_id:08x} back at {old:.6f} MHz", self.conn.cmd(pan % old))
-                    raise RuntimeError(f"[Flex] The radio refused slice {self._slice_id} at {mhz:.6f} MHz")
-                self.freq_hz, self.freq_mhz, self.frequencies = freq_hz, mhz, [freq_hz]
-                log.info("[Flex] Retuned to %.6f MHz", mhz)
+                if not conn.ok(f"slice {sl} unlocked", conn.cmd(f"slice unlock {sl}")):
+                    raise RuntimeError(f"[Flex] The radio did not unlock slice {sl}")
+                tune = f"slice tune {sl} %.6f"
+                resp = conn.cmd(pan % mhz)
+                if conn.ok(f"pan 0x{self._pan_id:08x} center {mhz:.6f} MHz", resp):
+                    resp = conn.cmd(tune % mhz)
+                    if conn.ok(f"slice {sl} tuned to {mhz:.6f} MHz", resp):
+                        self.freq_hz, self.freq_mhz, self.frequencies = freq_hz, mhz, [freq_hz]
+                        log.info("[Flex] Retuned to %.6f MHz", mhz)
+                        return
+                    undo = [pan % old] + ([tune % old] if conn.reply(resp) is None else [])
+                else:  # a refusal moved nothing; no reply may have
+                    undo = [pan % old] if conn.reply(resp) is None else []
+                back = all(conn.ok(f"back at {old:.6f} MHz: {c}", conn.cmd(c)) for c in undo)
+                if not back:
+                    self._halt("retune to %.6f MHz failed and %.6f MHz could not be confirmed" % (mhz, old))
+                raise RuntimeError(f"[Flex] The radio refused {mhz:.6f} MHz" + ("" if back else ": halted"))
             finally:
-                self.conn.ok(f"slice {self._slice_id} locked", self.conn.cmd(f"slice lock {self._slice_id}"))
-                self._discard_until = time.time() + RETUNE_SETTLE_S
+                if self.state != "halted":
+                    conn.ok(f"slice {sl} locked", conn.cmd(f"slice lock {sl}"))   # a safety measure, not a guarantee
+                    self._discard_until = time.time() + RETUNE_SETTLE_S
 
     def stop(self):
         self._stopping = True

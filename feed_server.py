@@ -67,6 +67,7 @@ SNAPSHOT_SPOTS = 200
 SIGNAL_TIMEOUT_S = 120  # a signal leaves the snapshot after this long without a window
 MAX_HEADER_BYTES = 8_192
 MAX_CLIENT_MESSAGE = 65_536
+CONTROL_ID_CHARS = 64
 CLIENT_QUEUE_MAX = 5_000  # text messages queued for one client before it is dropped
 MAX_CLIENTS = 16
 MAX_PENDING = 32  # connections still sending their request; more are closed at once
@@ -254,6 +255,8 @@ class FeedServer:
         self.proc: ProcessStats | None = None
         self.tap_cpu_s = 0.0  # CPU spent in SpectrumTap, all instances, for the cost log
         self.tid = 0
+        # live changes (control messages): SparkGap sets this to take them; None answers "not supported"
+        self.on_control: Callable[[dict[str, Any], Callable[[bool, str], None]], None] | None = None
 
     # ---- lifecycle ----
 
@@ -356,6 +359,11 @@ class FeedServer:
     def publish_status(self, status: dict[str, Any]) -> None:
         self._call(self._on_status, {"type": "status", **status, "utc": time.time()})
 
+    def set_bands(self, bands: list[dict[str, Any]]) -> None:
+        """The copy moved to other bands: a new hello, and nothing from the old bands (stored or queued)
+        reaches a client after it."""
+        self._call(self._on_bands, bands)
+
     def publish_spectrum(
         self,
         first_bin_hz: float,
@@ -415,6 +423,22 @@ class FeedServer:
         )
         self.status = msg
         self._broadcast(msg)
+
+    def _on_bands(self, bands: list[dict[str, Any]]) -> None:
+        self.hello = {**self.hello, "bands": bands}
+        self.windows.clear()
+        self.signals.clear()
+        self.spots.clear()
+        self.status = None
+        frames = [encode_frame(OP_TEXT, json.dumps(m, separators=(",", ":")).encode())
+                  for m in (self.hello, self.snapshot())]
+        for c in list(self.clients):
+            if c.closed:
+                continue
+            c.text.clear()
+            c.spectrum.clear()
+            c.text.extend(frames)
+            c.ready.set()
 
     def _on_spectrum(self, frame: bytes) -> None:
         for c in self.clients:
@@ -706,6 +730,26 @@ class FeedServer:
             hz = msg.get("spectrum_hz", DEFAULT_SPECTRUM_HZ)
             if isinstance(hz, (int, float)):
                 c.spectrum_hz = max(0.5, min(SPECTRUM_ROWS_HZ, float(hz)))
+        elif isinstance(msg, dict) and msg.get("type") == "control":
+            self._on_control(c, msg)
+
+    def _on_control(self, c: Client, msg: dict[str, Any]) -> None:
+        """A live change; the answer goes to the asking client only, from any thread."""
+        rid, change = msg.get("id"), msg.get("set")
+        if not isinstance(rid, (str, int)) or len(str(rid)) > CONTROL_ID_CHARS:
+            return
+
+        def reply(ok: bool, text: str) -> None:
+            result = {"type": "control_result", "id": rid, "ok": ok, ("message" if ok else "error"): text}
+            self._call(self._queue, c, encode_frame(OP_TEXT, json.dumps(result).encode()))
+
+        if not isinstance(change, dict) or not change:
+            return reply(False, "set must be an object")
+        if self.on_control is None:
+            return reply(False, "not supported")
+        log.info("GUI feed: %s asks %s", c.peer, change)
+        self.on_control(change, reply)
+        return None
 
     async def _send(self, c: Client) -> None:
         try:

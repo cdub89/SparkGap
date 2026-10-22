@@ -64,7 +64,7 @@ one address lock it out for 10 minutes (close 4429).
 ```
 
 - `state`: `running` or `stopped`. `busy`: the operation in progress
-  (`starting`, `stopping`, `restarting`), else null.
+  (`starting`, `stopping`, `restarting`, `changing band`), else null.
 - `feed_port`: the port this run of the copy got, null while stopped.
 - `last_error`: the last error in a stopped copy's log.
 - `stations`: the Flex station of each radio the instances use.
@@ -103,8 +103,17 @@ new line as it is logged: connections, requests and their results.
   `spot_rule_contest_words`, `spot_rule_cq_repeats` and `record` (true or
   false; recording on needs 5 GB free in `rec/`). Anything else is refused and
   nothing is written.
+- A running copy given the band alone is changed live: the server writes the
+  band to the config (the startup band), then asks the copy over its feed (a
+  `control` message, `GUI_FEED_PROTOCOL.md`, waiting up to 20 s) to change band
+  in place. On success the result reads `dallas1: retuned to 20m` and the copy
+  keeps running (same process, uptime continues). If the copy refuses, does not
+  answer or has no feed, the server restarts it, which brings it up on the band
+  just written, and the result reads as for a restart. Any other mix of settings
+  is applied by a restart, and a stopped copy is only written.
 - One request at a time per instance: another while one runs is refused as
-  busy. Requests run in order, at most 8 waiting.
+  busy. Requests run in order, at most 8 waiting. The instance's lock is held
+  through the write, the live attempt and any restart.
 
 The server and `tools/sparkgap.sh` take the same locks (the radio's, then the
 instance's) and write the same pid files and logs, so both can be used on one
