@@ -77,6 +77,7 @@ PING_EVERY_S = 20.0
 MAX_CLIENTS = 16
 MAX_QUEUED_OPS = 8
 MAX_PENDING = 32  # connections still sending their request: more are closed at once
+LOG_KEPT = 200  # agent log lines kept for the web console
 REQUEST_WAIT_S = 5.0
 COMMANDS = ("start", "stop", "restart", "set")
 NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,31}$")
@@ -102,6 +103,28 @@ def load_settings(root: Path) -> dict[str, Any]:
     return cfg
 
 
+class LogRing(logging.Handler):
+    """The agent's last LOG_KEPT log lines, and each new one passed to `on_line` (any thread)."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.INFO)
+        self.lines: collections.deque[dict[str, Any]] = collections.deque(maxlen=LOG_KEPT)
+        self.on_line: Any = None
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            line = {
+                "utc": round(record.created, 3),
+                "level": record.levelname,
+                "msg": record.getMessage(),
+            }
+        except Exception:
+            return
+        self.lines.append(line)
+        if self.on_line:
+            self.on_line(line)
+
+
 class Client:
     def __init__(self, writer: asyncio.StreamWriter, peer: str) -> None:
         self.writer = writer
@@ -111,6 +134,9 @@ class Client:
 class Agent:
     def __init__(self, root: Path, cfg: dict[str, Any]) -> None:
         self.seat = Seat(root)
+        self.log_ring = LogRing()
+        logging.getLogger("sparkgap.agent").addHandler(self.log_ring)
+        logging.getLogger("sparkgap.agent").setLevel(logging.INFO)  # what the console shows
         self.bind = str(cfg.get("bind", "127.0.0.1"))
         self.port = int(cfg.get("port", DEFAULT_PORT))
         self.code = normalize_code(str(cfg["join_code"]))
@@ -144,8 +170,11 @@ class Agent:
 
     async def serve(self) -> None:
         server = await asyncio.start_server(self._handle, self.bind, self.port, ssl=self.tls)
+        loop = asyncio.get_running_loop()
+        self.log_ring.on_line = lambda line: loop.call_soon_threadsafe(
+            self._broadcast, {"type": "log", "lines": [line]}
+        )
         self.port = server.sockets[0].getsockname()[1]
-        self.ready.set()
         log.info(
             "Agent on %s://%s:%d (SparkGap Web at http%s://%s:%d/), root %s",
             "wss" if self.tls else "ws",
@@ -156,6 +185,7 @@ class Agent:
             self.port,
             self.seat.root,
         )
+        self.ready.set()  # after the line above, which the web console shows
         asyncio.get_running_loop().create_task(self._state_loop())
         async with server:
             await server.serve_forever()
@@ -316,6 +346,7 @@ class Agent:
         log.info("Agent: %s connected", peer)
         try:
             self._send_json(c, self.hello)
+            self._send_json(c, {"type": "log", "reset": True, "lines": list(self.log_ring.lines)})
             if self.state:
                 self._send_json(c, self.state)
             while True:

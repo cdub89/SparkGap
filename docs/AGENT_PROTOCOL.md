@@ -69,6 +69,15 @@ one address lock it out for 10 minutes (close 4429).
 - `last_error`: the last error in a stopped copy's log.
 - `stations`: the Flex station of each radio the instances use.
 
+`log`, on connect the agent's last 200 log lines (`"reset": true`), then each
+new line as it is logged: connections, requests and their results.
+
+```json
+{"type": "log", "reset": true,
+ "lines": [{"utc": 1792690000.123, "level": "INFO",
+            "msg": "Agent: 100.64.0.2 asks restart dallas1"}]}
+```
+
 `agent_result`, for each request:
 
 ```json

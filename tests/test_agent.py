@@ -196,3 +196,16 @@ def test_the_agent_stops_on_sigint_even_when_started_with_it_ignored(seat: Seat)
     time.sleep(0.5)
     os.kill(p.pid, signal.SIGINT)
     assert p.wait(timeout=5) == 0 and not pidfile.exists()
+
+
+def test_the_agent_log_comes_on_connect_and_line_by_line(agent: Agent) -> None:
+    ws = _ws(agent)
+    first = ws.json("log")
+    assert first["reset"] and any("Agent on" in line["msg"] for line in first["lines"])
+    ws.send(
+        OP_TEXT, json.dumps({"type": "agent", "id": 9, "cmd": "stop", "name": "dallas2"}).encode()
+    )
+    while True:
+        msg = ws.json("log")
+        if any("asks stop dallas2" in line["msg"] for line in msg["lines"]):
+            break

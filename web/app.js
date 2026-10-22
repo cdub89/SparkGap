@@ -10,6 +10,7 @@ const HELP_URL = "https://github.com/hotairfred/SparkGap/blob/main/docs/CONSOLE.
 const SCAN_TIMEOUT_S = 3;
 const AGENT_PORT = 7320;  // a machine's agent: it runs that machine's copies and passes their feeds through
 const AGENT_PROTOCOL = "sparkgap.agent.v1";
+const AGENT_LOG_KEPT = 200;  // agent log lines kept for its console
 const VALIDATION = ["permissive", "normal", "aggressive"];  // "off" stays a config setting, not offered here
 const CALL_SOURCES = [["scp", "SCP"], ["rbn", "RBN"], ["rbn+skcc", "RBN + SKCC"]];
 const RULE_FLAGS = [
@@ -821,6 +822,10 @@ class AgentLink {
       agentCopies(this.server); renderSettings();
     }
     else if (m.type === "agent_result" && this.waiting.has(m.id)) { this.waiting.get(m.id)(m); this.waiting.delete(m.id); }
+    else if (m.type === "log" && Array.isArray(m.lines)) {
+      this.log = (m.reset ? [] : this.log || []).concat(m.lines).slice(-AGENT_LOG_KEPT);
+      if (app.mode === "info" && app.tab === "agent") renderSettings();
+    }
   }
   request(cmd, name, settings) {
     return new Promise(resolve => {
@@ -1304,7 +1309,19 @@ function renderSettings() {
     const box = $("infoBody");
     if (selecting(box)) return;
     if (app.here && app.tab === "agent") { box.innerHTML = statusHtml(app.instances[0], null); return; }
-    if (app.tab === "agent") { box.innerHTML = agentInfoHtml(); return; }
+    if (app.tab === "agent") {
+      // the consoles keep their place: at the bottom they follow new lines, scrolled up they stay
+      const was = {};
+      for (const c of box.querySelectorAll("[data-console]")) {
+        was[c.dataset.console] = c.scrollHeight - c.scrollTop - c.clientHeight < 4 ? -1 : c.scrollTop;
+      }
+      box.innerHTML = agentInfoHtml();
+      for (const c of box.querySelectorAll("[data-console]")) {
+        const at = was[c.dataset.console];
+        c.scrollTop = at === undefined || at < 0 ? c.scrollHeight : at;
+      }
+      return;
+    }
     const [, , a, feed] = tabCopy(app.tab);
     box.innerHTML = feed && feed.status ? statusHtml(feed, a) : stoppedInfoHtml(a);
     return;
@@ -1340,7 +1357,10 @@ function agentInfoHtml() {
       const up = i.state === "running" && i.started ? `, up ${duration(now() - i.started)}` : "";
       rows.push(`<div class="srow"><span class="k">${esc(i.name)}</span><span class="v">${esc(`${i.band}, ${i.busy || i.state}${up}, ${Number(i.spots) || 0} spots${i.errors ? `, ${Number(i.errors) || 0} errors` : ""}`)}</span></div>`);
     }
-    return `<section class="scard wide"><h3><span>${esc(sv.address)}</span></h3>${rows.join("")}</section>`;
+    const lines = (a.log || []).map(l => `<div class="cl ${l.level === "ERROR" || l.level === "CRITICAL" ? "bad" : l.level === "WARNING" ? "warn" : ""}">`
+      + `<span class="t">${esc(utcTime(l.utc))}</span> ${esc(String(l.msg))}</div>`).join("");
+    return `<section class="scard wide"><h3><span>${esc(sv.address)}</span></h3>${rows.join("")}`
+      + `<div class="label conhead">AGENT LOG</div><div class="console mono" data-console="${app.servers.indexOf(sv)}">${lines || '<div class="cl faint">nothing logged yet</div>'}</div></section>`;
   }).join("") + "</div>";
 }
 
