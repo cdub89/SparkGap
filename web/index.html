@@ -24,6 +24,7 @@
     <button id="gear" class="icon" title="Settings">⚙</button>
     <button id="theme" class="icon" title="Light or dark"><span class="half"></span></button>
     <button id="statusBtn" class="icon" title="Status">ⓘ</button>
+    <button id="seatBtn" class="icon" title="Seat: start, stop and settings, through each machine's agent">⏻</button>
   </header>
 
   <main>
@@ -108,7 +109,7 @@
       <span class="label">SPOT RULE</span><div id="sRule" class="seg ro"></div>
       <span id="lValid" class="label">VALIDATION</span><div id="sValid" class="seg ro"></div>
       <span id="lCalls" class="label">CALL SOURCE</span><div id="sCalls" class="seg ro"></div>
-      <span></span><span class="small faint">From the selected server's config.</span>
+      <span></span><span id="sFrom" class="small faint">From the selected server's config.</span>
     </div>
     <div class="row foot"><span class="small faint"><a id="help" target="_blank" rel="noopener">Help</a></span><button id="close" class="btn">Close</button></div>
   </div>
@@ -118,6 +119,13 @@
     <div class="shead"><h2>Status</h2><div id="statusHead"></div></div>
     <div id="statusBody"></div>
     <div class="row foot"><span id="statusFoot" class="small faint"></span><button id="statusClose" class="btn">Close</button></div>
+  </div>
+</div>
+<div id="seatModal" class="modal" hidden>
+  <div class="dialog status" role="dialog" aria-label="Seat">
+    <div class="shead"><h2>Seat</h2><div id="seatNote" class="small muted"></div></div>
+    <div id="seatBody" class="scards"></div>
+    <div class="row foot"><span class="small faint">Settings are saved and take effect by restarting that copy.</span><button id="seatClose" class="btn">Close</button></div>
   </div>
 </div>
 </body>

@@ -9,6 +9,11 @@ const DEFAULT_PORT = 7320;
 const HELP_URL = "https://github.com/hotairfred/SparkGap/blob/main/docs/CONSOLE.md";  // the guide, from Settings
 const SCAN_PORTS = Array.from({ length: 20 }, (_, k) => DEFAULT_PORT + k);  // searched for copies on a server (feed "port": "auto")
 const SCAN_TIMEOUT_S = 3;
+const AGENT_PORT = 7320;  // a machine's agent: it runs that machine's copies and passes their feeds through
+const AGENT_PROTOCOL = "sparkgap.agent.v1";
+const VALIDATION = ["off", "permissive", "normal", "aggressive"];
+const CALL_SOURCES = [["scp", "SCP"], ["rbn", "RBN"], ["rbn+skcc", "RBN + SKCC"]];
+const RULE_FLAGS = [["spot_rule_split_runs", "Split runs"], ["spot_rule_contest_words", "Contest words"], ["spot_rule_cq_repeats", "CQ repeats"]];
 const RESCAN_S = 60;  // a server is searched again this often, for copies started since
 const RESCAN_DROP_S = 3;  // and this long after one of its copies drops
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
@@ -905,10 +910,89 @@ function probeFeed(url, token) {
   });
 }
 
+function agentUrl(host, path = "/agent") {
+  return `${location.protocol === "https:" ? "wss" : "ws"}://${host.trim()}:${AGENT_PORT}${path}`;
+}
+// the agent answers on its port with hello {agent: true}; a wrong code closes as a feed's does
+function probeAgent(host, token) {
+  return new Promise(resolve => {
+    let ws = null, done = false;
+    const finish = r => { if (done) return; done = true; clearTimeout(timer); if (ws) ws.close(); resolve(r); };
+    const timer = setTimeout(() => finish("none"), SCAN_TIMEOUT_S * 1000);
+    try { ws = new WebSocket(agentUrl(host), [AGENT_PROTOCOL, CODE_PROTOCOL + token]); } catch { finish("none"); return; }
+    ws.onmessage = e => { try { const m = JSON.parse(e.data); if (m.type === "hello" && m.agent) finish("agent"); } catch { /* not an agent */ } };
+    ws.onclose = e => finish({ [CLOSE_WRONG_CODE]: "code", [CLOSE_LOCKED_OUT]: "lockout" }[e.code] || "none");
+  });
+}
+
+// the agent connection of a server: its seat (every instance, running or not) and requests to it
+class AgentLink {
+  constructor(server) {
+    this.server = server;
+    this.ws = null;
+    this.hello = null;
+    this.seat = null;
+    this.state = "connecting";
+    this.next = 1;
+    this.waiting = new Map();  // request id -> resolve
+    this.retry = 0;
+    this.closed = false;
+  }
+  open() {
+    const [host] = hostPort(this.server.address);
+    let ws;
+    try { ws = new WebSocket(agentUrl(host), [AGENT_PROTOCOL, CODE_PROTOCOL + this.server.token]); } catch { this.dropped(); return; }
+    this.ws = ws;
+    ws.onmessage = e => { try { this.message(JSON.parse(e.data)); } catch { /* not JSON */ } };
+    ws.onclose = e => {
+      if (this.ws !== ws) return;
+      this.ws = null;
+      this.state = e.code === CLOSE_WRONG_CODE ? "wrong code" : e.code === CLOSE_LOCKED_OUT ? "locked out" : "dropped";
+      this.dropped();
+    };
+  }
+  dropped() {
+    for (const resolve of this.waiting.values()) resolve({ ok: false, error: "agent connection lost" });
+    this.waiting.clear();
+    renderSeat();
+    if (this.closed) return;
+    const wait = this.state === "locked out" ? LOCKOUT_S : RECONNECT_S[Math.min(this.retry++, RECONNECT_S.length - 1)];
+    this.timer = setTimeout(() => this.open(), wait * 1000);
+  }
+  close() { this.closed = true; clearTimeout(this.timer); if (this.ws) this.ws.close(); }
+  message(m) {
+    if (m.type === "hello") { this.hello = m; this.state = "live"; this.retry = 0; }
+    else if (m.type === "seat") { this.seat = m; agentCopies(this.server); renderSeat(); }
+    else if (m.type === "agent_result" && this.waiting.has(m.id)) { this.waiting.get(m.id)(m); this.waiting.delete(m.id); }
+  }
+  request(cmd, name, settings) {
+    return new Promise(resolve => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) { resolve({ ok: false, error: "agent not connected" }); return; }
+      const id = this.next++;
+      this.waiting.set(id, resolve);
+      this.ws.send(JSON.stringify({ type: "agent", id, cmd, name, ...(settings ? { settings } : {}) }));
+    });
+  }
+}
+
+// a server with an agent: its running copies, each opened through the agent
+function agentCopies(s) {
+  const [host] = hostPort(s.address);
+  const urls = (s.agent.seat.instances || []).filter(i => i.state === "running" && i.feed_port)
+    .map(i => agentUrl(host, "/feed/" + encodeURIComponent(i.name)));
+  reconcileUrls(s, urls);
+}
+// the agent's name for a copy opened through it, or "" for a copy found by searching ports
+function agentName(i) {
+  const m = i && i.server && i.server.agent && i.url.match(/\/feed\/([^/]+)$/);
+  return m ? decodeURIComponent(m[1]) : "";
+}
+
 // what a search found, in a line for the operator
 function scanReport(found) {
   const n = r => found.filter(f => f[1] === r).length;
   const parts = [];
+  if (n("agent")) parts.push("Found a SparkGap agent: its copies are listed under ⏻.");
   if (n("ok")) parts.push(`Found ${n("ok")} SparkGap${n("ok") > 1 ? "s" : ""}.`);
   if (n("code")) parts.push(`Different join code on ${n("code")}.`);
   if (n("lockout")) parts.push(`Locked out for ${LOCKOUT_S / 60} min on ${n("lockout")}.`);
@@ -1001,6 +1085,15 @@ function loadServers() {
 async function probeServer(s, every = false) {
   const [host, port] = hostPort(s.address);
   s.refused = every || !s.refused ? new Set() : s.refused;
+  if (!port && !s.refused.has(AGENT_PORT)) {
+    const agent = await probeAgent(host, s.token);
+    if (agent === "agent") return [[AGENT_PORT, "agent"]];
+    if (agent === "code" || agent === "lockout") {  // remembered: a stale code must not earn the agent's lockout
+      s.refused.add(AGENT_PORT);
+      if (app.servers.includes(s)) saveServers();
+      if (every) return [[AGENT_PORT, agent]];
+    }
+  }
   // a port with a live copy of this server is not probed again: it would send a whole snapshot
   const live = every ? [] : app.instances.filter(i => i.server === s && i.state === "live").map(i => urlParts(i.url)[1]);
   const ports = (port ? [port] : SCAN_PORTS).filter(p => !s.refused.has(p) && !live.includes(p));
@@ -1012,8 +1105,14 @@ async function probeServer(s, every = false) {
 
 // the copies a search found join the list; a copy that no longer answers leaves it
 function reconcile(s, found) {
+  if (found.some(f => f[1] === "agent")) {
+    if (!s.agent) { s.agent = new AgentLink(s); s.agent.open(); }
+    return;
+  }
   const [host] = hostPort(s.address);
-  const ok = found.filter(f => f[1] === "ok").map(f => feedUrl(host, f[0]));
+  reconcileUrls(s, found.filter(f => f[1] === "ok").map(f => feedUrl(host, f[0])));
+}
+function reconcileUrls(s, ok) {
   const was = inst();
   app.instances.filter(i => i.server === s && !ok.includes(i.url) && i.state !== "live").forEach(removeInstance);
   for (const url of ok) if (!app.instances.some(i => i.url === url)) addInstance(url, s.token, undefined, s);
@@ -1022,7 +1121,7 @@ function reconcile(s, found) {
 }
 
 async function scanServer(s) {
-  if (s.scanning) return;
+  if (s.scanning || s.agent) return;  // an agent's copies come from its seat
   s.scanning = true;
   const found = await probeServer(s);
   s.scanning = false;
@@ -1395,8 +1494,13 @@ function renderSettings() {
   });
   const c = (inst() && inst().hello.config) || {}, v = ["off", "permissive", "normal", "aggressive"];
   seg($("sRule"), ["off", "on"], c.spot_rule === "repeat" ? 1 : c.spot_rule ? 0 : -1);
-  seg($("sValid"), v, v.indexOf(c.spot_validation || (c.spot_rule ? "off" : "")));
-  seg($("sCalls"), ["SCP", "RBN", "RBN + SKCC"], ["scp", "rbn", "rbn+skcc"].indexOf(c.spot_validation_calls));
+  const name = agentName(inst()), link = name && inst().server.agent;
+  const set = (key, value) => link && changeSetting(link, name, { [key]: value });
+  seg($("sValid"), v, v.indexOf(c.spot_validation || (c.spot_rule ? "off" : "")), link ? k => set("validation", v[k]) : null);
+  seg($("sCalls"), ["SCP", "RBN", "RBN + SKCC"], ["scp", "rbn", "rbn+skcc"].indexOf(c.spot_validation_calls),
+    link ? k => set("call_source", CALL_SOURCES[k][0]) : null);
+  for (const id of ["sValid", "sCalls"]) $(id).classList.toggle("ro", !link);
+  $("sFrom").textContent = link ? `Changes restart ${name}, through its machine's agent.` : "From the selected server's config.";
   for (const id of ["lValid", "sValid", "lCalls", "sCalls"]) $(id).hidden = !("spot_validation" in c);  // a SparkGap without call validation
 }
 
@@ -1465,8 +1569,9 @@ async function saveConn() {
   if (app.form !== form) return;  // closed meanwhile; another form may be open
   $("fSave").disabled = false;
   const text = scanReport(found);
-  if (!found.some(f => f[1] === "ok")) { $("fErr").textContent = text; $("fErr").hidden = false; renderConns(); return; }
+  if (!found.some(f => f[1] === "ok" || f[1] === "agent")) { $("fErr").textContent = text; $("fErr").hidden = false; renderConns(); return; }
   if (n >= 0) {
+    if (app.servers[n].agent) app.servers[n].agent.close();
     app.instances.filter(i => i.server === app.servers[n]).forEach(removeInstance);
     app.servers[n] = sv;
   } else app.servers.push(sv);
@@ -1474,17 +1579,84 @@ async function saveConn() {
   app.note = text;
   saveServers();
   reconcile(sv, found);
-  setCurrent(app.instances.findIndex(i => i.server === sv));
+  setCurrent(Math.max(0, app.instances.findIndex(i => i.server === sv)));
+  renderSeat();
 }
 
 function removeConn(n) {
   leaveDemo();
+  if (app.servers[n].agent) app.servers[n].agent.close();
   app.instances.filter(i => i.server === app.servers[n]).forEach(removeInstance);
   app.servers.splice(n, 1);
   app.editing = -2; app.form = null;
   saveServers();
   setCurrent(app.current);
 }
+
+// the seat page: every machine with an agent, its station and its instances, running or not
+function renderSeat() {
+  if (!$("seatModal") || $("seatModal").hidden) return;
+  const body = $("seatBody");
+  if (selecting(body) || (document.activeElement && body.contains(document.activeElement) && document.activeElement.tagName === "SELECT")) return;
+  const agents = app.servers.filter(sv => sv.agent);
+  $("seatNote").textContent = app.seatNote || "";
+  $("seatNote").className = "small " + (app.seatBad ? "err" : "muted");
+  body.innerHTML = agents.length ? agents.map(seatCard).join("")
+    : `<p class="small muted">No agent yet. In Settings, + Add server with the machine's address and its agent's join code (the agent answers on port ${AGENT_PORT}).</p>`;
+}
+
+function seatCard(sv) {
+  const a = sv.agent, k = app.servers.indexOf(sv), seat = a.seat || { instances: [], stations: [] };
+  const who = a.state === "live" ? (a.hello && a.hello.host) || "" : a.state;
+  const stations = (seat.stations || []).map(st => {
+    const loss = st.last_loss ? `, last ${utcTime(st.last_loss[0])}: ${st.last_loss[1]}` : "";
+    return `<div class="small muted">Station ${esc(String(st.station || st.radio))}: ${esc(String(st.live || st.state))}${typeof st.rtt_ms === "number" ? `, ping ${st.rtt_ms} ms` : ""}, losses in the last hour ${Number(st.losses_hour) || 0}${esc(loss)}</div>`;
+  }).join("");
+  return `<section class="scard wide"><h3><span>${esc(sv.address)}</span><span class="${a.state === "live" ? "" : "err"}">${esc(who)}</span></h3>${stations}${(seat.instances || []).map(i => seatRow(k, i)).join("")}</section>`;
+}
+
+function seatRow(k, i) {
+  const run = i.state === "running", busy = i.busy, st = i.settings || {};
+  const at = `data-agent="${k}" data-name="${esc(i.name)}"`;
+  const btn = (cmd, label, on) => `<button class="btn small" ${at} data-cmd="${cmd}"${on && !busy ? "" : " disabled"}>${label}</button>`;
+  const choices = (key, opts, cur) => `<div class="seg" ${at} data-key="${key}">${opts.map(([v, l]) =>
+    `<span data-value="${esc(JSON.stringify(v))}"${v === cur ? ' class="on"' : ""}>${esc(l)}</span>`).join("")}</div>`;
+  const onOff = (key, cur) => choices(key, [[false, "off"], [true, "on"]], !!cur);
+  const bands = `<select class="bandsel" ${at} data-key="band"${busy ? " disabled" : ""}>${(st.bands_known && st.bands_known.length ? st.bands_known : [st.band])
+    .map(b => `<option${b === st.band ? " selected" : ""}>${esc(b)}</option>`).join("")}</select>`;
+  const state = busy ? `${busy}...` : run ? `running${i.started ? ", up " + duration(now() - i.started) : ""}, ${Number(i.spots) || 0} spots${i.errors ? `, ${Number(i.errors) || 0} errors` : ""}` : "stopped";
+  const err = !run && i.last_error ? `<div class="small err">${esc(i.last_error)}</div>`
+    : run && i.feed_failed ? '<div class="small err">Its feed did not start (port in use): no waterfall until it restarts.</div>' : "";
+  const valid = st.validation || "off";
+  return `<div class="seatrow"><div class="seathead"><b>${esc(i.name)}</b>${bands}<span class="small ${run ? "" : "muted"}">${esc(state)}</span><span class="grow"></span>${btn("start", "Start", !run)}${btn("restart", "Restart", run)}${btn("stop", "Stop", run)}</div>${err}
+    <div class="grid seatgrid"><span class="label">VALIDATION</span>${choices("validation", VALIDATION.map(v => [v, v]), valid)}
+    ${valid !== "off" ? `<span class="label">CALL SOURCE</span>${choices("call_source", CALL_SOURCES, st.call_source)}` : ""}
+    ${RULE_FLAGS.map(([key, l]) => `<span class="label">${l.toUpperCase()}</span>${onOff(key, st[key])}`).join("")}
+    <span class="label">RECORDING</span>${onOff("record", st.record)}</div></div>`;
+}
+
+async function seatRequest(link, cmd, name, settings) {
+  app.seatNote = `${cmd === "set" ? "changing" : cmd} ${name}...`; app.seatBad = false; renderSeat();
+  const r = await link.request(cmd, name, settings);
+  app.seatNote = r.ok ? r.message : `${name}: ${r.error}`; app.seatBad = !r.ok;
+  renderSeat();
+}
+
+// a running copy restarts to take a setting: say so first
+async function changeSetting(link, name, settings) {
+  const i = ((link.seat && link.seat.instances) || []).find(x => x.name === name);
+  const what = Object.entries(settings).map(([key, v]) => `${key.replace(/^spot_rule_/, "").replace(/_/g, " ")} ${v === true ? "on" : v === false ? "off" : v}`).join(", ");
+  if (i && i.state === "running" && !confirm(`${name}: ${what}. This restarts ${name}. Go ahead?`)) { renderSeat(); renderSettings(); return; }
+  await seatRequest(link, "set", name, settings);
+}
+
+function seatTarget(t) {
+  const holder = t.closest("[data-agent]");
+  const sv = holder && app.servers[Number(holder.dataset.agent)];
+  return sv && sv.agent ? [sv.agent, holder.dataset.name, holder] : [null, "", null];
+}
+
+function openSeat() { $("seatModal").hidden = false; renderSeat(); }
 
 function openSettings() { renderSettings(); renderConns(); $("modal").hidden = false; }
 function closeSettings() { $("modal").hidden = true; app.editing = -2; app.form = null; $("fSave").disabled = false; }
@@ -1494,6 +1666,23 @@ function closeSettings() { $("modal").hidden = true; app.editing = -2; app.form 
 function bindInput() {
   $("gear").onclick = () => ($("modal").hidden ? openSettings() : closeSettings());
   $("statusBtn").onclick = () => { renderStatusPage(); $("statusModal").hidden = !$("statusModal").hidden; };
+  $("seatBtn").onclick = () => { if ($("seatModal").hidden) openSeat(); else $("seatModal").hidden = true; };
+  $("seatClose").onclick = () => { $("seatModal").hidden = true; };
+  $("seatModal").onmousedown = e => { if (e.target === $("seatModal")) $("seatModal").hidden = true; };
+  $("seatBody").onclick = e => {
+    const t = e.target.closest("[data-cmd], [data-value]");
+    if (!t || t.disabled) return;
+    const [link, name, holder] = seatTarget(t);
+    if (!link) return;
+    if (t.dataset.cmd) {
+      if (t.dataset.cmd !== "start" && !confirm(`${t.dataset.cmd === "stop" ? "Stop" : "Restart"} ${name}?`)) return;
+      seatRequest(link, t.dataset.cmd, name);
+    } else if (!t.classList.contains("on")) changeSetting(link, name, { [holder.dataset.key]: JSON.parse(t.dataset.value) });
+  };
+  $("seatBody").onchange = e => {
+    const [link, name, holder] = seatTarget(e.target);
+    if (link && holder.dataset.key === "band") changeSetting(link, name, { band: e.target.value });
+  };
   $("statusClose").onclick = () => { $("statusModal").hidden = true; };
   $("dCopy").onclick = () => copyText($("dWins").innerText).then(ok => {
     $("dCopy").textContent = ok ? "Copied" : "Copy failed";
@@ -1540,7 +1729,7 @@ function bindInput() {
   document.addEventListener("keydown", e => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") { e.preventDefault(); search.focus(); search.select(); }
     else if (e.key === "Escape" && !$("modal").hidden) closeSettings();
-    else if (e.key === "Escape") $("statusModal").hidden = true;
+    else if (e.key === "Escape") { $("statusModal").hidden = true; $("seatModal").hidden = true; }
   });
 
   // waterfall: a tap picks the nearest signal, a drag pans, the wheel pans, Ctrl+wheel or a pinch zooms

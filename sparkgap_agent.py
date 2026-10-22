@@ -1,0 +1,500 @@
+#!/usr/bin/env python3
+"""SparkGap agent: runs this machine's SparkGap instances for SparkGap Web.
+
+One per machine, always on.  It starts, stops and restarts the instances listed in the root's
+`instances` file, changes a fixed list of their settings (applied by a restart), reports their
+state, serves SparkGap Web, and passes each running copy's feed through to the browser, so a
+copy's feed can stay on this machine's loopback and its join code never leaves it.
+
+    python3 sparkgap_agent.py [--root DIR]     (default $SPARKGAP_ROOT, else ~/sparkgap)
+
+Its own settings are in <root>/agent.json, written on first run with a new join code:
+{"bind": "127.0.0.1", "port": 7320, "join_code": "..."}; "tls_cert"/"tls_key" for wss.
+Protocol: docs/AGENT_PROTOCOL.md.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import base64
+import collections
+import concurrent.futures
+import contextlib
+import hmac
+import json
+import logging
+import os
+import re
+import secrets
+import socket
+import ssl
+import struct
+import sys
+import threading
+import time
+from pathlib import Path
+from typing import Any
+
+from feed_server import (
+    CLOSE_LOCKED_OUT,
+    CLOSE_WRONG_CODE,
+    CODE_PROTOCOL,
+    LOCKOUT_S,
+    LOCKOUT_TRIES,
+    MAX_CLIENT_MESSAGE,
+    MAX_HEADER_BYTES,
+    OP_CLOSE,
+    OP_PING,
+    OP_PONG,
+    OP_TEXT,
+    FeedServer,
+    ProtocolError,
+    accept_key,
+    build_id,
+    encode_frame,
+    is_loopback,
+    new_code,
+    normalize_code,
+    read_frame,
+    show_code,
+    valid_code,
+)
+from seat import Seat, SeatError
+
+log = logging.getLogger("sparkgap.agent")
+
+AGENT_PROTOCOL = "sparkgap.agent.v1"
+FEED_PROTOCOL = "sparkgap.v1"
+AGENT_VERSION = 1
+DEFAULT_PORT = 7320  # the first of the feeds' port range: copies on "auto" take the next ones
+AGENT_PATH = "/agent"
+FEED_PREFIX = "/feed/"
+STATE_EVERY_S = 2.0
+PING_EVERY_S = 20.0
+MAX_CLIENTS = 16
+MAX_QUEUED_OPS = 8
+MAX_PENDING = 32  # connections still sending their request: more are closed at once
+REQUEST_WAIT_S = 5.0
+COMMANDS = ("start", "stop", "restart", "set")
+NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,31}$")
+
+
+def default_root() -> Path:
+    return Path(os.environ.get("SPARKGAP_ROOT") or Path.home() / "sparkgap")
+
+
+def load_settings(root: Path) -> dict[str, Any]:
+    """agent.json, written on first run (readable by its owner only) with a new join code."""
+    path = root / "agent.json"
+    if not path.exists():
+        code = new_code()
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump({"bind": "127.0.0.1", "port": DEFAULT_PORT, "join_code": code}, f, indent=2)
+            f.write("\n")
+        print(f"sparkgap_agent: new join code {show_code(code)} in {path}", flush=True)
+    cfg: Any = json.loads(path.read_text())
+    if not isinstance(cfg, dict) or not valid_code(str(cfg.get("join_code", ""))):
+        raise SystemExit(f"{path}: needs a join_code")
+    return cfg
+
+
+class Client:
+    def __init__(self, writer: asyncio.StreamWriter, peer: str) -> None:
+        self.writer = writer
+        self.peer = peer
+
+
+class Agent:
+    def __init__(self, root: Path, cfg: dict[str, Any]) -> None:
+        self.seat = Seat(root)
+        self.bind = str(cfg.get("bind", "127.0.0.1"))
+        self.port = int(cfg.get("port", DEFAULT_PORT))
+        self.code = normalize_code(str(cfg["join_code"]))
+        self.tls: ssl.SSLContext | None = None
+        if cfg.get("tls_cert"):
+            self.tls = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            self.tls.load_cert_chain(cfg["tls_cert"], cfg.get("tls_key"))
+        if not is_loopback(self.bind) and not self.tls:
+            log.warning(
+                "Agent: %s is not loopback and has no TLS: reach it only over a "
+                "trusted network (a VPN)",
+                self.bind,
+            )
+        self.clients: set[Client] = set()
+        self.misses: dict[str, collections.deque[float]] = {}
+        self.ops: concurrent.futures.ThreadPoolExecutor = concurrent.futures.ThreadPoolExecutor(1)
+        self.queued = 0
+        self.pending = 0
+        self.busy: dict[str, str] = {}  # instance -> operation in progress or queued
+        self.state: dict[str, Any] = {}
+        self.ready = threading.Event()  # set once listening (for tests and callers)
+        self.hello = {
+            "type": "hello",
+            "v": AGENT_VERSION,
+            "agent": True,
+            "host": socket.gethostname(),
+            "build": build_id(),
+        }
+
+    # ---- running ----
+
+    async def serve(self) -> None:
+        server = await asyncio.start_server(self._handle, self.bind, self.port, ssl=self.tls)
+        self.port = server.sockets[0].getsockname()[1]
+        self.ready.set()
+        log.info(
+            "Agent on %s://%s:%d (SparkGap Web at http%s://%s:%d/), root %s",
+            "wss" if self.tls else "ws",
+            self.bind,
+            self.port,
+            "s" if self.tls else "",
+            self.bind,
+            self.port,
+            self.seat.root,
+        )
+        asyncio.get_running_loop().create_task(self._state_loop())
+        async with server:
+            await server.serve_forever()
+
+    async def _state_loop(self) -> None:
+        last_ping = time.monotonic()
+        while True:
+            try:
+                self.state = await asyncio.to_thread(self._snapshot)
+                self._broadcast(self.state)
+            except Exception:
+                log.exception("Agent: state")
+            if time.monotonic() - last_ping > PING_EVERY_S:
+                last_ping = time.monotonic()
+                for c in list(self.clients):
+                    self._send(c, encode_frame(OP_PING, b""))
+            await asyncio.sleep(STATE_EVERY_S)
+
+    def _snapshot(self) -> dict[str, Any]:
+        snap = self.seat.snapshot()
+        for i in snap["instances"]:
+            i.pop("feed_code", None)  # stays on this machine: the agent proxies the feed
+            i["busy"] = self.busy.get(i["name"])
+        return {"type": "seat", "utc": time.time(), **snap}
+
+    # ---- connections ----
+
+    async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        peer = str(writer.get_extra_info("peername")[0])
+        if self.pending >= MAX_PENDING:  # before any code check: a crowd of half-open requests
+            writer.close()
+            return
+        try:
+            self.pending += 1
+            try:
+                req = await asyncio.wait_for(self._request(reader), REQUEST_WAIT_S)
+            finally:
+                self.pending -= 1
+            if req is None:
+                return
+            method, path, headers = req
+            if headers.get("upgrade", "").lower() != "websocket":
+                if method == "GET" and not path.startswith((AGENT_PATH, FEED_PREFIX)):
+                    FeedServer._serve_file(writer, path)  # pyright: ignore[reportPrivateUsage]
+                else:
+                    FeedServer._reject(writer, 400, "Bad Request")  # pyright: ignore[reportPrivateUsage]
+                return
+            offered = [p.strip() for p in headers.get("sec-websocket-protocol", "").split(",")]
+            given = next(
+                (p[len(CODE_PROTOCOL) :] for p in offered if p.startswith(CODE_PROTOCOL)),
+                headers.get("authorization", "").removeprefix("Bearer ").strip(),
+            )
+            if path != AGENT_PATH and not path.startswith(FEED_PREFIX):
+                # a copy-port search of this address lands here: not ours, so not a wrong code
+                FeedServer._reject(writer, 404, "Not Found")  # pyright: ignore[reportPrivateUsage]
+                return
+            ok = self._code_ok(peer, given)
+            if path == AGENT_PATH:
+                await self._agent_client(reader, writer, headers, offered, ok, peer)
+            elif path.startswith(FEED_PREFIX):
+                await self._proxy(reader, writer, headers, offered, ok, path[len(FEED_PREFIX) :])
+            else:
+                FeedServer._reject(writer, 404, "Not Found")  # pyright: ignore[reportPrivateUsage]
+        except (
+            asyncio.TimeoutError,
+            asyncio.IncompleteReadError,
+            ConnectionError,
+            ProtocolError,
+            OSError,
+        ):
+            pass
+        finally:
+            with contextlib.suppress(Exception):
+                await writer.drain()
+            writer.close()
+
+    @staticmethod
+    async def _request(reader: asyncio.StreamReader) -> tuple[str, str, dict[str, str]] | None:
+        raw = await reader.readuntil(b"\r\n\r\n")
+        if len(raw) > MAX_HEADER_BYTES:
+            return None
+        lines = raw.decode("latin-1").split("\r\n")
+        parts = lines[0].split(" ")
+        if len(parts) != 3:
+            return None
+        headers = {}
+        for line in lines[1:]:
+            k, sep, v = line.partition(":")
+            if sep:
+                headers[k.strip().lower()] = v.strip()
+        return parts[0], parts[1].split("?")[0], headers
+
+    def _code_ok(self, host: str, given: str) -> bool | None:
+        """True for the right code, False for a wrong one, None while host is locked out."""
+        now = time.monotonic()
+        misses = self.misses.get(host, collections.deque())
+        while misses and now - misses[0] > LOCKOUT_S:
+            misses.popleft()
+        if len(misses) >= LOCKOUT_TRIES:
+            return None
+        if hmac.compare_digest(normalize_code(given).encode(), self.code.encode()):
+            return True
+        if normalize_code(given):
+            misses.append(now)
+            self.misses[host] = misses
+            if len(misses) == LOCKOUT_TRIES:
+                log.warning(
+                    "Agent: %s locked out for %d min after %d wrong join codes",
+                    host,
+                    LOCKOUT_S // 60,
+                    LOCKOUT_TRIES,
+                )
+        return False
+
+    @staticmethod
+    def _accept(
+        writer: asyncio.StreamWriter, headers: dict[str, str], protocol: str | None
+    ) -> None:
+        reply = [
+            "HTTP/1.1 101 Switching Protocols",
+            "Upgrade: websocket",
+            "Connection: Upgrade",
+            f"Sec-WebSocket-Accept: {accept_key(headers.get('sec-websocket-key', ''))}",
+        ]
+        if protocol:
+            reply.append(f"Sec-WebSocket-Protocol: {protocol}")
+        writer.write(("\r\n".join(reply) + "\r\n\r\n").encode())
+
+    @staticmethod
+    def _refuse(writer: asyncio.StreamWriter, ok: bool | None, why: str = "") -> None:
+        """A browser sees only the close code: accept the upgrade, then close with the reason."""
+        code = CLOSE_LOCKED_OUT if ok is None else CLOSE_WRONG_CODE if ok is False else 1011
+        reason = {CLOSE_LOCKED_OUT: "locked out", CLOSE_WRONG_CODE: "wrong join code"}.get(
+            code, why
+        )
+        writer.write(encode_frame(OP_CLOSE, struct.pack("!H", code) + reason.encode()[:120]))
+
+    # ---- the agent protocol ----
+
+    async def _agent_client(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        headers: dict[str, str],
+        offered: list[str],
+        ok: bool | None,
+        peer: str,
+    ) -> None:
+        if AGENT_PROTOCOL not in offered:
+            FeedServer._reject(writer, 400, "Bad Request")  # pyright: ignore[reportPrivateUsage]
+            return
+        self._accept(writer, headers, AGENT_PROTOCOL)
+        if not ok or len(self.clients) >= MAX_CLIENTS:
+            self._refuse(writer, ok if not ok else True, "too many clients")
+            return
+        c = Client(writer, peer)
+        self.clients.add(c)
+        log.info("Agent: %s connected", peer)
+        try:
+            self._send_json(c, self.hello)
+            if self.state:
+                self._send_json(c, self.state)
+            while True:
+                fin, op, data = await read_frame(reader)
+                if op == OP_CLOSE:
+                    return
+                if op == OP_PING:
+                    self._send(c, encode_frame(OP_PONG, data))
+                elif op == OP_TEXT and fin and len(data) <= MAX_CLIENT_MESSAGE:
+                    self._request_op(c, data)
+        finally:
+            self.clients.discard(c)
+            log.info("Agent: %s left", peer)
+
+    def _request_op(self, c: Client, data: bytes) -> None:
+        try:
+            msg: Any = json.loads(data)
+        except ValueError:
+            return
+        if not isinstance(msg, dict) or msg.get("type") != "agent":
+            return
+        rid, cmd, name = msg.get("id"), msg.get("cmd"), msg.get("name")
+        settings = msg.get("settings") or {}
+
+        def result(ok: bool, text: str) -> None:
+            self._send_json(
+                c,
+                {"type": "agent_result", "id": rid, "ok": ok, ("message" if ok else "error"): text},
+            )
+
+        if cmd not in COMMANDS or not isinstance(name, str) or not NAME_RE.match(name):
+            return result(False, "unknown command or instance")
+        if cmd == "set" and not isinstance(settings, dict):
+            return result(False, "settings must be an object")
+        if name in self.busy:
+            return result(False, f"{name} is busy: {self.busy[name]}")
+        if self.queued >= MAX_QUEUED_OPS:
+            return result(False, "too many requests waiting")
+        self.busy[name] = {"set": "restarting"}.get(cmd, cmd + ("ing" if cmd != "stop" else "ping"))
+        self.queued += 1
+        log.info("Agent: %s asks %s %s%s", c.peer, cmd, name, f" {settings}" if settings else "")
+        loop = asyncio.get_running_loop()
+        fut = loop.run_in_executor(self.ops, self._run_op, cmd, name, settings)
+
+        def done(f: asyncio.Future[str]) -> None:
+            self.queued -= 1
+            self.busy.pop(name, None)
+            err = f.exception()
+            if err is None:
+                log.info("Agent: %s", f.result())
+                result(True, f.result())
+            else:
+                log.warning("Agent: %s %s failed: %s", cmd, name, err)
+                result(False, str(err))
+
+        fut.add_done_callback(done)
+        return None
+
+    def _run_op(self, cmd: str, name: str, settings: dict[str, Any]) -> str:
+        if cmd == "start":
+            return self.seat.start(name)
+        if cmd == "stop":
+            return self.seat.stop(name)
+        if cmd == "restart":
+            return self.seat.restart(name)
+        return self.seat.change(name, settings)
+
+    def _send_json(self, c: Client, msg: dict[str, Any]) -> None:
+        self._send(c, encode_frame(OP_TEXT, json.dumps(msg).encode()))
+
+    def _broadcast(self, msg: dict[str, Any]) -> None:
+        frame = encode_frame(OP_TEXT, json.dumps(msg).encode())
+        for c in list(self.clients):
+            self._send(c, frame)
+
+    def _send(self, c: Client, frame: bytes) -> None:
+        if (
+            c.writer.transport.get_write_buffer_size() > 4 * 2**20
+        ):  # a client this far behind leaves
+            c.writer.close()
+            self.clients.discard(c)
+            return
+        c.writer.write(frame)
+
+    # ---- a copy's feed, passed through ----
+
+    async def _proxy(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        headers: dict[str, str],
+        offered: list[str],
+        ok: bool | None,
+        name: str,
+    ) -> None:
+        """The browser's feed for copy `name`: the agent opens the copy's feed on this machine
+        with the copy's own join code, then passes frames through unchanged both ways."""
+        protocol = FEED_PROTOCOL if FEED_PROTOCOL in offered else None
+        self._accept(writer, headers, protocol)
+        if not ok:
+            self._refuse(writer, ok)
+            return
+        target = await asyncio.to_thread(self._feed_target, name)
+        if target is None:
+            self._refuse(writer, True, f"{name} has no feed running")
+            return
+        host, port, code = target
+        try:
+            up_r, up_w = await asyncio.wait_for(asyncio.open_connection(host, port), 5)
+        except (OSError, asyncio.TimeoutError):
+            self._refuse(writer, True, f"{name}: no answer on its feed port")
+            return
+        key = base64.b64encode(secrets.token_bytes(16)).decode()
+        req = [
+            "GET /feed HTTP/1.1",
+            f"Host: {host}:{port}",
+            "Upgrade: websocket",
+            "Connection: Upgrade",
+            f"Sec-WebSocket-Key: {key}",
+            "Sec-WebSocket-Version: 13",
+            f"Sec-WebSocket-Protocol: {FEED_PROTOCOL}",
+        ]
+        if code:
+            req.append(f"Authorization: Bearer {code}")
+        up_w.write(("\r\n".join(req) + "\r\n\r\n").encode())
+        try:
+            reply = await asyncio.wait_for(up_r.readuntil(b"\r\n\r\n"), 5)
+        except (asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
+            reply = b""
+        if not reply.startswith(b"HTTP/1.1 101"):
+            up_w.close()
+            self._refuse(writer, True, f"{name}: its feed refused the agent")
+            return
+
+        async def pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter) -> None:
+            with contextlib.suppress(Exception):
+                while chunk := await src.read(65_536):
+                    dst.write(chunk)
+                    await dst.drain()
+
+        # either side ending ends both: a half-open copy must not hold the browser's connection
+        tasks = [
+            asyncio.ensure_future(pipe(reader, up_w)),
+            asyncio.ensure_future(pipe(up_r, writer)),
+        ]
+        try:
+            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for t in tasks:
+                t.cancel()
+            up_w.close()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(up_w.wait_closed(), 2)
+
+    def _feed_target(self, name: str) -> tuple[str, int, str | None] | None:
+        try:
+            i = self.seat.instance(name)
+        except SeatError:
+            return None
+        st = self.seat.status(i)
+        if st["state"] != "running" or not st["feed_port"]:
+            return None
+        bind = str((self.seat.config(i).get("gui_feed") or {}).get("bind", "127.0.0.1"))
+        host = "127.0.0.1" if bind in ("0.0.0.0", "::", "") or is_loopback(bind) else bind
+        return host, int(st["feed_port"]), st["feed_code"]
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="SparkGap agent: runs this machine's instances")
+    ap.add_argument("--root", type=Path, default=default_root(), help="the run folder")
+    args = ap.parse_args(argv)
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S"
+    )
+    if not (args.root / "instances").exists():
+        raise SystemExit(f"{args.root}: no instances file (sparkgap.sh init makes one)")
+    agent = Agent(args.root, load_settings(args.root))
+    with contextlib.suppress(KeyboardInterrupt):
+        asyncio.run(agent.serve())
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

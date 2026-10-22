@@ -99,10 +99,10 @@ radio() {  # the Flex radio an instance uses (its sdr_ip), empty for any other r
 }
 spid() { local p; p=$(cat "$R/logs/station_$1.pid" 2>/dev/null) && kill -0 "$p" 2>/dev/null && echo "$p"; }
 
-locked() {  # run "$@" holding the lock of instance $2's radio: one start or stop at a time per radio
+locked() {  # run "$@" holding instance $2's radio lock, then its own (the agent takes the same, in this order)
   local ip; ip=$(radio "$2")
-  [ -n "$ip" ] || { "$@"; return; }
-  ( flock 9; "$@" ) 9> "$R/logs/station_$ip.lock"
+  if [ -n "$ip" ]; then ( flock 9; ( flock 8; "$@" ) 8> "$R/logs/$2.lock" ) 9> "$R/logs/station_$ip.lock"
+  else ( flock 8; "$@" ) 8> "$R/logs/$2.lock"; fi
 }
 
 station_up() {  # the radio's station (flex_station.py), started from instance $1 unless it runs
@@ -111,7 +111,7 @@ station_up() {  # the radio's station (flex_station.py), started from instance $
   spid "$ip" > /dev/null && return 0
   log="$R/logs/station_${ip}_$(date -u +%Y%m%d_%H%M%SZ).log"
   (cd "$(dir "$i")" && exec setsid bash -c 'echo $$ > "$1"; exec "$2" flex_station.py --config "$3" --status "$4" > "$5" 2>&1' \
-     _ "$R/logs/station_$ip.pid" "$(field "$i" 4)" "$(cfg "$i")" "$R/logs/station_$ip.json" "$log" < /dev/null > /dev/null 2>&1 9>&- &)
+     _ "$R/logs/station_$ip.pid" "$(field "$i" 4)" "$(cfg "$i")" "$R/logs/station_$ip.json" "$log" < /dev/null > /dev/null 2>&1 8>&- 9>&- &)
   for _ in $(seq 1 "$START_WAIT_S"); do
     sleep 1
     grep -q "holds the GUI client" "$log" 2>/dev/null && { echo "station $ip: live (pid $(spid "$ip")), log $log"; return; }
@@ -143,7 +143,7 @@ start_copy() {
   t=$(date -u +%Y%m%d_%H%M%SZ); log="$R/logs/${i}_$(band "$i")_$t.log"
   # exec: the subshell becomes the copy, so no sparkgap.sh is left holding the caller's output
   (cd "$(dir "$i")" && exec setsid bash -c 'echo $$ > "$1"; exec "$2" sparkgap.py --config "$3" > "$4" 2>&1' \
-     _ "$R/logs/$i.pid" "$(field "$i" 4)" "$(cfg "$i")" "$log" < /dev/null > /dev/null 2>&1 9>&- &)
+     _ "$R/logs/$i.pid" "$(field "$i" 4)" "$(cfg "$i")" "$log" < /dev/null > /dev/null 2>&1 8>&- 9>&- &)
   for _ in $(seq 1 "$START_WAIT_S"); do
     sleep 1
     grep -q "SparkGap LIVE:" "$log" 2>/dev/null && { echo "$i: live (pid $(pid "$i")), log $log"; return; }
@@ -251,8 +251,9 @@ PY
 
 free_gb() { df -BG --output=avail "$R/rec" | tail -1 | tr -dc 0-9; }
 
-reconfigure() {  # restart after a config change, only if it was running
-  if pid "$1" >/dev/null; then stop "$1" && start "$1"; fi
+set_restart() {  # setcfg, then restart if running: one step under the locks the caller holds
+  setcfg "$1" "$2" "$3" || return
+  if pid "$1" > /dev/null; then stop_flex "$1" && start_flex "$1"; fi
 }
 
 clone_of() {  # the clone, on a branch, that a code folder shares its repository with
@@ -510,13 +511,13 @@ case $cmd in
     [ $# -eq 2 ] || { cmd_usage band; exit 2; }
     dir "$1" > /dev/null
     [[ " $(bands "$1") " == *" $2 "* ]] || die "band must be one of: $(bands "$1")"
-    setcfg "$1" bands "[\"$2\"]"; echo "$1: band $2"; reconfigure "$1" ;;
+    echo "$1: band $2"; locked set_restart "$1" bands "[\"$2\"]" ;;
   rec)
     [ $# -eq 2 ] && [[ $2 == on || $2 == off ]] || { cmd_usage rec; exit 2; }
     dir "$1" > /dev/null
     [ "$2" = off ] || [ "$(free_gb)" -ge "$REC_MIN_GB" ] || die "only $(free_gb) GB free in $R/rec (rec on needs $REC_MIN_GB)"
-    if [ "$2" = on ]; then setcfg "$1" record_wav "\"$R/rec/${1}_{band}_{ts}.wav\""; else setcfg "$1" record_wav null; fi
-    echo "$1: recording $2 ($(df -h --output=avail "$R/rec" | tail -1 | tr -d ' ') free in rec/)"; reconfigure "$1" ;;
+    echo "$1: recording $2 ($(df -h --output=avail "$R/rec" | tail -1 | tr -d ' ') free in rec/)"
+    if [ "$2" = on ]; then locked set_restart "$1" record_wav "\"$R/rec/${1}_{band}_{ts}.wav\""; else locked set_restart "$1" record_wav null; fi ;;
   update) [ $# -eq 0 ] || { cmd_usage update; exit 2; }; update ;;
   add) [ $# -eq 2 ] || { cmd_usage add; exit 2; }; add "$1" "$2" ;;
   remove) [ $# -eq 1 ] || { cmd_usage remove; exit 2; }; remove "$1" ;;

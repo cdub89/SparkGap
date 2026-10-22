@@ -220,3 +220,8 @@ footer .v { font-family: "IBM Plex Mono", ui-monospace, monospace; font-feature-
   body { overflow-y: auto; }
   #app { height: 560px; }
 }
+
+.seatrow { border-top: 1px solid var(--edge); padding: 8px 0 4px; margin-top: 6px; }
+.seathead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.seathead .grow { flex: 1; }
+.seatgrid { grid-template-columns: 110px auto; }
