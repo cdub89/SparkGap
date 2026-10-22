@@ -170,3 +170,29 @@ def test_a_copy_port_search_of_the_agent_is_not_a_wrong_code(agent: Agent) -> No
         _ws(agent, code="XXXXXX", path="/feed", proto="sparkgap.v1").s.close()
     ws = _ws(agent)
     assert ws.json("hello")["agent"] is True  # not locked out
+
+
+def test_the_agent_stops_on_sigint_even_when_started_with_it_ignored(seat: Seat) -> None:  # noqa: F811
+    """Started in the background over ssh, it inherits SIGINT ignored (Beelink, 2026-10-22)."""
+    import os
+    import signal
+    import subprocess
+    import sys
+
+    (seat.root / "agent.json").write_text(
+        json.dumps({"bind": "127.0.0.1", "port": 0, "join_code": CODE})
+    )
+    p = subprocess.Popen(
+        [sys.executable, "sparkgap_agent.py", "--root", str(seat.root)],
+        preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_IGN),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    pidfile = seat.root / "logs" / "agent.pid"
+    for _ in range(50):
+        if pidfile.exists():
+            break
+        time.sleep(0.1)
+    time.sleep(0.5)
+    os.kill(p.pid, signal.SIGINT)
+    assert p.wait(timeout=5) == 0 and not pidfile.exists()

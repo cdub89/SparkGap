@@ -27,6 +27,7 @@ import logging
 import os
 import re
 import secrets
+import signal
 import socket
 import ssl
 import struct
@@ -482,6 +483,22 @@ class Agent:
         return host, int(st["feed_port"]), st["feed_code"]
 
 
+async def _serve_until_signalled(agent: Agent) -> None:
+    """Serve until SIGINT or SIGTERM, with our own handlers: a process started in the background
+    by a non-interactive shell (over ssh, say) inherits SIGINT ignored."""
+    loop = asyncio.get_running_loop()
+    stop = asyncio.Event()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop.set)
+    task = asyncio.ensure_future(agent.serve())
+    await asyncio.wait(
+        [task, asyncio.ensure_future(stop.wait())], return_when=asyncio.FIRST_COMPLETED
+    )
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="SparkGap agent: runs this machine's instances")
     ap.add_argument("--root", type=Path, default=default_root(), help="the run folder")
@@ -496,8 +513,7 @@ def main(argv: list[str] | None = None) -> int:
     pidfile.parent.mkdir(parents=True, exist_ok=True)
     pidfile.write_text(f"{os.getpid()}\n")
     try:
-        with contextlib.suppress(KeyboardInterrupt):
-            asyncio.run(agent.serve())
+        asyncio.run(_serve_until_signalled(agent))
     finally:
         with contextlib.suppress(OSError):
             if pidfile.read_text().strip() == str(os.getpid()):
