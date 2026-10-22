@@ -3,7 +3,7 @@
 The same root, files and per-radio lock as tools/sparkgap.sh, so both can run side by side:
 <root>/instances (name, code folder, config, python), config/<name>.local.json, logs/<name>.pid,
 logs/<name>_<band>_<UTC>.log, logs/station_<radio>.{pid,json,lock}, rec/.  Every function blocks
-(a start waits for the copy to go live); the agent calls them from one worker thread.
+(a start waits for the copy to go live); the server calls them from one worker thread.
 """
 
 from __future__ import annotations
@@ -239,7 +239,7 @@ class Seat:
 
     def _launch(self, cwd: Path, pidfile: Path, log: Path, argv: list[str]) -> None:
         """Start argv in its own session, detached from us (as sparkgap.sh's setsid subshell):
-        it keeps running when the agent stops, and init reaps it."""
+        it keeps running when the server stops, and init reaps it."""
         inner = 'echo $$ > "$2"; log=$3; shift 3; exec "$@" > "$log" 2>&1'
         script = f'cd "$1" && (setsid bash -c \'{inner}\' _ "$@" < /dev/null > /dev/null 2>&1 &)'
         subprocess.run(
@@ -440,7 +440,7 @@ class Seat:
             stats.update(log)
             self._stats = {k: v for k, v in self._stats.items() if k.exists()}
         feed = cfg.get("gui_feed") if isinstance(cfg.get("gui_feed"), dict) else None
-        # the port this run got, from its log: a configured port can be taken (the agent's 7320)
+        # the port this run got, from its log: a configured port can be taken (the server's 7320)
         port = stats.feed_port if pid and feed and not stats.feed_failed else None
         errors = stats.errors
         out: dict[str, Any] = {

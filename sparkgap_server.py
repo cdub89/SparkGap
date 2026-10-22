@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""SparkGap agent: runs this machine's SparkGap instances for SparkGap Web.
+"""SparkGap server: runs this machine's SparkGap instances for SparkGap Web.
 
 One per machine, always on.  It starts, stops and restarts the instances listed in the root's
 `instances` file, changes a fixed list of their settings (applied by a restart), reports their
 state, serves SparkGap Web, and passes each running copy's feed through to the browser, so a
 copy's feed can stay on this machine's loopback and its join code never leaves it.
 
-    python3 sparkgap_agent.py [--root DIR]     (default $SPARKGAP_ROOT, else ~/sparkgap)
+    python3 sparkgap_server.py [--root DIR]     (default $SPARKGAP_ROOT, else ~/sparkgap)
 
-Its own settings are in <root>/agent.json, written on first run with a new join code:
+Its own settings are in <root>/server.json, written on first run with a new join code:
 {"bind": "127.0.0.1", "port": 7320, "join_code": "..."}; "tls_cert"/"tls_key" for wss.
-Protocol: docs/AGENT_PROTOCOL.md.
+Protocol: docs/SERVER_PROTOCOL.md.
 """
 
 from __future__ import annotations
@@ -37,8 +37,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import help_page
 from feed_server import (
-    AGENT_PORT,
     CLOSE_LOCKED_OUT,
     CLOSE_WRONG_CODE,
     CODE_PROTOCOL,
@@ -50,6 +50,7 @@ from feed_server import (
     OP_PING,
     OP_PONG,
     OP_TEXT,
+    SERVER_PORT,
     FeedServer,
     ProtocolError,
     accept_key,
@@ -64,20 +65,21 @@ from feed_server import (
 )
 from seat import Seat, SeatError
 
-log = logging.getLogger("sparkgap.agent")
+log = logging.getLogger("sparkgap.server")
 
-AGENT_PROTOCOL = "sparkgap.agent.v1"
+SERVER_PROTOCOL = "sparkgap.server.v1"
 FEED_PROTOCOL = "sparkgap.v1"
-AGENT_VERSION = 1
-DEFAULT_PORT = AGENT_PORT  # 7320: the copies' feeds take 7321-7339
-AGENT_PATH = "/agent"
+SERVER_VERSION = 1
+DEFAULT_PORT = SERVER_PORT  # 7320: the copies' feeds take 7321-7339
+SERVER_PATH = "/server"
 FEED_PREFIX = "/feed/"
+HELP_PATH = "/help"
 STATE_EVERY_S = 2.0
 PING_EVERY_S = 20.0
 MAX_CLIENTS = 16
 MAX_QUEUED_OPS = 8
 MAX_PENDING = 32  # connections still sending their request: more are closed at once
-LOG_KEPT = 200  # agent log lines kept for the web console
+LOG_KEPT = 200  # server log lines kept for the web console
 REQUEST_WAIT_S = 5.0
 COMMANDS = ("start", "stop", "restart", "set")
 NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,31}$")
@@ -88,15 +90,15 @@ def default_root() -> Path:
 
 
 def load_settings(root: Path) -> dict[str, Any]:
-    """agent.json, written on first run (readable by its owner only) with a new join code."""
-    path = root / "agent.json"
+    """server.json, written on first run (readable by its owner only) with a new join code."""
+    path = root / "server.json"
     if not path.exists():
         code = new_code()
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w") as f:
             json.dump({"bind": "127.0.0.1", "port": DEFAULT_PORT, "join_code": code}, f, indent=2)
             f.write("\n")
-        print(f"sparkgap_agent: new join code {show_code(code)} in {path}", flush=True)
+        print(f"sparkgap_server: new join code {show_code(code)} in {path}", flush=True)
     cfg: Any = json.loads(path.read_text())
     if not isinstance(cfg, dict) or not valid_code(str(cfg.get("join_code", ""))):
         raise SystemExit(f"{path}: needs a join_code")
@@ -104,7 +106,7 @@ def load_settings(root: Path) -> dict[str, Any]:
 
 
 class LogRing(logging.Handler):
-    """The agent's last LOG_KEPT log lines, and each new one passed to `on_line` (any thread)."""
+    """The server's last LOG_KEPT log lines, and each new one passed to `on_line` (any thread)."""
 
     def __init__(self) -> None:
         super().__init__(logging.INFO)
@@ -131,12 +133,12 @@ class Client:
         self.peer = peer
 
 
-class Agent:
+class Server:
     def __init__(self, root: Path, cfg: dict[str, Any]) -> None:
         self.seat = Seat(root)
         self.log_ring = LogRing()
-        logging.getLogger("sparkgap.agent").addHandler(self.log_ring)
-        logging.getLogger("sparkgap.agent").setLevel(logging.INFO)  # what the console shows
+        logging.getLogger("sparkgap.server").addHandler(self.log_ring)
+        logging.getLogger("sparkgap.server").setLevel(logging.INFO)  # what the console shows
         self.bind = str(cfg.get("bind", "127.0.0.1"))
         self.port = int(cfg.get("port", DEFAULT_PORT))
         self.code = normalize_code(str(cfg["join_code"]))
@@ -146,7 +148,7 @@ class Agent:
             self.tls.load_cert_chain(cfg["tls_cert"], cfg.get("tls_key"))
         if not is_loopback(self.bind) and not self.tls:
             log.warning(
-                "Agent: %s is not loopback and has no TLS: reach it only over a "
+                "Server: %s is not loopback and has no TLS: reach it only over a "
                 "trusted network (a VPN)",
                 self.bind,
             )
@@ -160,8 +162,8 @@ class Agent:
         self.ready = threading.Event()  # set once listening (for tests and callers)
         self.hello = {
             "type": "hello",
-            "v": AGENT_VERSION,
-            "agent": True,
+            "v": SERVER_VERSION,
+            "server": True,
             "host": socket.gethostname(),
             "build": build_id(),
         }
@@ -176,7 +178,7 @@ class Agent:
         )
         self.port = server.sockets[0].getsockname()[1]
         log.info(
-            "Agent on %s://%s:%d (SparkGap Web at http%s://%s:%d/), root %s",
+            "Server on %s://%s:%d (SparkGap Web at http%s://%s:%d/), root %s",
             "wss" if self.tls else "ws",
             self.bind,
             self.port,
@@ -197,7 +199,7 @@ class Agent:
                 self.state = await asyncio.to_thread(self._snapshot)
                 self._broadcast(self.state)
             except Exception:
-                log.exception("Agent: state")
+                log.exception("Server: state")
             if time.monotonic() - last_ping > PING_EVERY_S:
                 last_ping = time.monotonic()
                 for c in list(self.clients):
@@ -207,7 +209,7 @@ class Agent:
     def _snapshot(self) -> dict[str, Any]:
         snap = self.seat.snapshot()
         for i in snap["instances"]:
-            i.pop("feed_code", None)  # stays on this machine: the agent proxies the feed
+            i.pop("feed_code", None)  # stays on this machine: the server proxies the feed
             i["busy"] = self.busy.get(i["name"])
         return {"type": "seat", "utc": time.time(), **snap}
 
@@ -228,7 +230,9 @@ class Agent:
                 return
             method, path, headers = req
             if headers.get("upgrade", "").lower() != "websocket":
-                if method == "GET" and not path.startswith((AGENT_PATH, FEED_PREFIX)):
+                if method == "GET" and (path == HELP_PATH or path.startswith(HELP_PATH + "/")):
+                    self._serve_help(writer, path[len(HELP_PATH) + 1 :] or help_page.GUIDE)
+                elif method == "GET" and not path.startswith((SERVER_PATH, FEED_PREFIX)):
                     FeedServer._serve_file(writer, path)  # pyright: ignore[reportPrivateUsage]
                 else:
                     FeedServer._reject(writer, 400, "Bad Request")  # pyright: ignore[reportPrivateUsage]
@@ -238,13 +242,13 @@ class Agent:
                 (p[len(CODE_PROTOCOL) :] for p in offered if p.startswith(CODE_PROTOCOL)),
                 headers.get("authorization", "").removeprefix("Bearer ").strip(),
             )
-            if path != AGENT_PATH and not path.startswith(FEED_PREFIX):
+            if path != SERVER_PATH and not path.startswith(FEED_PREFIX):
                 # a copy-port search of this address lands here: not ours, so not a wrong code
                 FeedServer._reject(writer, 404, "Not Found")  # pyright: ignore[reportPrivateUsage]
                 return
             ok = self._code_ok(peer, given)
-            if path == AGENT_PATH:
-                await self._agent_client(reader, writer, headers, offered, ok, peer)
+            if path == SERVER_PATH:
+                await self._server_client(reader, writer, headers, offered, ok, peer)
             elif path.startswith(FEED_PREFIX):
                 await self._proxy(reader, writer, headers, offered, ok, path[len(FEED_PREFIX) :])
             else:
@@ -261,6 +265,25 @@ class Agent:
             with contextlib.suppress(Exception):
                 await writer.drain()
             writer.close()
+
+    @staticmethod
+    def _serve_help(writer: asyncio.StreamWriter, name: str) -> None:
+        """The guide shipped with this code (docs/), so Help matches the version running."""
+        found = help_page.page(name)
+        if found is None:
+            FeedServer._reject(writer, 404, "Not Found")  # pyright: ignore[reportPrivateUsage]
+            return
+        body, kind = found
+        head = [
+            "HTTP/1.1 200 OK",
+            f"Content-Type: {kind}",
+            f"Content-Length: {len(body)}",
+            "Cache-Control: no-cache",
+            "X-Content-Type-Options: nosniff",
+            "Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'",
+            "Connection: close",
+        ]
+        writer.write(("\r\n".join(head) + "\r\n\r\n").encode() + body)
 
     @staticmethod
     async def _request(reader: asyncio.StreamReader) -> tuple[str, str, dict[str, str]] | None:
@@ -293,7 +316,7 @@ class Agent:
             self.misses[host] = misses
             if len(misses) == LOCKOUT_TRIES:
                 log.warning(
-                    "Agent: %s locked out for %d min after %d wrong join codes",
+                    "Server: %s locked out for %d min after %d wrong join codes",
                     host,
                     LOCKOUT_S // 60,
                     LOCKOUT_TRIES,
@@ -323,9 +346,9 @@ class Agent:
         )
         writer.write(encode_frame(OP_CLOSE, struct.pack("!H", code) + reason.encode()[:120]))
 
-    # ---- the agent protocol ----
+    # ---- the server protocol ----
 
-    async def _agent_client(
+    async def _server_client(
         self,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
@@ -334,16 +357,16 @@ class Agent:
         ok: bool | None,
         peer: str,
     ) -> None:
-        if AGENT_PROTOCOL not in offered:
+        if SERVER_PROTOCOL not in offered:
             FeedServer._reject(writer, 400, "Bad Request")  # pyright: ignore[reportPrivateUsage]
             return
-        self._accept(writer, headers, AGENT_PROTOCOL)
+        self._accept(writer, headers, SERVER_PROTOCOL)
         if not ok or len(self.clients) >= MAX_CLIENTS:
             self._refuse(writer, ok if not ok else True, "too many clients")
             return
         c = Client(writer, peer)
         self.clients.add(c)
-        log.info("Agent: %s connected", peer)
+        log.info("Server: %s connected", peer)
         try:
             self._send_json(c, self.hello)
             self._send_json(c, {"type": "log", "reset": True, "lines": list(self.log_ring.lines)})
@@ -359,14 +382,14 @@ class Agent:
                     self._request_op(c, data)
         finally:
             self.clients.discard(c)
-            log.info("Agent: %s left", peer)
+            log.info("Server: %s left", peer)
 
     def _request_op(self, c: Client, data: bytes) -> None:
         try:
             msg: Any = json.loads(data)
         except ValueError:
             return
-        if not isinstance(msg, dict) or msg.get("type") != "agent":
+        if not isinstance(msg, dict) or msg.get("type") != "server":
             return
         rid, cmd, name = msg.get("id"), msg.get("cmd"), msg.get("name")
         settings = msg.get("settings") or {}
@@ -374,7 +397,12 @@ class Agent:
         def result(ok: bool, text: str) -> None:
             self._send_json(
                 c,
-                {"type": "agent_result", "id": rid, "ok": ok, ("message" if ok else "error"): text},
+                {
+                    "type": "server_result",
+                    "id": rid,
+                    "ok": ok,
+                    ("message" if ok else "error"): text,
+                },
             )
 
         if cmd not in COMMANDS or not isinstance(name, str) or not NAME_RE.match(name):
@@ -387,7 +415,7 @@ class Agent:
             return result(False, "too many requests waiting")
         self.busy[name] = {"set": "restarting"}.get(cmd, cmd + ("ing" if cmd != "stop" else "ping"))
         self.queued += 1
-        log.info("Agent: %s asks %s %s%s", c.peer, cmd, name, f" {settings}" if settings else "")
+        log.info("Server: %s asks %s %s%s", c.peer, cmd, name, f" {settings}" if settings else "")
         loop = asyncio.get_running_loop()
         fut = loop.run_in_executor(self.ops, self._run_op, cmd, name, settings)
 
@@ -396,10 +424,10 @@ class Agent:
             self.busy.pop(name, None)
             err = f.exception()
             if err is None:
-                log.info("Agent: %s", f.result())
+                log.info("Server: %s", f.result())
                 result(True, f.result())
             else:
-                log.warning("Agent: %s %s failed: %s", cmd, name, err)
+                log.warning("Server: %s %s failed: %s", cmd, name, err)
                 result(False, str(err))
 
         fut.add_done_callback(done)
@@ -442,7 +470,7 @@ class Agent:
         ok: bool | None,
         name: str,
     ) -> None:
-        """The browser's feed for copy `name`: the agent opens the copy's feed on this machine
+        """The browser's feed for copy `name`: the server opens the copy's feed on this machine
         with the copy's own join code, then passes frames through unchanged both ways."""
         protocol = FEED_PROTOCOL if FEED_PROTOCOL in offered else None
         self._accept(writer, headers, protocol)
@@ -478,7 +506,7 @@ class Agent:
             reply = b""
         if not reply.startswith(b"HTTP/1.1 101"):
             up_w.close()
-            self._refuse(writer, True, f"{name}: its feed refused the agent")
+            self._refuse(writer, True, f"{name}: its feed refused the server")
             return
 
         async def pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter) -> None:
@@ -514,14 +542,14 @@ class Agent:
         return host, int(st["feed_port"]), st["feed_code"]
 
 
-async def _serve_until_signalled(agent: Agent) -> None:
+async def _serve_until_signalled(server: Server) -> None:
     """Serve until SIGINT or SIGTERM, with our own handlers: a process started in the background
     by a non-interactive shell (over ssh, say) inherits SIGINT ignored."""
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
-    task = asyncio.ensure_future(agent.serve())
+    task = asyncio.ensure_future(server.serve())
     await asyncio.wait(
         [task, asyncio.ensure_future(stop.wait())], return_when=asyncio.FIRST_COMPLETED
     )
@@ -531,7 +559,7 @@ async def _serve_until_signalled(agent: Agent) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="SparkGap agent: runs this machine's instances")
+    ap = argparse.ArgumentParser(description="SparkGap server: runs this machine's instances")
     ap.add_argument("--root", type=Path, default=default_root(), help="the run folder")
     args = ap.parse_args(argv)
     logging.basicConfig(
@@ -539,12 +567,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     if not (args.root / "instances").exists():
         raise SystemExit(f"{args.root}: no instances file (sparkgap.sh init makes one)")
-    agent = Agent(args.root, load_settings(args.root))
-    pidfile = args.root / "logs" / "agent.pid"  # sparkgap.sh status reads it
+    server = Server(args.root, load_settings(args.root))
+    pidfile = args.root / "logs" / "server.pid"  # sparkgap.sh status reads it
     pidfile.parent.mkdir(parents=True, exist_ok=True)
     pidfile.write_text(f"{os.getpid()}\n")
     try:
-        asyncio.run(_serve_until_signalled(agent))
+        asyncio.run(_serve_until_signalled(server))
     finally:
         with contextlib.suppress(OSError):
             if pidfile.read_text().strip() == str(os.getpid()):

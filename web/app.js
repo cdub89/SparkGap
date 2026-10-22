@@ -1,4 +1,4 @@
-// SparkGap Web: the browser client. It connects to a machine's agent (sparkgap_agent.py), or to the copy that served it.
+// SparkGap Web: the browser client. It connects to a machine's server (sparkgap_server.py), or to the copy that served it.
 "use strict";
 
 const PROTOCOL = "sparkgap.v1";
@@ -8,9 +8,9 @@ const MAX_BINS = 16_384;
 const DEFAULT_PORT = 7320;
 const HELP_URL = "https://github.com/hotairfred/SparkGap/blob/main/docs/WEBUI.md";  // the guide, from Settings
 const SCAN_TIMEOUT_S = 3;
-const AGENT_PORT = 7320;  // a machine's agent: it runs that machine's copies and passes their feeds through
-const AGENT_PROTOCOL = "sparkgap.agent.v1";
-const AGENT_LOG_KEPT = 200;  // agent log lines kept for its console
+const SERVER_PORT = 7320;  // a machine's server: it runs that machine's copies and passes their feeds through
+const SERVER_PROTOCOL = "sparkgap.server.v1";
+const SERVER_LOG_KEPT = 200;  // server log lines kept for its console
 const VALIDATION = ["permissive", "normal", "aggressive"];  // "off" stays a config setting, not offered here
 const CALL_SOURCES = [["scp", "SCP"], ["rbn", "RBN"], ["rbn+skcc", "RBN + SKCC"]];
 const RULE_FLAGS = [
@@ -698,9 +698,9 @@ class Waterfall {
 // ---- the page ----
 
 const app = {
-  servers: [],  // {address, token}: a machine's agent and its join code; its copies come from its seat
-  tab: "agent",  // the dialog's tab: "agent" or "<server index>:<copy name>"
-  pending: {},  // "<agent address>|<copy name>" -> settings picked but not yet applied
+  servers: [],  // {address, token}: a machine's server and its join code; its copies come from its seat
+  tab: "servers",  // the dialog's tab: "server" or "<server index>:<copy name>"
+  pending: {},  // "<server address>|<copy name>" -> settings picked but not yet applied
   mode: load("mode", "info"),  // the dialog shows Settings or Info
   want: load("current", ""),  // the copy shown, by name, wherever its port is today
   instances: [],
@@ -715,14 +715,14 @@ const wf = new Waterfall($("wf"));
 
 function inst() { return app.instances[app.current] || null; }
 
-// "host" is an agent on AGENT_PORT; "host:port" one on another port
+// "host" is an server on SERVER_PORT; "host:port" one on another port
 function hostPort(address) {
   const m = address.trim().match(/^(.*?)(?::(\d+))?$/);
   return [m[1], m[2] ? Number(m[2]) : 0];
 }
-function agentUrl(address, path = "/agent") {
+function serverUrl(address, path = "/server") {
   const [host, port] = hostPort(address);
-  return `${location.protocol === "https:" ? "wss" : "ws"}://${host}:${port || AGENT_PORT}${path}`;
+  return `${location.protocol === "https:" ? "wss" : "ws"}://${host}:${port || SERVER_PORT}${path}`;
 }
 function urlParts(url) {
   try { const u = new URL(url); return [u.hostname.replace(/^\[|\]$/g, ""), Number(u.port) || DEFAULT_PORT]; } catch { return ["", DEFAULT_PORT]; }
@@ -730,11 +730,11 @@ function urlParts(url) {
 function normalizeCode(code) { return code.toUpperCase().replace(/[ -]/g, ""); }
 function checkServer(address, code) {
   const m = address.trim().match(/^([^\s/:#?@]+)(?::(\d+))?$/);
-  if (!m) return "address: the machine's VPN or local IP address (host:port only for an agent off " + AGENT_PORT + ")";
+  if (!m) return "address: the machine's VPN or local IP address (host:port only for an server off " + SERVER_PORT + ")";
   if (m[2] && !(Number(m[2]) > 0 && Number(m[2]) < 65_536)) return "port: 1 to 65535";
   const c = normalizeCode(code);
   if (c.length !== CODE_LENGTH || [...c].some(ch => !CODE_ALPHABET.includes(ch))) {
-    return `join code: the agent's ${CODE_LENGTH} letters and digits (in its agent.json, and its log at first start)`;
+    return `join code: the server's ${CODE_LENGTH} letters and digits (in its server.json, and its log at first start)`;
   }
   return "";
 }
@@ -766,20 +766,20 @@ function probeFeed(url, token) {
   });
 }
 
-// the agent answers on its port with hello {agent: true}; a wrong code closes as a feed's does
-function probeAgent(address, token) {
+// the server answers on its port with hello {server: true}; a wrong code closes as a feed's does
+function probeLink(address, token) {
   return new Promise(resolve => {
     let ws = null, done = false;
     const finish = r => { if (done) return; done = true; clearTimeout(timer); if (ws) ws.close(); resolve(r); };
     const timer = setTimeout(() => finish("none"), SCAN_TIMEOUT_S * 1000);
-    try { ws = new WebSocket(agentUrl(address), [AGENT_PROTOCOL, CODE_PROTOCOL + token]); } catch { finish("none"); return; }
-    ws.onmessage = e => { try { const m = JSON.parse(e.data); if (m.type === "hello" && m.agent) finish("agent"); } catch { /* not an agent */ } };
+    try { ws = new WebSocket(serverUrl(address), [SERVER_PROTOCOL, CODE_PROTOCOL + token]); } catch { finish("none"); return; }
+    ws.onmessage = e => { try { const m = JSON.parse(e.data); if (m.type === "hello" && m.server) finish("server"); } catch { /* not an server */ } };
     ws.onclose = e => finish({ [CLOSE_WRONG_CODE]: "code", [CLOSE_LOCKED_OUT]: "lockout" }[e.code] || "none");
   });
 }
 
-// a machine's agent: its seat (every instance, running or not), its copies' feeds, and requests to it
-class AgentLink {
+// a machine's server: its seat (every instance, running or not), its copies' feeds, and requests to it
+class ServerLink {
   constructor(server) {
     this.server = server;
     this.ws = null;
@@ -793,7 +793,7 @@ class AgentLink {
   }
   open() {
     let ws;
-    try { ws = new WebSocket(agentUrl(this.server.address), [AGENT_PROTOCOL, CODE_PROTOCOL + this.server.token]); } catch { this.dropped(); return; }
+    try { ws = new WebSocket(serverUrl(this.server.address), [SERVER_PROTOCOL, CODE_PROTOCOL + this.server.token]); } catch { this.dropped(); return; }
     this.ws = ws;
     ws.onmessage = e => { try { this.message(JSON.parse(e.data)); } catch { /* not JSON */ } };
     ws.onclose = e => {
@@ -804,10 +804,10 @@ class AgentLink {
     };
   }
   dropped() {
-    for (const resolve of this.waiting.values()) resolve({ ok: false, error: "agent connection lost" });
+    for (const resolve of this.waiting.values()) resolve({ ok: false, error: "server connection lost" });
     this.waiting.clear();
     renderSettings();
-    // a wrong code is never retried: every try counts toward the agent's lockout; Edit fixes it
+    // a wrong code is never retried: every try counts toward the server's lockout; Edit fixes it
     if (this.closed || this.state === "wrong join code") return;
     const wait = this.state === "locked out" ? LOCKOUT_S : RECONNECT_S[Math.min(this.retry++, RECONNECT_S.length - 1)];
     this.timer = setTimeout(() => this.open(), wait * 1000);
@@ -819,38 +819,38 @@ class AgentLink {
       this.seat = m;
       const names = new Set((m.instances || []).map(i => i.name));
       dropPending(this.server.address, name => !names.has(name));
-      agentCopies(this.server); renderSettings();
+      serverCopies(this.server); renderSettings();
     }
-    else if (m.type === "agent_result" && this.waiting.has(m.id)) { this.waiting.get(m.id)(m); this.waiting.delete(m.id); }
+    else if (m.type === "server_result" && this.waiting.has(m.id)) { this.waiting.get(m.id)(m); this.waiting.delete(m.id); }
     else if (m.type === "log" && Array.isArray(m.lines)) {
-      this.log = (m.reset ? [] : this.log || []).concat(m.lines).slice(-AGENT_LOG_KEPT);
-      if (app.mode === "info" && app.tab === "agent") renderSettings();
+      this.log = (m.reset ? [] : this.log || []).concat(m.lines).slice(-SERVER_LOG_KEPT);
+      if (app.mode === "info" && app.tab === "servers") renderSettings();
     }
   }
   request(cmd, name, settings) {
     return new Promise(resolve => {
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) { resolve({ ok: false, error: "agent not connected" }); return; }
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) { resolve({ ok: false, error: "server not connected" }); return; }
       const id = this.next++;
       this.waiting.set(id, resolve);
-      this.ws.send(JSON.stringify({ type: "agent", id, cmd, name, ...(settings ? { settings } : {}) }));
+      this.ws.send(JSON.stringify({ type: "server", id, cmd, name, ...(settings ? { settings } : {}) }));
     });
   }
 }
 
-// an agent's running copies, each opened through it with the agent's code
-function agentCopies(s) {
-  const urls = (s.agent.seat.instances || []).filter(i => i.state === "running" && i.feed_port)
-    .map(i => agentUrl(s.address, "/feed/" + encodeURIComponent(i.name)));
+// an server's running copies, each opened through it with the server's code
+function serverCopies(s) {
+  const urls = (s.link.seat.instances || []).filter(i => i.state === "running" && i.feed_port)
+    .map(i => serverUrl(s.address, "/feed/" + encodeURIComponent(i.name)));
   reconcileUrls(s, urls);
 }
-// the agent's name for a copy opened through it, or "" for a copy found by searching ports
-function agentName(i) {
-  const m = i && i.server && i.server.agent && i.url.match(/\/feed\/([^/]+)$/);
+// the server's name for a copy opened through it, or "" for a copy found by searching ports
+function copyName(i) {
+  const m = i && i.server && i.server.link && i.url.match(/\/feed\/([^/]+)$/);
   return m ? decodeURIComponent(m[1]) : "";
 }
 
 function saveServers() {
-  save("servers", app.servers.map(({ address, token }) => ({ address, token, kind: "agent" })));
+  save("servers", app.servers.map(({ address, token }) => ({ address, token, kind: "server" })));
 }
 
 function addInstance(url, token, at, server = null) {
@@ -887,24 +887,24 @@ function setCurrent(n) {
 }
 
 
-// servers are agents; one saved before them (a copy's own address and code) is dropped with a note
+// servers are servers; one saved before them (a copy's own address and code) is dropped with a note
 function loadServers() {
-  const saved = load("servers", []) || [];
-  app.servers = saved.filter(s => s && s.kind === "agent" && s.address).map(s => ({ address: s.address, token: s.token || "" }));
+  const saved = load("servers", []) || [];  // kind "agent": saved before servers were called servers
+  app.servers = saved.filter(s => s && ["server", "agent"].includes(s.kind) && s.address).map(s => ({ address: s.address, token: s.token || "" }));
   if (saved.length > app.servers.length || load("connections", null)) {
     app.migrated = "Servers saved by an older version were removed: add each SparkGap server again (its address and join code).";
   }
   save("connections", null);
   saveServers();
-  for (const s of app.servers) { s.agent = new AgentLink(s); s.agent.open(); }
+  for (const s of app.servers) { s.link = new ServerLink(s); s.link.open(); }
 }
 
-// a page served by a copy (its feed's "web": true, no agent) shows that copy and nothing else
+// a page served by a copy (its feed's "web": true, no server) shows that copy and nothing else
 async function startHere() {
   if (!/^https?:$/.test(location.protocol)) return false;
   const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/feed`, token = load("here", "");
   const r = await probeFeed(url, token);
-  if (r === "none") return false;  // an agent's page, or no SparkGap: the server list
+  if (r === "none") return false;  // an server's page, or no SparkGap: the server list
   app.here = { url };
   addInstance(url, token);
   return true;
@@ -1000,7 +1000,7 @@ function copyText(text) {
   return Promise.resolve(ok);
 }
 
-// a copy's status from its own feed, as HTML; a: what its agent says of it (top calls), or null
+// a copy's status from its own feed, as HTML; a: what its server says of it (top calls), or null
 function statusHtml(i, a) {
   const s = (i && i.status) || {}, h = (i && i.hello) || {}, run = h.run || {}, r = s.radio || {};
   const clock = s.clock_synced === true ? "NTP synchronised" : s.clock_synced === false ? "not synchronised" : "unknown";
@@ -1270,52 +1270,54 @@ function seg(el, labels, current, onPick) {
   });
 }
 
-// Settings: an Agent tab (agents, this browser) and a tab for each copy an agent runs
+// Settings: an Servers tab (servers, this browser) and a tab for each copy an server runs
 function settingsTabs() {
-  const tabs = [["agent", "Servers"]], agents = app.servers.filter(sv => sv.agent);
-  for (const sv of agents) {
-    const k = app.servers.indexOf(sv), host = (sv.agent.hello && sv.agent.hello.host) || sv.address;
-    for (const i of (sv.agent.seat && sv.agent.seat.instances) || []) {
-      tabs.push([`${k}:${i.name}`, agents.length > 1 ? `${i.name} · ${host}` : i.name]);
+  const tabs = [["servers", "Servers"]], servers = app.servers.filter(sv => sv.link);
+  for (const sv of servers) {
+    const k = app.servers.indexOf(sv), host = (sv.link.hello && sv.link.hello.host) || sv.address;
+    for (const i of (sv.link.seat && sv.link.seat.instances) || []) {
+      tabs.push([`${k}:${i.name}`, servers.length > 1 ? `${i.name} · ${host}` : i.name]);
     }
   }
   return tabs;
 }
 
-// the copy behind a copy tab: [server index, server, agent's instance, its feed (null while stopped)]
+// the copy behind a copy tab: [server index, server, server's instance, its feed (null while stopped)]
 function tabCopy(key) {
   const k = Number(key.split(":")[0]), name = key.slice(key.indexOf(":") + 1), sv = app.servers[k];
-  const a = sv && sv.agent && sv.agent.seat && sv.agent.seat.instances.find(x => x.name === name);
-  const feed = a ? app.instances.find(x => x.server === sv && agentName(x) === name) || null : null;
+  const a = sv && sv.link && sv.link.seat && sv.link.seat.instances.find(x => x.name === name);
+  const feed = a ? app.instances.find(x => x.server === sv && copyName(x) === name) || null : null;
   return [k, sv, a, feed];
 }
 
 // the tab of the copy on screen, so the dialog opens on it
 function currentTab() {
-  const i = inst(), name = agentName(i);
-  return name ? `${app.servers.indexOf(i.server)}:${name}` : "agent";
+  const i = inst(), name = copyName(i);
+  return name ? `${app.servers.indexOf(i.server)}:${name}` : "servers";
 }
 
 function renderSettings() {
   if ($("modal").hidden) return;
+  // a page from a SparkGap server opens the guide it ships with; one from a copy or a file, GitHub's
+  $("help").href = /^https?:$/.test(location.protocol) && !app.here ? "/help" : HELP_URL;
   const tabs = settingsTabs(), info = app.mode === "info";
-  if (!tabs.some(t => t[0] === app.tab)) app.tab = "agent";
+  if (!tabs.some(t => t[0] === app.tab)) app.tab = "servers";
   seg($("modeSeg"), ["Settings", "Info"], info ? 1 : 0, n => { app.mode = n ? "info" : "settings"; save("mode", app.mode); renderSettings(); });
   $("tabs").innerHTML = tabs.map(([key, label]) => `<button class="tab${key === app.tab ? " on" : ""}" data-tab="${esc(key)}">${esc(label)}</button>`).join("");
-  $("tabAgent").hidden = info || app.tab !== "agent";
-  $("tabCopy").hidden = info || app.tab === "agent";
+  $("tabServers").hidden = info || app.tab !== "servers";
+  $("tabCopy").hidden = info || app.tab === "servers";
   $("infoBody").hidden = !info;
   if (info) {
     const box = $("infoBody");
     if (selecting(box)) return;
-    if (app.here && app.tab === "agent") { box.innerHTML = statusHtml(app.instances[0], null); return; }
-    if (app.tab === "agent") {
+    if (app.here && app.tab === "servers") { box.innerHTML = statusHtml(app.instances[0], null); return; }
+    if (app.tab === "servers") {
       // the consoles keep their place: at the bottom they follow new lines, scrolled up they stay
       const was = {};
       for (const c of box.querySelectorAll("[data-console]")) {
         was[c.dataset.console] = c.scrollHeight - c.scrollTop - c.clientHeight < 4 ? -1 : c.scrollTop;
       }
-      box.innerHTML = agentInfoHtml();
+      box.innerHTML = serversInfoHtml();
       for (const c of box.querySelectorAll("[data-console]")) {
         const at = was[c.dataset.console];
         c.scrollTop = at === undefined || at < 0 ? c.scrollHeight : at;
@@ -1328,7 +1330,7 @@ function renderSettings() {
   }
   $("setNote").textContent = app.seatNote || "";
   $("setNote").className = "small " + (app.seatBad ? "err" : "muted");
-  if (app.tab === "agent") {
+  if (app.tab === "servers") {
     if (!selecting($("conns"))) renderConns();
     seg($("themeSeg"), ["Dark", "Light"], document.documentElement.dataset.theme === "light" ? 1 : 0, n => setTheme(n ? "light" : "dark"));
     seg($("decSeg"), ["Both", "Wide", "Narrow", "Lowest cost"], DECODED.indexOf(app.decoded), n => {
@@ -1342,12 +1344,12 @@ function renderSettings() {
   box.innerHTML = i ? copyCards(k, sv, i) : "";
 }
 
-// Info on the Agent tab: each agent, its station and a line for each copy
-function agentInfoHtml() {
-  const agents = app.servers.filter(sv => sv.agent);
-  if (!agents.length) return '<div class="small muted">No server yet: add one under Settings.</div>';
-  return '<div class="scards">' + agents.map(sv => {
-    const a = sv.agent, seat = a.seat || { instances: [], stations: [] };
+// Info on the Servers tab: each server, its station and a line for each copy
+function serversInfoHtml() {
+  const servers = app.servers.filter(sv => sv.link);
+  if (!servers.length) return '<div class="small muted">No server yet: add one under Settings.</div>';
+  return '<div class="scards">' + servers.map(sv => {
+    const a = sv.link, seat = a.seat || { instances: [], stations: [] };
     const rows = [`<div class="srow"><span class="k">Server</span><span class="v">${esc(a.state === "live" ? `${(a.hello && a.hello.host) || ""} (${a.hello && a.hello.build ? a.hello.build : "-"})` : a.state)}</span></div>`];
     for (const st of seat.stations || []) {
       const loss = st.last_loss ? `, last ${utcTime(st.last_loss[0])}: ${st.last_loss[1]}` : "";
@@ -1364,7 +1366,7 @@ function agentInfoHtml() {
   }).join("") + "</div>";
 }
 
-// Info on a stopped copy's tab: what its agent knows
+// Info on a stopped copy's tab: what its server knows
 function stoppedInfoHtml(a) {
   if (!a) return "";
   const row = (k, v) => `<div class="srow"><span class="k">${esc(k)}</span><span class="v">${esc(dash(v))}</span></div>`;
@@ -1382,7 +1384,7 @@ function renderConns() {
   here.concat(app.servers).forEach((sv, n) => {
     const copies = sv.here ? app.instances : app.instances.filter(i => i.server === sv);
     const live = copies.filter(i => i.state === "live");
-    const a = sv.agent, ok = sv.here ? live.length > 0 : a && a.state === "live";
+    const a = sv.link, ok = sv.here ? live.length > 0 : a && a.state === "live";
     const row = document.createElement("div");
     row.className = "conn" + (copies.includes(inst()) ? " cur" : "");
     const dot = document.createElement("span");
@@ -1419,7 +1421,7 @@ function renderConns() {
   if (!app.servers.length && !app.here && app.editing === -2) {
     const p = document.createElement("div"); p.className = "small muted"; p.textContent = "No servers yet."; box.appendChild(p);
   }
-  for (const note of [app.migrated, app.editing === -2 ? app.note : ""]) {  // the migration note stays until an agent is added
+  for (const note of [app.migrated, app.editing === -2 ? app.note : ""]) {  // the migration note stays until an server is added
     if (!note) continue;
     const p = document.createElement("div"); p.className = "small muted"; p.textContent = note; box.appendChild(p);
   }
@@ -1431,7 +1433,7 @@ function renderConns() {
 
 function editConn(n) {
   const sv = app.servers[n];
-  // a new agent defaults to the machine that served this page, if one did
+  // a new server defaults to the machine that served this page, if one did
   const served = /^https?:$/.test(location.protocol);
   $("fAddr").value = sv ? sv.address : served ? location.hostname : "";
   $("fCode").value = n === -3 ? load("here", "") : sv ? sv.token : "";
@@ -1459,21 +1461,21 @@ async function saveConn() {
   $("fErr").hidden = true;
   $("fSave").disabled = true;
   $("fSave").textContent = "Searching...";
-  const found = await probeAgent(address, token);
+  const found = await probeLink(address, token);
   if (app.form !== form) return;  // closed meanwhile; another form may be open
   $("fSave").disabled = false;
-  if (found !== "agent") {
+  if (found !== "server") {
     $("fErr").textContent = {
       code: "wrong join code for that server",
       lockout: `locked out after wrong join codes: try again in ${LOCKOUT_S / 60} min`,
-    }[found] || `no SparkGap server answered at that address (port ${hostPort(address)[1] || AGENT_PORT})`;
+    }[found] || `no SparkGap server answered at that address (port ${hostPort(address)[1] || SERVER_PORT})`;
     $("fErr").hidden = false;
     renderConns();
     return;
   }
   const sv = { address, token };
   if (n >= 0) {
-    app.servers[n].agent.close();
+    app.servers[n].link.close();
     app.instances.filter(i => i.server === app.servers[n]).forEach(removeInstance);
     app.servers[n] = sv;
   } else app.servers.push(sv);
@@ -1481,13 +1483,13 @@ async function saveConn() {
   app.note = "";
   app.migrated = "";
   saveServers();
-  sv.agent = new AgentLink(sv);
-  sv.agent.open();
+  sv.link = new ServerLink(sv);
+  sv.link.open();
   renderSettings();
 }
 
 function removeConn(n) {
-  if (app.servers[n].agent) app.servers[n].agent.close();
+  if (app.servers[n].link) app.servers[n].link.close();
   dropPending(app.servers[n].address, () => true);
   app.instances.filter(i => i.server === app.servers[n]).forEach(removeInstance);
   app.servers.splice(n, 1);
@@ -1500,7 +1502,7 @@ function removeConn(n) {
 function copyCards(k, sv, i) {
   const run = i.state === "running", busy = i.busy, saved = i.settings || {};
   const pend = app.pending[pendKey(sv, i.name)] || {}, st = { ...saved, ...pend }, n = Object.keys(pend).length;
-  const at = `data-agent="${k}" data-name="${esc(i.name)}"`;
+  const at = `data-server="${k}" data-name="${esc(i.name)}"`;
   const btn = (cmd, label, on) => `<button class="btn small" ${at} data-cmd="${cmd}"${on && !busy ? "" : " disabled"}>${label}</button>`;
   const choices = (k2, opts, cur) => `<div class="seg${k2 in pend ? " pend" : ""}" ${at} data-key="${k2}">${opts.map(([v, l]) =>
     `<span data-value="${esc(JSON.stringify(v))}"${v === cur ? ' class="on"' : ""}>${esc(l)}</span>`).join("")}</div>`;
@@ -1511,8 +1513,8 @@ function copyCards(k, sv, i) {
   const state = busy ? `${busy}...` : run ? "running" : "stopped";
   const err = !run && i.last_error ? `<div class="small err">${esc(i.last_error)}</div>`
     : run && i.feed_failed ? '<div class="small err">Its feed did not start (port in use): no waterfall until it restarts.</div>' : "";
-  const shown = !!inst() && inst().server === sv && agentName(inst()) === i.name;
-  const host = (sv.agent.hello && sv.agent.hello.host) || sv.address, valid = st.validation || "off";
+  const shown = !!inst() && inst().server === sv && copyName(inst()) === i.name;
+  const host = (sv.link.hello && sv.link.hello.host) || sv.address, valid = st.validation || "off";
   const bar = n ? `<div class="applybar"><span class="small">${n} change${n > 1 ? "s" : ""}</span><span class="grow"></span>`
     + `<button class="btn small primary" ${at} data-cmd="apply"${busy ? " disabled" : ""}>${run ? `Apply (restarts ${esc(i.name)})` : "Save"}</button>`
     + `<button class="btn small" ${at} data-cmd="discard">Discard</button></div>` : "";
@@ -1525,7 +1527,7 @@ function copyCards(k, sv, i) {
     <div class="grid setgrid">${RULE_FLAGS.map(([k2, l, hint]) => row(l.toUpperCase(), onOff(k2, st[k2]), hint)).join("")}</div></details>${bar}</section>`;
 }
 
-// drop the pending settings of an agent's copies that gone(name) says are gone
+// drop the pending settings of an server's copies that gone(name) says are gone
 function dropPending(address, gone) {
   for (const k of Object.keys(app.pending)) {
     const bar = k.lastIndexOf("|");
@@ -1533,7 +1535,7 @@ function dropPending(address, gone) {
   }
 }
 
-// pending settings belong to an agent by its address, which does not move when the list changes
+// pending settings belong to an server by its address, which does not move when the list changes
 function pendKey(sv, name) { return `${sv.address}|${name}`; }
 
 // a setting picked: pending until Apply; picked back to what the copy runs, it is no longer pending
@@ -1570,9 +1572,9 @@ async function applySettings(link, name) {
 }
 
 function seatTarget(t) {
-  const holder = t.closest("[data-agent]");
-  const sv = holder && app.servers[Number(holder.dataset.agent)];
-  return sv && sv.agent ? [sv.agent, holder.dataset.name, holder] : [null, "", null];
+  const holder = t.closest("[data-server]");
+  const sv = holder && app.servers[Number(holder.dataset.server)];
+  return sv && sv.link ? [sv.link, holder.dataset.name, holder] : [null, "", null];
 }
 
 function openSettings() { app.tab = currentTab(); $("modal").hidden = false; renderSettings(); }
@@ -1592,7 +1594,7 @@ function bindInput() {
     const [link, name, holder] = seatTarget(t);
     if (!link) return;
     if (t.dataset.cmd === "show") {
-      const n = app.instances.findIndex(x => x.server === link.server && agentName(x) === name);
+      const n = app.instances.findIndex(x => x.server === link.server && copyName(x) === name);
       if (n >= 0) { setCurrent(n); closeSettings(); }
     } else if (t.dataset.cmd === "apply") applySettings(link, name);
     else if (t.dataset.cmd === "discard") { delete app.pending[pendKey(link.server, name)]; renderSettings(); }
@@ -1610,7 +1612,6 @@ function bindInput() {
     $("dCopy").textContent = ok ? "Copied" : "Copy failed";
     setTimeout(() => { $("dCopy").textContent = "Copy"; }, 1500);
   });
-  $("help").href = HELP_URL;
   $("close").onclick = closeSettings;
   $("modal").onmousedown = e => { if (e.target === $("modal")) closeSettings(); };
   $("addConn").onclick = () => editConn(-1);

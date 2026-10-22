@@ -12,13 +12,13 @@ servers.
 
 ## Getting connected
 
-SparkGap Web connects to SparkGap servers. A machine is a SparkGap server when
-it runs the agent (`sparkgap_agent.py`), which runs that machine's SparkGap
-copies and passes their feeds through. Protocol and settings:
-[AGENT_PROTOCOL.md](AGENT_PROTOCOL.md).
+SparkGap Web connects to SparkGap servers. A SparkGap server
+(`sparkgap_server.py`) runs one machine's SparkGap copies and passes their
+feeds through. Protocol and settings:
+[SERVER_PROTOCOL.md](SERVER_PROTOCOL.md).
 
-1. On the machine running SparkGap, start the agent:
-   `python3 sparkgap_agent.py`. At its first start it writes `agent.json` in
+1. On the machine running SparkGap, start the server:
+   `python3 sparkgap_server.py`. At its first start it writes `server.json` in
    the run folder (`~/sparkgap` unless `--root` or `$SPARKGAP_ROOT` says
    otherwise) with a new join code, and prints the code. Set `bind` there to
    the machine's VPN or local IP address to reach it from another machine.
@@ -107,7 +107,7 @@ risk of a wrong one.
 ### Info: Servers
 
 Each server's host and build, its radio station, a line for each copy (band,
-state, uptime, spots), and the **server log**: the agent's last 200 lines, then
+state, uptime, spots), and the **server log**: the server's last 200 lines, then
 each new one, showing browsers connecting and every start, stop and settings
 change with its result. At the bottom the log follows new lines; scrolled up,
 it stays.
@@ -138,27 +138,27 @@ be copied.
 ## Tips
 
 - For access from outside the LAN, use a VPN that encrypts the link rather than
-  opening the port to the internet. Without `tls_cert`, the agent and its join
+  opening the port to the internet. Without `tls_cert`, the server and its join
   code cross the network unencrypted.
 - A browser that falls behind is listed under CONSOLES and on the health line.
 
-## The server's agent
+## The server: server.json
 
-`agent.json`, in the run folder:
+`server.json`, in the run folder:
 
 ```json
 {"bind": "127.0.0.1", "port": 7320, "join_code": "XXXXXX"}
 ```
 
 - `bind`: the address to listen on; `127.0.0.1` serves only the same machine.
-- `port`: 7320, kept for the agent; the copies' feeds take 7321 to 7339.
+- `port`: 7320, kept for the server; the copies' feeds take 7321 to 7339.
 - `join_code`: written at first start. Five wrong codes from one address lock
   that address out for 10 minutes.
 - `tls_cert` and `tls_key` (optional) serve `https://` and `wss://`.
 
-The agent passes each copy's feed through, so the copies' feeds can stay on
+The server passes each copy's feed through, so the copies' feeds can stay on
 `127.0.0.1` with codes that never leave the machine. `sparkgap.sh status` shows
-the agent, its address, join code and web page.
+the server, its address, join code and web page.
 
 ## Server: a copy's feed
 
@@ -168,9 +168,9 @@ A copy's feed is off unless its config has a `gui_feed` block:
 "gui_feed": {"bind": "127.0.0.1", "port": "auto", "join_code": null, "web": false}
 ```
 
-- `bind`: the address to listen on. Behind an agent, `127.0.0.1`.
+- `bind`: the address to listen on. Behind an server, `127.0.0.1`.
 - `port`: `"auto"` by default, the first free port from 7321 to 7339. 7320 is
-  the machine's agent's.
+  the machine's server's.
 - `join_code`: required whenever `bind` is not a loopback address. Six
   characters, minted without any pair easily confused by eye or over the air
   (O/0, I/1 and similar); case, spaces and dashes are ignored on entry. Make one

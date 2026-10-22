@@ -30,7 +30,7 @@ sparkgap.sh: run the SparkGap instances on this machine.
                                    a worktree of code/ in <name>/, config/template.json copied to
                                    config/<name>.local.json with that channel, the band and the first
                                    free telnet and UDP ports from the template's; the GUI feed takes the
-                                   first free port from 7321 when it starts, 7320 being the agent's (an existing
+                                   first free port from 7321 when it starts, 7320 being the server's (an existing
                                    config/<name>.local.json is reused); not started
   sparkgap.sh remove <name>        take a stopped instance out: its worktree goes, its config stays in config/
   sparkgap.sh rename <old> <new>   rename a stopped instance, keeping its digit (the DAX-IQ channel):
@@ -99,7 +99,7 @@ radio() {  # the Flex radio an instance uses (its sdr_ip), empty for any other r
 }
 spid() { local p; p=$(cat "$R/logs/station_$1.pid" 2>/dev/null) && kill -0 "$p" 2>/dev/null && echo "$p"; }
 
-locked() {  # run "$@" holding instance $2's radio lock, then its own (the agent takes the same, in this order)
+locked() {  # run "$@" holding instance $2's radio lock, then its own (the server takes the same, in this order)
   local ip; ip=$(radio "$2")
   if [ -n "$ip" ]; then ( flock 9; ( flock 8; "$@" ) 8> "$R/logs/$2.lock" ) 9> "$R/logs/station_$ip.lock"
   else ( flock 8; "$@" ) 8> "$R/logs/$2.lock"; fi
@@ -227,13 +227,13 @@ PY
   echo "   log $log"
 }
 
-agent_status() {  # the machine's agent (sparkgap_agent.py): running or not, its address, join code and web page
+server_status() {  # the machine's server (sparkgap_server.py): running or not, its address, join code and web page
   local p
-  [ -f "$R/agent.json" ] || { echo "${BOLD}agent$OFF: not set up (sparkgap_agent.py writes agent.json at its first start)"; return; }
-  local cmd  # running only while that pid is an agent for this root (its --root, or none given)
-  p=$(cat "$R/logs/agent.pid" 2>/dev/null) && cmd=$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null) || cmd=
-  [[ $cmd == *sparkgap_agent.py* ]] && { [[ $cmd != *--root* ]] || [[ $cmd == *"--root $R "* ]]; } || p=
-  python3 - "$R/agent.json" "$p" "$BOLD" "$GREEN" "$RED" "$YELLOW" "$OFF" <<'PY'
+  [ -f "$R/server.json" ] || { echo "${BOLD}server$OFF: not set up (sparkgap_server.py writes server.json at its first start)"; return; }
+  local cmd  # running only while that pid is an server for this root (its --root, or none given)
+  p=$(cat "$R/logs/server.pid" 2>/dev/null) && cmd=$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null) || cmd=
+  [[ $cmd == *sparkgap_server.py* ]] && { [[ $cmd != *--root* ]] || [[ $cmd == *"--root $R "* ]]; } || p=
+  python3 - "$R/server.json" "$p" "$BOLD" "$GREEN" "$RED" "$YELLOW" "$OFF" <<'PY'
 import json, sys
 c = json.load(open(sys.argv[1])); pid, B, G, R, Y, O = sys.argv[2:8]
 code = str(c.get("join_code", "")).upper().replace("-", "")
@@ -241,7 +241,7 @@ show = f"{code[:3]}-{code[3:]}" if len(code) == 6 else code
 host, port = c.get("bind", "127.0.0.1"), c.get("port", 7320)
 web = "https" if c.get("tls_cert") else "http"
 state = f"{G}running{O}, pid {pid}" if pid else f"{R}stopped{O}"
-print(f"{B}agent{O}: {state}, {host}:{port}, join code {B}{Y}{show}{O}, browser {web}://{host}:{port}/")
+print(f"{B}server{O}: {state}, {host}:{port}, join code {B}{Y}{show}{O}, browser {web}://{host}:{port}/")
 PY
 }
 
@@ -523,7 +523,7 @@ esac
 for a in "$@"; do [[ $a == -h || $a == --help ]] && { cmd_usage "$cmd"; exit 0; }; done
 case $cmd in
   start|stop) [ $# -gt 0 ] || set -- $ALL; for i in "$@"; do dir "$i" > /dev/null; $cmd "$i"; done ;;
-  status) [ $# -gt 0 ] || { agent_status; echo; set -- $ALL; }; sep=; for i in "$@"; do dir "$i" > /dev/null; [ -n "$sep" ] && echo; sep=1; status "$i"; done ;;
+  status) [ $# -gt 0 ] || { server_status; echo; set -- $ALL; }; sep=; for i in "$@"; do dir "$i" > /dev/null; [ -n "$sep" ] && echo; sep=1; status "$i"; done ;;
   restart) [ $# -gt 0 ] || set -- $ALL; for i in "$@"; do dir "$i" > /dev/null; stop "$i" && start "$i"; done ;;
   band)
     [ $# -eq 2 ] || { cmd_usage band; exit 2; }

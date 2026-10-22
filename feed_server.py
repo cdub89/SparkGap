@@ -11,7 +11,7 @@ A join code is required whenever bind is not a loopback address: 6 characters, c
 dashes ignored. A fresh one: python3 feed_server.py --new-code
 "web": true also serves the browser console (web/) at http://<bind>:<port>/.
 "port": "auto" (the default) takes the first free port of AUTO_PORTS, 7321 to 7339: 7320 is the
-machine's agent's (sparkgap_agent.py), which passes each copy's feed through to SparkGap Web.
+machine's SparkGap server (sparkgap_server.py), which passes each copy's feed through to SparkGap Web.
 """
 
 from __future__ import annotations
@@ -86,7 +86,7 @@ CODE_MINT_ALPHABET = "ACDEFHJKMNPRTUVWXY3479"
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # accepted on entry
 CODE_LENGTH = 6
 LOCKOUT_TRIES = 5  # wrong codes from one address ...
-AGENT_PORT = 7320  # the machine's agent (sparkgap_agent.py); a copy's feed keeps off it
+SERVER_PORT = 7320  # the machine's SparkGap server (sparkgap_server.py); a copy's feed keeps off it
 AUTO_PORTS = range(7321, 7340)  # "port": "auto", the default
 NAME_LOOKUP_S = 2.0  # reverse DNS for a console's name; it stays nameless past this
 LOCKOUT_S = 600.0  # ... within this long refuse that address until they age out
@@ -210,9 +210,9 @@ class FeedServer:
             raise ValueError("gui_feed must be an object, e.g. {\"bind\": \"127.0.0.1\"}")
         self.bind = str(cfg.get("bind", "127.0.0.1"))
         port = cfg.get("port", "auto")
-        if port == AGENT_PORT:
-            log.warning("GUI feed: port %d is the agent's (sparkgap_agent.py); use \"auto\" or 7321-7339",
-                        AGENT_PORT)
+        if port == SERVER_PORT:
+            log.warning("GUI feed: port %d is the server's (sparkgap_server.py); use \"auto\" or 7321-7339",
+                        SERVER_PORT)
         if port != "auto" and (isinstance(port, bool) or not isinstance(port, int)
                                or not 0 <= port <= 65_535):
             raise ValueError(f"gui_feed: port must be \"auto\" or a whole number 0 to 65535, got {port!r}")

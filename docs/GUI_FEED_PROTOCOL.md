@@ -10,7 +10,7 @@ Protocol `sparkgap.v1`, feed version 1.
 ## Connecting
 
 One endpoint per SparkGap: `ws://<host>:<port>/feed` (the port is the first free
-one from 7321 to 7339 unless the config sets one; 7320 is the machine's agent's,
+one from 7321 to 7339 unless the config sets one; 7320 is the machine's server's,
 which passes the feed through as `/feed/<name>`), or `wss://` when the config
 has `tls_cert` and `tls_key`. A standard WebSocket handshake (RFC 6455,
 version 13):

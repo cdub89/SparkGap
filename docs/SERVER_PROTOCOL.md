@@ -1,21 +1,21 @@
-# SparkGap agent protocol
+# SparkGap server protocol
 
-The agent (`sparkgap_agent.py`) runs one machine's SparkGap instances for
+The server (`sparkgap_server.py`) runs one machine's SparkGap instances for
 SparkGap Web. It listens on one port, 7320 by default, and serves three things
 there:
 
-- `/agent`: this protocol, a WebSocket.
+- `/server`: this protocol, a WebSocket.
 - `/feed/<name>`: the feed of running instance `<name>`, passed through
-  unchanged. The protocol is the feed's own (`GUI_FEED_PROTOCOL.md`). The agent
+  unchanged. The protocol is the feed's own (`GUI_FEED_PROTOCOL.md`). The server
   opens the copy's feed on its own machine with the copy's join code, so the
   copy's feed can stay on loopback and its code never leaves the machine.
 - Any other path: SparkGap Web.
 
-Instances on `"port": "auto"` take the feed ports after the agent's, from 7321.
+Instances on `"port": "auto"` take the feed ports after the server's, from 7321.
 
 ## Settings
 
-`<root>/agent.json`, written on first run with a new join code and readable by
+`<root>/server.json`, written on first run with a new join code and readable by
 its owner only. The root is `--root`, else `$SPARKGAP_ROOT`, else `~/sparkgap`:
 the same layout `tools/sparkgap.sh` uses (`instances`, `config/`, `logs/`,
 `rec/`).
@@ -25,21 +25,21 @@ the same layout `tools/sparkgap.sh` uses (`instances`, `config/`, `logs/`,
 ```
 
 `tls_cert` and `tls_key` add TLS. Bound to anything but loopback without TLS,
-the agent warns: reach it only over a network you trust.
+the server warns: reach it only over a network you trust.
 
 ## Connecting
 
-Offer the subprotocol `sparkgap.agent.v1`, and the join code as
+Offer the subprotocol `sparkgap.server.v1`, and the join code as
 `sparkgap.code.<code>` (a browser) or `Authorization: Bearer <code>`. The same
 code opens `/feed/<name>`. A wrong code closes with 4401; five wrong codes from
 one address lock it out for 10 minutes (close 4429).
 
-## Messages from the agent
+## Messages from the server
 
 `hello`, once:
 
 ```json
-{"type": "hello", "v": 1, "agent": true, "host": "rednuc", "build": "3f41c0b"}
+{"type": "hello", "v": 1, "server": true, "host": "rednuc", "build": "3f41c0b"}
 ```
 
 `seat`, on connect and every 2 seconds:
@@ -69,28 +69,28 @@ one address lock it out for 10 minutes (close 4429).
 - `last_error`: the last error in a stopped copy's log.
 - `stations`: the Flex station of each radio the instances use.
 
-`log`, on connect the agent's last 200 log lines (`"reset": true`), then each
+`log`, on connect the server's last 200 log lines (`"reset": true`), then each
 new line as it is logged: connections, requests and their results.
 
 ```json
 {"type": "log", "reset": true,
  "lines": [{"utc": 1792690000.123, "level": "INFO",
-            "msg": "Agent: 100.64.0.2 asks restart dallas1"}]}
+            "msg": "Server: 100.64.0.2 asks restart dallas1"}]}
 ```
 
-`agent_result`, for each request:
+`server_result`, for each request:
 
 ```json
-{"type": "agent_result", "id": 7, "ok": true, "message": "dallas1: live (pid 2014134)"}
-{"type": "agent_result", "id": 8, "ok": false,
+{"type": "server_result", "id": 7, "ok": true, "message": "dallas1: live (pid 2014134)"}
+{"type": "server_result", "id": 8, "ok": false,
  "error": "callsign cannot be changed here"}
 ```
 
-## Messages to the agent
+## Messages to the server
 
 ```json
-{"type": "agent", "id": 7, "cmd": "start", "name": "dallas1"}
-{"type": "agent", "id": 8, "cmd": "set", "name": "dallas1",
+{"type": "server", "id": 7, "cmd": "start", "name": "dallas1"}
+{"type": "server", "id": 8, "cmd": "set", "name": "dallas1",
  "settings": {"validation": "normal", "call_source": "rbn+skcc"}}
 ```
 
@@ -106,6 +106,6 @@ new line as it is logged: connections, requests and their results.
 - One request at a time per instance: another while one runs is refused as
   busy. Requests run in order, at most 8 waiting.
 
-The agent and `tools/sparkgap.sh` take the same locks (the radio's, then the
+The server and `tools/sparkgap.sh` take the same locks (the radio's, then the
 instance's) and write the same pid files and logs, so both can be used on one
 machine.
