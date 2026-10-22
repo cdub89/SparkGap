@@ -61,8 +61,9 @@ in `tools/eval/` and `tools/sim/`.
   signing `TU <call> UP` (`spot_rule_split_up`), back-to-back CQs counted each
   (`spot_rule_cq_repeats`), `CWT <call>` without CQ (`spot_rule_contest_words`), and pieces of
   longer calls held back (`spot_rule_fragments`).
-- **SparkGap Web**, a read-only browser console with waterfall, call ladder and live decode
-  text (`gui_feed`, `docs/CONSOLE.md`).
+- **SparkGap Web**, in a browser: waterfall, call ladder and live decode
+  text, and through each machine's agent (`sparkgap_agent.py`) start, stop and
+  settings for its copies (`docs/WEBUI.md`).
 - **Tools.** An all-band IQ recorder (`iq_recorder.py`), a proxy that replays recordings as an
   HPSDR radio (`hpsdr_proxy.py`), file-mode replay, a band simulator with exact ground truth
   (`tools/sim/`), and scoring against the RBN archive (`tools/eval/rbn_confirm.py`).

@@ -1,4 +1,4 @@
-// SparkGap Web: the browser console. Same feed, layout and logic as the Qt console (console/).
+// SparkGap Web: the browser client. It connects to a machine's agent (sparkgap_agent.py), or to the copy that served it.
 "use strict";
 
 const PROTOCOL = "sparkgap.v1";
@@ -6,7 +6,7 @@ const CODE_PROTOCOL = "sparkgap.code.";  // the join code, offered as a subproto
 const FEED_VERSION = 1;
 const MAX_BINS = 16_384;
 const DEFAULT_PORT = 7320;
-const HELP_URL = "https://github.com/hotairfred/SparkGap/blob/main/docs/CONSOLE.md";  // the guide, from Settings
+const HELP_URL = "https://github.com/hotairfred/SparkGap/blob/main/docs/WEBUI.md";  // the guide, from Settings
 const SCAN_TIMEOUT_S = 3;
 const AGENT_PORT = 7320;  // a machine's agent: it runs that machine's copies and passes their feeds through
 const AGENT_PROTOCOL = "sparkgap.agent.v1";
@@ -892,7 +892,7 @@ function loadServers() {
   const saved = load("servers", []) || [];
   app.servers = saved.filter(s => s && s.kind === "agent" && s.address).map(s => ({ address: s.address, token: s.token || "" }));
   if (saved.length > app.servers.length || load("connections", null)) {
-    app.migrated = "Servers saved before the agent were removed: add each machine's agent (its address and the agent's join code).";
+    app.migrated = "Servers saved by an older version were removed: add each SparkGap server again (its address and join code).";
   }
   save("connections", null);
   saveServers();
@@ -1272,7 +1272,7 @@ function seg(el, labels, current, onPick) {
 
 // Settings: an Agent tab (agents, this browser) and a tab for each copy an agent runs
 function settingsTabs() {
-  const tabs = [["agent", "Agent"]], agents = app.servers.filter(sv => sv.agent);
+  const tabs = [["agent", "Servers"]], agents = app.servers.filter(sv => sv.agent);
   for (const sv of agents) {
     const k = app.servers.indexOf(sv), host = (sv.agent.hello && sv.agent.hello.host) || sv.address;
     for (const i of (sv.agent.seat && sv.agent.seat.instances) || []) {
@@ -1345,10 +1345,10 @@ function renderSettings() {
 // Info on the Agent tab: each agent, its station and a line for each copy
 function agentInfoHtml() {
   const agents = app.servers.filter(sv => sv.agent);
-  if (!agents.length) return '<div class="small muted">No agent yet: add one under Settings.</div>';
+  if (!agents.length) return '<div class="small muted">No server yet: add one under Settings.</div>';
   return '<div class="scards">' + agents.map(sv => {
     const a = sv.agent, seat = a.seat || { instances: [], stations: [] };
-    const rows = [`<div class="srow"><span class="k">Agent</span><span class="v">${esc(a.state === "live" ? `${(a.hello && a.hello.host) || ""} (${a.hello && a.hello.build ? a.hello.build : "-"})` : a.state)}</span></div>`];
+    const rows = [`<div class="srow"><span class="k">Server</span><span class="v">${esc(a.state === "live" ? `${(a.hello && a.hello.host) || ""} (${a.hello && a.hello.build ? a.hello.build : "-"})` : a.state)}</span></div>`];
     for (const st of seat.stations || []) {
       const loss = st.last_loss ? `, last ${utcTime(st.last_loss[0])}: ${st.last_loss[1]}` : "";
       rows.push(`<div class="srow"><span class="k">Station</span><span class="v">${esc(`${st.station || st.radio}: ${st.live || st.state}${typeof st.rtt_ms === "number" ? `, ping ${st.rtt_ms} ms` : ""}, ${Number(st.losses_hour) || 0} losses in the last hour${loss}`)}</span></div>`);
@@ -1360,7 +1360,7 @@ function agentInfoHtml() {
     const lines = (a.log || []).map(l => `<div class="cl ${l.level === "ERROR" || l.level === "CRITICAL" ? "bad" : l.level === "WARNING" ? "warn" : ""}">`
       + `<span class="t">${esc(utcTime(l.utc))}</span> ${esc(String(l.msg))}</div>`).join("");
     return `<section class="scard wide"><h3><span>${esc(sv.address)}</span></h3>${rows.join("")}`
-      + `<div class="label conhead">AGENT LOG</div><div class="console mono" data-console="${app.servers.indexOf(sv)}">${lines || '<div class="cl faint">nothing logged yet</div>'}</div></section>`;
+      + `<div class="label conhead">SERVER LOG</div><div class="console mono" data-console="${app.servers.indexOf(sv)}">${lines || '<div class="cl faint">nothing logged yet</div>'}</div></section>`;
   }).join("") + "</div>";
 }
 
@@ -1391,8 +1391,8 @@ function renderConns() {
     const name = document.createElement("span"); name.className = "n"; name.textContent = sv.here ? `This SparkGap (${sv.address})` : sv.address;
     const what = document.createElement("span"); what.className = "u" + (ok ? "" : " bad");
     what.textContent = sv.here ? (copies[0] ? copies[0].error || copies[0].title : "")
-      : a && a.state !== "live" ? (a.state === "connecting" ? "connecting..." : `agent: ${a.state}`)
-      : copies.length ? copies.map(i => i.title).join(", ") : "agent: no copies running";
+      : a && a.state !== "live" ? (a.state === "connecting" ? "connecting..." : a.state)
+      : copies.length ? copies.map(i => i.title).join(", ") : "no copies running";
     row.append(dot, name, what);
     const edit = document.createElement("button"); edit.className = "btn small"; edit.textContent = sv.here ? "Join code" : "Edit";
     edit.onclick = e => { e.stopPropagation(); editConn(sv.here ? -3 : n - here.length); };
@@ -1407,7 +1407,7 @@ function renderConns() {
     card.className = "scard wide";
     card.appendChild(row);
     if (a && a.state === "live") {
-      const lines = [`Agent on ${(a.hello && a.hello.host) || sv.address}`];
+      const lines = [`Server ${(a.hello && a.hello.host) || sv.address}`];
       for (const st of (a.seat && a.seat.stations) || []) {
         const loss = st.last_loss ? `, last ${utcTime(st.last_loss[0])}: ${st.last_loss[1]}` : "";
         lines.push(`Station ${st.station || st.radio}: ${st.live || st.state}${typeof st.rtt_ms === "number" ? `, ping ${st.rtt_ms} ms` : ""}, losses in the last hour ${Number(st.losses_hour) || 0}${loss}`);
@@ -1464,9 +1464,9 @@ async function saveConn() {
   $("fSave").disabled = false;
   if (found !== "agent") {
     $("fErr").textContent = {
-      code: "wrong join code for that agent",
+      code: "wrong join code for that server",
       lockout: `locked out after wrong join codes: try again in ${LOCKOUT_S / 60} min`,
-    }[found] || `no SparkGap agent answered at that address (port ${hostPort(address)[1] || AGENT_PORT})`;
+    }[found] || `no SparkGap server answered at that address (port ${hostPort(address)[1] || AGENT_PORT})`;
     $("fErr").hidden = false;
     renderConns();
     return;
@@ -1727,7 +1727,7 @@ function start() {
   app.decoded = DECODED.includes(load("decoded", "lowest")) ? load("decoded", "lowest") : "lowest";
   startHere().then(here => {
     if (!here) loadServers();
-    // no agent saved yet: Settings opens on Add agent
+    // no server saved yet: Settings opens on Add server
     setCurrent(app.current);
     if (!here && !app.servers.length) { openSettings(); editConn(-1); }
   });

@@ -4,7 +4,7 @@
 @font-face { font-family: "IBM Plex Mono"; src: url("fonts/IBMPlexMono-SemiBold.ttf"); font-weight: 600; }
 @font-face { font-family: "Sora"; src: url("fonts/Sora.ttf"); font-weight: 100 800; }
 
-/* the same tokens as the Qt console */
+/* colour tokens, dark and light */
 :root {
   /* the waterfall keeps the dark palette in both themes */
   --wf-0: #070b0f; --wf-1: #10263a; --wf-2: #1f5fa8; --wf-3: #19b3c4; --wf-4: #4cc76a; --wf-5: #f2c94c; --wf-6: #ff6b3d;
