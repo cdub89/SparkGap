@@ -214,3 +214,22 @@ def test_build_is_read_from_git_files(tmp_path: Path) -> None:
     subprocess.run([*git, "checkout", "-q", "--detach"], check=True)
     assert Seat.build(tmp_path) == sha[:7]
     assert Seat.build(tmp_path / "nowhere") is None
+
+
+def test_status_from_many_threads_counts_each_spot_once(seat: Seat) -> None:
+    """The server reads status on several threads; counts read on from an offset (2026-10-22)."""
+    import threading
+
+    seat.start("dallas1")
+    log = seat.logs / seat.status(seat.instance("dallas1"))["log"]
+    with log.open("a") as f:
+        for _ in range(2_000):
+            f.write("12:00:03 INFO *** SPOT:   18080.00  K8TLJ  12 dB  20 WPM  [repeat] ***\n")
+    seat._stats.clear()  # pyright: ignore[reportPrivateUsage]
+    d1 = seat.instance("dallas1")
+    threads = [threading.Thread(target=seat.status, args=(d1,)) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert seat.status(seat.instance("dallas1"))["spots"] == 2_001

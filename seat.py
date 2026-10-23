@@ -16,6 +16,7 @@ import re
 import shutil
 import signal
 import subprocess
+import threading
 import time
 from collections import Counter
 from collections.abc import Callable, Iterator
@@ -152,6 +153,7 @@ class Seat:
         self.logs = root / "logs"
         self.rec = root / "rec"
         self._stats: dict[Path, LogStats] = {}
+        self._stats_lock = threading.Lock()  # status() runs on the server's threads at once
 
     # ---- instances and their configs ----
 
@@ -443,6 +445,10 @@ class Seat:
     # ---- status ----
 
     def status(self, i: Instance) -> dict[str, Any]:
+        with self._stats_lock:  # a log's counts are read on from where the last call stopped
+            return self._status(i)
+
+    def _status(self, i: Instance) -> dict[str, Any]:
         cfg = self.config(i)
         pid = self.pid(i.name)
         log = self.newest_log(i.name)
