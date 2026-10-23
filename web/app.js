@@ -887,16 +887,47 @@ function setCurrent(n) {
 }
 
 
-// servers are servers; one saved before them (a copy's own address and code) is dropped with a note
+// the saved servers; kind "agent": saved before servers were called servers
+function storedServers() {
+  const saved = load("servers", []) || [];
+  return saved.filter(s => s && ["server", "agent"].includes(s.kind) && s.address).map(s => ({ address: s.address, token: s.token || "" }));
+}
+
+// one saved before servers (a copy's own address and code) is dropped, and the note names it
 function loadServers() {
-  const saved = load("servers", []) || [];  // kind "agent": saved before servers were called servers
-  app.servers = saved.filter(s => s && ["server", "agent"].includes(s.kind) && s.address).map(s => ({ address: s.address, token: s.token || "" }));
-  if (saved.length > app.servers.length || load("connections", null)) {
-    app.migrated = "Servers saved by an older version were removed: add each SparkGap server again (its address and join code).";
+  const saved = load("servers", []) || [];
+  app.servers = storedServers();
+  const dropped = saved.filter(s => s && s.address && !app.servers.some(sv => sv.address === s.address)).map(s => s.address);
+  if (dropped.length || load("connections", null)) {
+    app.migrated = `Removed, saved by an older version${dropped.length ? `: ${dropped.join(", ")}` : ""}. Add each SparkGap server again with its server's join code.`;
   }
   save("connections", null);
   saveServers();
   for (const s of app.servers) { s.link = new ServerLink(s); s.link.open(); }
+}
+
+// the saved list is the truth: another tab may have added, changed or removed a server since
+// this one loaded, and writing this tab's old list back would undo that
+function syncServers() {
+  const stored = storedServers();
+  for (const sv of [...app.servers]) {
+    const s = stored.find(x => x.address === sv.address);
+    if (!s || s.token !== sv.token) dropServer(sv);
+  }
+  for (const s of stored) {
+    if (app.servers.some(sv => sv.address === s.address)) continue;
+    s.link = new ServerLink(s);
+    app.servers.push(s);
+    s.link.open();
+  }
+  app.servers.sort((a, b) => stored.findIndex(x => x.address === a.address) - stored.findIndex(x => x.address === b.address));
+}
+
+function dropServer(sv) {
+  if (sv.link) sv.link.close();
+  dropPending(sv.address, () => true);
+  app.instances.filter(i => i.server === sv).forEach(removeInstance);
+  app.servers.splice(app.servers.indexOf(sv), 1);
 }
 
 // a page served by a copy (its feed's "web": true, no server) shows that copy and nothing else
@@ -1473,12 +1504,13 @@ async function saveConn() {
     renderConns();
     return;
   }
+  const was = n >= 0 && app.servers[n] ? app.servers[n].address : null;
+  syncServers();  // change the saved list as it is now, not as this tab last read it
+  const old = app.servers.find(x => x.address === was || x.address === address);
+  const at = old ? app.servers.indexOf(old) : app.servers.length;  // an edit keeps its place
+  if (old) dropServer(old);
   const sv = { address, token };
-  if (n >= 0) {
-    app.servers[n].link.close();
-    app.instances.filter(i => i.server === app.servers[n]).forEach(removeInstance);
-    app.servers[n] = sv;
-  } else app.servers.push(sv);
+  app.servers.splice(at, 0, sv);
   app.editing = -2; app.form = null;
   app.note = "";
   app.migrated = "";
@@ -1489,10 +1521,10 @@ async function saveConn() {
 }
 
 function removeConn(n) {
-  if (app.servers[n].link) app.servers[n].link.close();
-  dropPending(app.servers[n].address, () => true);
-  app.instances.filter(i => i.server === app.servers[n]).forEach(removeInstance);
-  app.servers.splice(n, 1);
+  const address = app.servers[n] && app.servers[n].address;
+  syncServers();
+  const sv = app.servers.find(x => x.address === address);
+  if (sv) dropServer(sv);
   app.editing = -2; app.form = null;
   saveServers();
   setCurrent(app.current);
@@ -1732,6 +1764,10 @@ function start() {
   app.decoded = DECODED.includes(load("decoded", "lowest")) ? load("decoded", "lowest") : "lowest";
   startHere().then(here => {
     if (!here) loadServers();
+    // another tab changed the saved servers: show the same list here
+    if (!here) window.addEventListener("storage", e => {
+      if (e.key === STORE + "servers") { syncServers(); setCurrent(app.current); renderAll(); }
+    });
     // no server saved yet: Settings opens on Add server
     setCurrent(app.current);
     if (!here && !app.servers.length) { openSettings(); editConn(-1); }
