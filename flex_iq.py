@@ -1025,6 +1025,7 @@ class FlexIQReceiver:
             self.state = "reconnecting"
             self.reconnects += 1
             self.last_reconnect = round(now)
+            log.info("RBN down: %s", time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(now)))
             stopping = lambda: self._stopping
             settled = False
             try:
@@ -1085,6 +1086,7 @@ class FlexIQReceiver:
                 return
             log.info("[Flex] Recovered (%s) on attempt %d, %.0f s after it began", kind, self.attempts,
                      time.time() - now)
+            log.info("RBN up: %s", time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime()))
 
     def _halt(self, why, alive=True):
         """Leave the radio alone: remove our objects if still connected, disconnect, and stop SparkGap."""

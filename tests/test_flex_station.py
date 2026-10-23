@@ -158,6 +158,19 @@ def test_a_stream_the_radio_refuses_to_remove_halts_instead_of_doubling_up(
     assert not any(c == "stream create type=dax_iq daxiq_channel=1" for _, c in radio.log[-6:])
 
 
+def test_an_outage_is_logged_for_rbn_scoring_and_a_halt_leaves_it_open(
+    radio: FakeRadio, caplog: Caplog
+) -> None:
+    _station(radio)
+    a = _channel(MHZ_17M, 1)
+    with caplog.at_level(logging.INFO, logger="sparkgap.flex"):
+        a._recover("No DAX-IQ packets for 10 s", "stream")
+        radio.refuse["stream remove"] = "50000005"
+        a._recover("No DAX-IQ packets for 10 s", "stream")
+    marks = [m.split(":")[0] for r in caplog.records if (m := r.getMessage()).startswith("RBN ")]
+    assert marks == ["RBN down", "RBN up", "RBN down"] and a.state == "halted"
+
+
 def test_a_channel_rebuilds_when_its_station_registers_again(radio: FakeRadio) -> None:
     st = _station(radio)
     a = _channel(MHZ_17M, 1)
