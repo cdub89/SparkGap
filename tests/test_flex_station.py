@@ -475,3 +475,14 @@ def test_a_retune_while_not_live_is_refused_and_sends_nothing(radio: FakeRadio) 
     with pytest.raises(RuntimeError, match="Not live"):
         a.retune(round(MHZ_40M * 1e6))
     assert len(radio.log) == n_cmds
+
+
+def test_a_retune_drops_the_iq_queued_from_the_old_frequency(radio: FakeRadio) -> None:
+    """Codex audit 2026-10-22: a backlog in the receive buffer can outlast the settle time."""
+    from tests.flex_fake_radio import _Udp  # pyright: ignore[reportPrivateUsage]
+
+    _station(radio)
+    a = _channel(MHZ_17M, 1)
+    _Udp.packets = [b"old"] * 5
+    a.retune(round(MHZ_40M * 1e6))
+    assert _Udp.packets == []

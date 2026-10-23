@@ -1126,7 +1126,8 @@ class FlexIQReceiver:
                     resp = conn.cmd(tune % mhz)
                     if conn.ok(f"slice {sl} tuned to {mhz:.6f} MHz", resp):
                         self.freq_hz, self.freq_mhz, self.frequencies = freq_hz, mhz, [freq_hz]
-                        log.info("[Flex] Retuned to %.6f MHz", mhz)
+                        log.info("[Flex] Retuned to %.6f MHz (%d queued packets of the old frequency dropped)",
+                                 mhz, self._drop_queued())
                         return
                     undo = [pan % old] + ([tune % old] if conn.reply(resp) is None else [])
                 else:  # a refusal moved nothing; no reply may have
@@ -1139,6 +1140,18 @@ class FlexIQReceiver:
                 if self.state != "halted":
                     conn.ok(f"slice {sl} locked", conn.cmd(f"slice lock {sl}"))   # a safety measure, not a guarantee
                     self._discard_until = time.time() + RETUNE_SETTLE_S
+
+    def _drop_queued(self):
+        """Empty the DAX-IQ socket: what it holds now came from before the retune, and a backlog can
+        outlast RETUNE_SETTLE_S (the receive buffer holds seconds of IQ)."""
+        n = 0
+        while self._udp is not None:
+            try:
+                self._udp.recvfrom(DAXIQ_PACKET_SIZE + 128, socket.MSG_DONTWAIT)
+            except OSError:
+                break
+            n += 1
+        return n
 
     def stop(self):
         self._stopping = True
