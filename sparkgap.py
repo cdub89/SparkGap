@@ -9151,6 +9151,12 @@ def run_file_mode(args, config):
                                         dec_type=dec_type, wpm=wpm)
             for spot in spots:
                 all_spots.append(spot)
+                log.info("SPOT: %.2f kHz %s %d dB %d WPM [%s]",
+                         spot['freq_khz'], spot['call'],
+                         spot['snr'], spot.get('wpm', 0), spot['method'])
+                if t0 is not None:
+                    _log_rbn_row(config.get('callsign', ''), spot['freq_khz'], spot['call'],
+                                 spot['snr'], spot.get('wpm', 0), t0 + _file_audio_t)
 
         unique_so_far = len({s['call'] for s in all_spots})
         log.info("  Chunk decoded: %d text outputs, %d total chars, %d spots (%d unique so far)",
