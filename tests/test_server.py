@@ -368,3 +368,13 @@ def test_the_server_exits_on_sigterm_while_a_start_is_under_way(seat: Seat) -> N
     t = time.monotonic()
     os.kill(p.pid, signal.SIGTERM)
     assert p.wait(timeout=10) == 0 and time.monotonic() - t < 5
+
+
+def test_a_feed_bound_off_this_machine_is_not_passed_through(server: Server, seat: Seat) -> None:  # noqa: F811
+    """The proxy would send the copy's join code over the network (audit 2026-10-22)."""
+    from seat import write_config
+
+    write_config(seat.root / "config" / "dallas1.local.json",
+                 {"gui_feed": {"bind": "192.0.2.5", "port": "auto", "join_code": "ABCDEF"}})
+    seat.start("dallas1")
+    assert server._feed_target("dallas1") is None  # pyright: ignore[reportPrivateUsage]

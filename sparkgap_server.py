@@ -562,8 +562,11 @@ class Server:
         if st["state"] != "running" or not st["feed_port"]:
             return None
         bind = str((self.seat.config(i).get("gui_feed") or {}).get("bind", "127.0.0.1"))
-        host = "127.0.0.1" if bind in ("0.0.0.0", "::", "") or is_loopback(bind) else bind
-        return host, int(st["feed_port"]), st["feed_code"]
+        if bind not in ("0.0.0.0", "::", "") and not is_loopback(bind):
+            log.warning("Server: %s's feed is bound to %s, not this machine only: not passed "
+                        "through (its join code would cross the network)", name, bind)
+            return None
+        return "127.0.0.1", int(st["feed_port"]), st["feed_code"]
 
 
 def feed_request(host: str, port: int, code: str | None) -> bytes:
