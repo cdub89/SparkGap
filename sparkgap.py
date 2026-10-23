@@ -469,6 +469,102 @@ FT8_DECODER_BUILT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ft
 FT8_DECODER_OLD = '/home/sparkgap/decode_ft8'   # where WF8Z's install has it
 
 
+FT8_SLOT_S = 15.0
+FT8_SLOT_OFFSETS_S = (-0.5, 0.5)    # windows per slot, from its start (:00/:15/:30/:45)
+
+
+def ft8_window_starts(t0, n, rate=12000, offsets=FT8_SLOT_OFFSETS_S):
+    """Start samples of the 15 s windows decoded in a buffer of n samples whose first sample was
+    taken at wall time t0: one per offset around each FT8 slot that fits. Two per slot gave 97-99%
+    of the old 1 s sliding windows' decodes for an eighth of the decode_ft8 runs (PA QSO Party
+    recording, 20m and 40m). t0 <= 0 (unknown) keeps the sliding windows, 0 to 45 s in 1 s steps."""
+    win = int(FT8_SLOT_S * rate)
+    if t0 <= 0:
+        return list(range(0, n - win + 1, rate))
+    starts = set()
+    slot = (-t0) % FT8_SLOT_S - FT8_SLOT_S        # the slot that began just before the buffer
+    while slot * rate < n:
+        for d in offsets:
+            k = int(round((slot + d) * rate))
+            if k < 0:
+                if slot < 0:                   # the slot began before the buffer: no whole one here
+                    continue
+                k = 0                          # it begins just inside: its early window starts at 0
+            if k + win <= n:
+                starts.add(k)
+        slot += FT8_SLOT_S
+    return sorted(starts)
+
+
+def ft8_slot_dt(window_t, time_sec):
+    """A decode's DT as WSJT-X shows it: when the transmission started (the window's wall time plus
+    decode_ft8's time_sec, which counts from the window start) less its slot's start plus 0.5 s."""
+    return ((window_t + time_sec - 0.5 + FT8_SLOT_S / 2) % FT8_SLOT_S) - FT8_SLOT_S / 2
+
+
+class Ft8ClockWatch:
+    """Warns when FT8 decodes' DT sits far from 0, the sign of a PC clock that is off: aligned
+    windows cover a transmission from about 1 s early to 2.3 s late on the clock (cdub89, #76).
+    Per cycle the median DT of its decodes; over the last `minutes` cycles with enough decodes,
+    the median of those; a warning at most every `every_s`. With the clock right the median sits
+    near +0.3 s (our node, 3,437 decodes: +0.28 s, quartiles +0.20 / +0.36), so 1 s leaves room."""
+
+    def __init__(self, limit_s=1.0, minutes=10, min_decodes=5, every_s=600.0):
+        from collections import deque
+        self.limit_s, self.min_decodes, self.every_s = limit_s, min_decodes, every_s
+        self.cycles = deque(maxlen=minutes)
+        self.last_warn = None
+
+    def add(self, dts, now):
+        """One cycle's DTs; returns the cycle's median (None if too few) and a warning or None."""
+        med = float(np.median(dts)) if len(dts) >= self.min_decodes else None
+        if med is not None:
+            self.cycles.append(med)
+        warn = None
+        if len(self.cycles) >= max(3, self.cycles.maxlen // 2):
+            m = float(np.median(self.cycles))
+            if abs(m) > self.limit_s and (self.last_warn is None or now - self.last_warn >= self.every_s):
+                self.last_warn = now
+                warn = ("FT8 decodes' median DT over the last %d minutes is %+.1f s: this PC's clock may "
+                        "be off. Aligned FT8 windows (ft8_windows) need it within about a second; check "
+                        "NTP or chrony" % (len(self.cycles), m))
+        return med, warn
+
+
+def minute_fft(fi, fq, single=True):
+    """The FFT of a buffer of IQ (fi, fq), zero-padded to a fast length. FT8's band cut and the
+    RTTY scan both cut from it, so a band-minute needs one."""
+    import scipy.fft as sfft
+    # A snapshot is rarely exactly 60 s of samples, and an FFT of a length with large prime
+    # factors (11,518,900 = 2^2 * 5^2 * 115189) takes 3 to 7 s instead of 0.4 s: pad with zeros
+    # to the next fast length (a fraction of a second of silence at the end).
+    n = sfft.next_fast_len(len(fi))
+    x = np.zeros(n, dtype=np.complex64 if single else np.complex128)
+    x.real[:len(fi)], x.imag[:len(fq)] = fi, fq
+    return sfft.fft(x, overwrite_x=True)
+
+
+def band_slice_12k(fi, fq, offset_hz, half_hz=6000.0, rate=12000, fs=192000, single=True, z=None):
+    """The `rate` complex baseband of [offset_hz - half_hz, offset_hz + half_hz] of a buffer of fs IQ
+    (fi, fq), offset_hz at 0 Hz: one FFT of the buffer and a short inverse FFT of the slice, as the
+    RTTY scan cuts its candidates, instead of mixing the whole buffer and resampling it (0.83 s a
+    band-minute against 0.26 s single precision, i7-9700K). Same scale as resample_poly(mixed, 1, 16).
+    z: minute_fft(fi, fq) if the caller already has it."""
+    import scipy.fft as sfft
+    if z is None:
+        z = minute_fft(fi, fq, single)
+    n = len(z)
+    dt = z.dtype
+    n_out = n * rate // fs
+    bin_hz = fs / n
+    k0 = int(round(offset_hz / bin_hz))
+    half = min(int(half_hz / bin_hz), n_out // 2 - 1)
+    idx = np.arange(k0 - half, k0 + half + 1)
+    sp = np.zeros(n_out, dtype=dt)
+    sp[(idx - k0) % n_out] = z[idx % n]
+    return sfft.ifft(sp) * (n_out / n)
+
+
 def _ft8_decoder(cfg):
     """Path of decode_ft8 (Karlis Goba's ft8_lib, MIT): config ft8_decoder, else the copy
     `make ft8` builds beside sparkgap.py, else the original install path."""
@@ -1767,6 +1863,33 @@ def _select_cw_decoder(name):
     log.info("CW decoder: %s (%s, %s)", name, _itila_lib_path, _scanner_lib_path)
     return _itila_lib_path
 
+def _set_known_calls(config):
+    """Config itila_known_calls (a file, one call per line) and itila_known_bonus (log units, 0 =
+    off): itila2 favours calls heard on the air lately over callsign-shaped pieces of them."""
+    bonus = float(config.get('itila_known_bonus', 0) or 0)
+    path = config.get('itila_known_calls')
+    if bonus <= 0 or not path:
+        return 0
+    import ctypes as _ct
+    lib = _get_itila_lib()
+    if not lib or not hasattr(lib, 'itila_set_known_calls'):
+        log.warning("itila_known_calls: this decoder has no known-call prior")
+        return 0
+    lib.itila_set_known_calls.restype = _ct.c_int
+    lib.itila_set_known_calls.argtypes = [_ct.c_char_p, _ct.c_int, _ct.c_double]
+    # 1x1 calls (N3F, W6T) are left out: a pull toward them split longer calls (W6TI as W6T I)
+    try:
+        with open(path) as f:
+            calls = sorted({c for c in (l.strip().upper() for l in f if not l.startswith('#'))
+                            if len(c) >= 4})
+    except OSError as e:
+        log.warning("itila_known_calls: cannot read %s (%s); known-call prior off", path, e)
+        return 0
+    buf = '\n'.join(calls).encode()
+    n = lib.itila_set_known_calls(buf, len(buf), bonus)
+    log.info("Known-call prior: %d calls from %s, bonus %.1f", n, path, bonus)
+    return n
+
 _itila_decode_threads = 1   # config itila_decode_threads: bins decoded in parallel (Python path)
 _scanner_pool = True        # itila2 scanner DSP on the decode threads too; off on the live Python receiver path (cdub89/SparkGap#19 A5)
 
@@ -2060,19 +2183,31 @@ def _rtty_split_keywords(text):
     return ' '.join(out)
 
 
-def _rtty_candidates(iq, lo_hz, hi_hz):
+def _rtty_hold_spectrum(fi, fq, lo_hz, hi_hz, fs=192000):
+    """(f, hold): the max-hold over the minute of 2 s magnitude spectra in [lo_hz, hi_hz], each
+    smoothed over 11 bins (0.5 Hz bins). One batched single-precision FFT of the whole 2 s blocks,
+    about half the time of a double-precision FFT per block (0.14 s against 0.28 s a band-minute
+    with its complex copy, Arc)."""
+    import scipy.fft as sfft
+    from scipy.ndimage import uniform_filter1d
+    n = 2 * fs
+    nb = len(fi) // n
+    if nb < 1:
+        return None, None
+    x = np.empty(nb * n, dtype=np.complex64)
+    x.real, x.imag = fi[:nb * n], fq[:nb * n]
+    spec = sfft.fft(x.reshape(nb, n), axis=1, overwrite_x=True)
+    k = np.arange(int(np.ceil(lo_hz * n / fs)), int(np.floor(hi_hz * n / fs)) + 1)
+    mag = np.abs(spec[:, k % n])                  # negative frequencies are the top bins
+    return k * fs / n, uniform_filter1d(mag, 11, axis=1, mode='constant').max(axis=0)
+
+
+def _rtty_candidates(fi, fq, lo_hz, hi_hz):
     """RTTY candidates in a minute of IQ: [(offset_hz, snr_db)], strongest first. Mark and
     space peaks ~170 Hz apart in a max-hold of 2 s spectra over the whole minute, so a
     station that transmits at any time in the minute is found, not only in its first 2 s."""
     from scipy.signal import find_peaks
-    n = 2 * 192000
-    fr = np.fft.fftshift(np.fft.fftfreq(n, 1.0 / 192000))
-    sel = (fr >= lo_hz) & (fr <= hi_hz)
-    f = fr[sel]
-    hold = None
-    for k in range(0, len(iq) - n + 1, n):
-        s = np.convolve(np.fft.fftshift(np.abs(np.fft.fft(iq[k:k + n])))[sel], np.ones(11) / 11, mode='same')
-        hold = s if hold is None else np.maximum(hold, s)
+    f, hold = _rtty_hold_spectrum(fi, fq, lo_hz, hi_hz)
     if hold is None or len(hold) < 200:
         return []
     noise = float(np.median(hold))
@@ -2095,11 +2230,12 @@ def _rtty_candidates(iq, lo_hz, hi_hz):
     return out
 
 
-def _rtty_scan_band_repeat(skimmer, rtty_lib, bn, band_center_khz, fi, fq, n_samples):
+def _rtty_scan_band_repeat(skimmer, rtty_lib, bn, band_center_khz, fi, fq, n_samples, z=None):
     """rtty_spot_rule "repeat": decode every RTTY candidate of the minute and spot through
     spot_rule.RepeatSpotRule, as CW: a call spots when a CQ/TEST group names it in
     tier(call) decodes (minutes) near one frequency. Callers are never spotted. One FFT of
-    the minute; each candidate's 12 kHz audio is cut from it, not mixed from the full IQ."""
+    the minute; each candidate's 12 kHz audio is cut from it, not mixed from the full IQ. z: the
+    minute's minute_fft() when FT8 has already made it."""
     import ctypes as _ct
     rng = _rtty_range(skimmer.cfg, band_center_khz)
     if rng is None:
@@ -2116,8 +2252,7 @@ def _rtty_scan_band_repeat(skimmer, rtty_lib, bn, band_center_khz, fi, fq, n_sam
             lambda c: {'active': 2, 'rare': 3}.get(trk._matches_patt3ch(c), 4),
             cq_groups=True, lockon=True, window_s=30.0,
             fragments=skimmer.cfg.get('rtty_spot_rule_fragments') or None)
-    iq = fi.astype(np.float64) + 1j * fq.astype(np.float64)
-    cands = [c for c in _rtty_candidates(iq, *rng)
+    cands = [c for c in _rtty_candidates(fi, fq, *rng)
              if not _in_digital_window(band_center_khz + c[0] / 1000.0)]
     cap = int(skimmer.cfg.get('rtty_max_candidates', RTTY_MAX_CANDIDATES))
     if len(cands) > cap:
@@ -2127,7 +2262,8 @@ def _rtty_scan_band_repeat(skimmer, rtty_lib, bn, band_center_khz, fi, fq, n_sam
     if not cands:
         return 0
     rate, audio_center = 12000, 1000.0
-    z = np.fft.fft(iq)
+    if z is None:
+        z = minute_fft(fi, fq)
     n = len(z)
     n_out = n * rate // 192000
     bin_hz = 192000.0 / n
@@ -7288,6 +7424,7 @@ class SparkGap:
             return False
         try:
             _select_cw_decoder(self.cfg.get('cw_decoder', 'itila2'))
+            _set_known_calls(self.cfg)
         except (ValueError, RuntimeError) as e:
             log.error("%s", e)
             return False
@@ -8333,8 +8470,10 @@ class SparkGap:
                         take = min(n, n60)
                         fi_60 = fi[n - take:n].copy()
                         fq_60 = fq[n - take:n].copy()
+                        # wall time of fi_60[0]: the swap's first sample plus what was cut
+                        t0 = t_first.value + (n - take) / 192000.0 if t_first.value > 0 else 0.0
                         ft8_jobs.append((bn, ri, ck, ft8_khz,
-                                         fi_60, fq_60, take))
+                                         fi_60, fq_60, take, t0))
                     if ft8_jobs:
                         def _ft8_decode(jobs, skimmer):
                             # Whatever goes wrong in a cycle, the next minute must run.
@@ -8357,19 +8496,42 @@ class SparkGap:
                             ft8_bin = _ft8_decoder(skimmer.cfg)
                             total = 0
                             seen_msgs = set()  # dedupe across sliding windows
-                            for bn, ri, ck, ft8_khz, fi, fq, n in (jobs if enable_ft8 else []):
-                                iq = fi.astype(np.float64) + 1j * fq.astype(np.float64)
+                            aligned = skimmer.cfg.get('ft8_windows', 'aligned') == 'aligned'
+                            cycle_dts = []                 # decodes' DT, for the clock watch
+                            rtty_lib = _get_rtty_lib() if enable_rtty else None
+                            rtty_repeat = skimmer.cfg.get('rtty_spot_rule') == 'repeat'
+                            rtty_total, rtty_done = 0, set()
+
+                            def _rtty_band(bn, ck, fi, fq, n, z=None):
+                                nonlocal rtty_total
+                                rtty_done.add(bn)
+                                try:
+                                    if rtty_repeat:
+                                        rtty_total += _rtty_scan_band_repeat(
+                                            skimmer, rtty_lib, bn, ck, fi, fq, n, z=z)
+                                    else:
+                                        rtty_total += _rtty_scan_band(skimmer, rtty_lib, bn, ck, fi, fq, n)
+                                except Exception as e:
+                                    log.warning("RTTY scan %s: %s", bn, e)
+
+                            for bn, ri, ck, ft8_khz, fi, fq, n, t0 in (jobs if enable_ft8 else []):
                                 offset_hz = (ft8_khz - ck) * 1000
-                                t = np.arange(n) / 192000
-                                mixed = iq * np.exp(-1j * 2 * np.pi * offset_hz * t)
-                                # 192k → 12k complex via polyphase
-                                dec12 = resample_poly(mixed, 1, 16)
+                                z = None
+                                if skimmer.cfg.get('ft8_band_cut', 'fft') == 'fft':
+                                    # 12 kHz around the dial, cut from one FFT of the minute
+                                    z = minute_fft(fi[:n], fq[:n])
+                                    dec12 = band_slice_12k(fi[:n], fq[:n], offset_hz, z=z).astype(np.complex128)
+                                else:
+                                    iq = fi.astype(np.float64) + 1j * fq.astype(np.float64)
+                                    t = np.arange(n) / 192000
+                                    mixed = iq * np.exp(-1j * 2 * np.pi * offset_hz * t)
+                                    # 192k → 12k complex via polyphase
+                                    dec12 = resample_poly(mixed, 1, 16)
                                 slot_n = 15 * 12000
-                                # SLIDING window — slot start every 1 second.
-                                # Fixed sub-periods miss decodes due to FT8 transmission
-                                # offset (~0.5s past minute boundary) — we sweep 0–45s
-                                # in 1s steps to align with whatever the actual TX boundary is.
-                                for start in range(0, len(dec12) - slot_n + 1, 12000):
+                                # Windows from the snapshot's start time: two around each slot
+                                # (ft8_windows "aligned"), or every second from 0 to 45 s
+                                # ("sliding", the original, for a buffer whose time is unknown).
+                                for start in ft8_window_starts(t0 if aligned else 0.0, len(dec12)):
                                     chunk = dec12[start:start+slot_n]
                                     if len(chunk) < slot_n:
                                         continue
@@ -8403,6 +8565,7 @@ class SparkGap:
                                             continue
                                         try:
                                             snr = int(float(parts_o[1]))
+                                            time_sec = float(parts_o[2])
                                             audio_hz = int(parts_o[3])
                                             msg = parts_o[5]
                                         except (ValueError, IndexError):
@@ -8435,6 +8598,8 @@ class SparkGap:
                                         if dedup_key in seen_msgs:
                                             continue
                                         seen_msgs.add(dedup_key)
+                                        if aligned and t0 > 0:
+                                            cycle_dts.append(ft8_slot_dt(t0 + start / 12000.0, time_sec))
                                         log.info("FT8 %s p%d: %s", bn, part, line)
                                         total += 1
                                         skimmer.spot_count += 1
@@ -8464,26 +8629,31 @@ class SparkGap:
                                                 pass
                                         log.info("*** SPOT: %10.1f  %-12s  %+d dB  FT8  [%s] ***",
                                                  rf_khz, ft8_call, snr, msg)
+                                # this band's RTTY now, from the same FFT, so the minute is
+                                # transformed once and its FFT freed before the next band
+                                if rtty_lib is not None and z is not None:
+                                    _rtty_band(bn, ck, fi, fq, n, z)
+                                del z
                             if enable_ft8:
-                                log.info("FT8 cycle done: %d spots across %d bands",
-                                         total, len(jobs))
+                                watch = getattr(skimmer, '_ft8_clock', None)
+                                if watch is None:
+                                    watch = skimmer._ft8_clock = Ft8ClockWatch()
+                                med, warn = watch.add(cycle_dts, time.time())
+                                log.info("FT8 cycle done: %d spots across %d bands%s",
+                                         total, len(jobs),
+                                         '' if med is None else ', median DT %+.2f s' % med)
+                                if warn:
+                                    log.warning(warn)
                             # RTTY scan piggybacks on the same minute snapshot.
-                            # Run after FT8 so the FT8 spots flow first.
+                            # Each band was scanned right after its FT8 (sharing its FFT);
+                            # this covers bands that were not (FT8 off, or the resample cut).
                             # Independent of enable_ft8 — controlled by
                             # enable_rtty (default true for backward compat).
                             if enable_rtty:
-                                rtty_lib = _get_rtty_lib()
                                 if rtty_lib is not None:
-                                    rtty_total = 0
-                                    for bn, ri, ck, ft8_khz, fi, fq, n in jobs:
-                                        try:
-                                            scan = (_rtty_scan_band_repeat
-                                                    if skimmer.cfg.get('rtty_spot_rule') == 'repeat'
-                                                    else _rtty_scan_band)
-                                            rtty_total += scan(
-                                                skimmer, rtty_lib, bn, ck, fi, fq, n)
-                                        except Exception as e:
-                                            log.warning("RTTY scan %s: %s", bn, e)
+                                    for bn, ri, ck, ft8_khz, fi, fq, n, _t0 in jobs:
+                                        if bn not in rtty_done:      # FT8 off, or the resample cut
+                                            _rtty_band(bn, ck, fi, fq, n)
                                     excl = ''
                                     if skimmer.cfg.get('rtty_excludes_cw'):
                                         rel = blk = 0
@@ -8673,6 +8843,7 @@ def run_file_mode(args, config):
         sys.exit(f"use_itila needs a recording at {rates} Hz, got {file_rate}")
     try:
         _select_cw_decoder(config.get('cw_decoder', 'itila2'))
+        _set_known_calls(config)
     except (ValueError, RuntimeError) as e:
         sys.exit(str(e))
 
