@@ -1389,12 +1389,23 @@ function serversInfoHtml() {
     for (const i of seat.instances || []) {
       const up = i.state === "running" && i.started ? `, up ${duration(now() - i.started)}` : "";
       rows.push(`<div class="srow"><span class="k">${esc(i.name)}</span><span class="v">${esc(`${i.band}, ${i.busy || i.state}${up}, ${Number(i.spots) || 0} spots${i.errors ? `, ${Number(i.errors) || 0} errors` : ""}`)}</span></div>`);
+      const copy = i.state === "running" && app.instances.find(x => x.server === sv && copyName(x) === i.name);
+      if (copy && copy.hello.config) rows.push(runningWithHtml(copy.hello));
     }
     const lines = (a.log || []).map(l => `<div class="cl ${l.level === "ERROR" || l.level === "CRITICAL" ? "bad" : l.level === "WARNING" ? "warn" : ""}">`
       + `<span class="t">${esc(utcTime(l.utc))}</span> ${esc(String(l.msg))}</div>`).join("");
     return `<section class="scard wide"><h3><span>${esc(sv.address)}</span></h3>${rows.join("")}`
       + `<div class="label conhead">SERVER LOG</div><div class="console mono" data-console="${app.servers.indexOf(sv)}">${lines || '<div class="cl faint">nothing logged yet</div>'}</div></section>`;
   }).join("") + "</div>";
+}
+
+// the settings a running copy reports in effect; defaults faint, rule built-ins muted
+function runningWithHtml(h) {
+  const dflt = new Set(h.config_defaults || []), built = new Set(h.config_built_in || []);
+  const val = v => v === true ? "on" : v === false ? "off" : String(v);
+  const items = Object.entries(h.config).filter(([, v]) => v !== null && v !== undefined)
+    .map(([k, v]) => `<span class="${dflt.has(k) ? "faint" : built.has(k) ? "muted" : ""}"${dflt.has(k) ? ' title="default"' : built.has(k) ? ' title="built into the rule"' : ""}>${esc(k)} ${esc(val(v))}</span>`);
+  return `<div class="runwith small mono"><span class="muted">running with</span>${items.join("")}</div>`;
 }
 
 // Info on a stopped copy's tab: what its server knows
