@@ -19,7 +19,8 @@ PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title><link rel="stylesheet" href="/style.css">
-<style>body {{ overflow: auto; }}
+<style>html, body {{ height: auto; }} body {{ overflow: auto; }}
+.help {{ display: block; }}
 .help {{ max-width: 820px; margin: 0 auto; padding: 24px 20px 60px; line-height: 1.55; }}
 .help pre {{ background: var(--sunken); padding: 10px 12px; border-radius: 8px; overflow-x: auto; }}
 .help code {{ font-family: "JetBrains Mono", monospace; font-size: 0.92em; }}
