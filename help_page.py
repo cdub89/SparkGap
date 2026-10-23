@@ -1,9 +1,9 @@
 """The SparkGap Web guide as a page, from the docs that ship with this code.
 
 The server serves it at /help (docs/WEBUI.md) and /help/<NAME>.md for the docs it links
-to, and no others, so the guide always matches the version running.  The Markdown here is what
-docs/ uses: headings, paragraphs, lists (nested by two spaces), fenced code, inline code, bold,
-links and images.
+to and theirs, and no others, so the guide always matches the version running.  The Markdown
+here is what docs/ uses: headings, paragraphs, lists (nested by two spaces), fenced code,
+inline code, bold, links and images.
 """
 
 from __future__ import annotations
@@ -139,9 +139,17 @@ def render(markdown: str) -> str:
 
 
 def served() -> set[str]:
-    """The guide and the docs and images it links to: other docs (runbooks) stay off the page."""
-    links = re.findall(r"\]\(([A-Za-z0-9_.-]+\.(?:md|png))", (DOCS / GUIDE).read_text())
-    return {GUIDE, *links}
+    """The guide, the docs and images it links to, and theirs: other docs (runbooks) stay off."""
+    out, todo = {GUIDE}, [GUIDE]
+    for _ in range(2):
+        found = set()
+        for name in todo:
+            path = DOCS / name
+            if name.endswith(".md") and path.is_file():
+                found |= set(re.findall(r"\]\(([A-Za-z0-9_.-]+\.(?:md|png))", path.read_text()))
+        todo = sorted(found - out)
+        out |= found
+    return out
 
 
 def page(name: str = GUIDE) -> tuple[bytes, str] | None:

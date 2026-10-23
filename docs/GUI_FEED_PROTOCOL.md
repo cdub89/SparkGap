@@ -3,7 +3,7 @@
 What a running SparkGap sends to its clients when the config has a `gui_feed`
 block: decoded windows, spots, status and spectrum rows over one WebSocket.
 SparkGap Web is one client; anything that speaks WebSocket can be another.
-Setup and the config block are in [WEBUI.md](WEBUI.md).
+Setup and the config block are in [SERVER_SETUP.md](SERVER_SETUP.md).
 
 Protocol `sparkgap.v1`, feed version 1.
 
