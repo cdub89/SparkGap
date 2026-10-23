@@ -594,6 +594,22 @@ def _ft8_decoder(cfg):
 BMORSE_RATE = 4000    # bmorse input sample rate
 PEAK_SCAN_SAMPLES = 8192    # live peak scan FFT; the Python receive path keeps only this much IQ
 RECORD_WAV_MAX_BYTES = 4_000_000_000    # under the WAV format's 2**32 - 1 byte limit
+RECORD_WAV_DROP_BYTES = 256_000_000     # a recording leaves the page cache every this many bytes (cdub89/SparkGap#21)
+
+
+def _wav_drop_cache(path):
+    """Let Linux drop a recording's written pages from its file cache; under WSL that cache is Windows memory."""
+    if not hasattr(os, 'posix_fadvise'):
+        return
+    try:
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        finally:
+            os.close(fd)
+    except OSError as e:
+        log.warning("Recording IQ: file cache not dropped for %s: %s", path, e)
+
 
 
 class DecoderInstance:
@@ -7724,6 +7740,7 @@ class SparkGap:
         if self._wav_record:
             self._wav_record.close()
             self._wav_record = None
+            _wav_drop_cache(self._wav_path)
         if getattr(self, '_iq_rec', None) is not None:
             self._iq_rec.close()
         elapsed = time.time() - self.start_time if self.start_time else 0
@@ -7758,6 +7775,7 @@ class SparkGap:
             old = self._wav_record
             nch, width, rate = old.getnchannels(), old.getsampwidth(), old.getframerate()
             old.close()
+            _wav_drop_cache(self._wav_path)
             self._wav_part += 1
             path = f"{os.path.splitext(self._wav_base)[0]}_p{self._wav_part}.wav"
             self._wav_record = _wave.open(path, 'wb')
@@ -7765,9 +7783,12 @@ class SparkGap:
             self._wav_record.setsampwidth(width)
             self._wav_record.setframerate(rate)
             self._wav_bytes = 0
+            self._wav_path = path
             log.info("Recording IQ: continuing in %s", path)
         self._wav_record.writeframes(data)
-        self._wav_bytes += len(data)
+        before, self._wav_bytes = self._wav_bytes, self._wav_bytes + len(data)
+        if before // RECORD_WAV_DROP_BYTES != self._wav_bytes // RECORD_WAV_DROP_BYTES:
+            _wav_drop_cache(self._wav_path)
 
     async def run(self):
         use_c = getattr(self, '_use_c_receiver', False)
