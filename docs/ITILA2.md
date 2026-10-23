@@ -53,7 +53,7 @@ SDR IQ (Flex DAX-IQ 48/96 kHz, HPSDR, or a WAV)
 
 ## Decoder (`itila2_core.c` against `itila_core.c`)
 
-Shared with itila: the 200 Hz envelope, a two-state HMM (mark, space) whose parameters EM fits per window, speed marginalised over 16 WPM bins, forward-backward posterior, run lengths, beam search over the Morse tree, callsign extraction. itila2 caps speed at 35 WPM (real CW here is 15 to 25 WPM).
+Shared with itila: the 200 Hz envelope, a two-state HMM (mark, space) whose parameters EM fits per window, speed marginalised over 16 WPM bins, forward-backward posterior, run lengths, beam search over the Morse tree, callsign extraction. itila2 searches speeds up to 35 WPM: noisy windows pin the speed estimate at whatever the cap is (12 to 17% of windows at 35, 38, 40 or 45), and a sweep of those four caps on three recordings found 35 best by a small margin (fewer busted calls, one character less W1AW error). The speed reported with a spot is measured separately (see below), so it is not limited by the cap.
 
 | | itila | itila2 | Why, and evidence |
 | --- | --- | --- | --- |
@@ -109,14 +109,19 @@ Against the original path: the original spots an SCP call on its first CQ sighti
 
 Call-count scoring alone (5 to 33 calls per recording) could not separate real gains from noise; the known-text measure is what made DC5 and DC6 visible.
 
-## Results (itila2 at `f9e0e94`)
+## Results
+
+File-mode replays, both chains with the default spot path (no spot rule), `itila_decode_threads` 4 for itila2. Reference: WX7V/5, the Lakehouse CW Skimmer on the same FLEX-6600 (its Aggregator log of CQ spots sent, or its telnet output for the 09-23 CWT).
 
 | Recording | itila | itila2 |
 | --- | --- | --- |
-| W1AW clips A / B / C, character error vs true text | 42 / 54 / 34% (itila2 before DC5) | 3.1 / 3.7 / 1.9% |
-| 20m 2026-10-06, 1 h: spots / confirmed | 5 / 4 (spot rule at `fd6a20c`) | 16 / 15 |
-| 20m CWT 2026-09-23: spots / confirmed / shared with CW Skimmer's CQ calls | | 61 / 55 / 46 of 57 |
-| CPU, 20m 1 h replay | | SC11 -41%, then DC5 and DC6 a further -8% |
+| W1AW clips A / B / C, character error vs true text | no bin on the W1AW tone (itila2 decoder on itila's scanner: 49.5 / 69.4 / 34.0%) | 3.1 / 3.7 / 1.9% |
+| 40m CWT 2026-10-08, 1 h: WX7V/5 calls shared / calls WX7V/5 did not send | 76 of 91 / 263 | 81 of 91 / 171 |
+| 20m 2026-10-06, 1 h: WX7V/5 calls shared / calls WX7V/5 did not send | 4 of 17 / 15 | 6 of 17 / 26 |
+| 20m CWT 2026-09-23, 26 min: CW Skimmer CQ calls shared | 46 of 57 | 49 of 57 |
+| CPU time, the three replays | 3257 / 1523 / 756 s | 1797 / 1027 / 459 s (-33 to -45%) |
+
+On a live 40m CWT hour (2026-10-08, FLEX-6600, itila2 with the spot rule) no IQ was lost or trimmed and bins peaked at 184 with 1.1 GB.
 
 Where both itila2 and CW Skimmer misread W1AW, the received element itself is cut (a dah reads short or a dit is missing): RUN TO BE, EDT, THURSDAY, FROM, W1AW. On a hand-keyed 40m net both produce nearly the same text, oddities included.
 
