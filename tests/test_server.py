@@ -30,8 +30,10 @@ def server(seat: Seat) -> Iterator[Server]:  # noqa: F811
 
 def _run(a: Server) -> None:
     import asyncio
+    import contextlib
 
-    asyncio.run(a.serve())
+    with contextlib.suppress(RuntimeError, asyncio.CancelledError):  # a test closed it
+        asyncio.run(a.serve())
 
 
 def _ws(a: Server, code: str = CODE, path: str = "/server", proto: str = SERVER_PROTOCOL) -> WS:
@@ -332,3 +334,37 @@ def test_shutdown_drops_a_browser_that_stopped_reading(server: Server) -> None:
         assert time.monotonic() - t < 2, "connection still open"
         time.sleep(0.01)
     s.close()
+
+
+def test_the_server_exits_on_sigterm_while_a_start_is_under_way(seat: Seat) -> None:  # noqa: F811
+    """A start waits up to 45 s for its copy to go live; SIGTERM must not wait (2026-10-22)."""
+    import os
+    import signal
+    import subprocess
+    import sys
+
+    copy = seat.root / "code" / "sparkgap.py"
+    copy.write_text(copy.read_text().replace("SparkGap LIVE:", "still connecting"))
+    (seat.root / "server.json").write_text(
+        json.dumps({"bind": "127.0.0.1", "port": 0, "join_code": CODE})
+    )
+    p = subprocess.Popen(
+        [sys.executable, "sparkgap_server.py", "--root", str(seat.root)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    port = 0
+    assert p.stdout is not None
+    for line in p.stdout:
+        if "Server on" in line:
+            port = int(line.split("127.0.0.1:")[1].split()[0])
+            break
+    ws = WS(port, path="/server", protocols=f"{SERVER_PROTOCOL}, sparkgap.code.{CODE}")
+    ws.json("hello")
+    start = {"type": "server", "id": 1, "cmd": "start", "name": "dallas1"}
+    ws.send(OP_TEXT, json.dumps(start).encode())
+    time.sleep(1)
+    t = time.monotonic()
+    os.kill(p.pid, signal.SIGTERM)
+    assert p.wait(timeout=10) == 0 and time.monotonic() - t < 5

@@ -126,7 +126,8 @@ class LogRing(logging.Handler):
             return
         self.lines.append(line)
         if self.on_line:
-            self.on_line(line)
+            with contextlib.suppress(RuntimeError):  # the loop closed: a line logged while stopping
+                self.on_line(line)
 
 
 class Client:
@@ -683,6 +684,11 @@ def main(argv: list[str] | None = None) -> int:
         with contextlib.suppress(OSError):
             if pidfile.read_text().strip() == str(os.getpid()):
                 pidfile.unlink()
+    if server.queued:  # its worker would hold the exit for as long as a start waits (45 s)
+        under_way = ", ".join(f"{n} {b}" for n, b in server.busy.items())
+        log.warning("Server: stopping with %s under way", under_way)
+        logging.shutdown()
+        os._exit(0)
     return 0
 
 
