@@ -1,6 +1,7 @@
 """flex_station.py holds the station, writes its health and exits with a code the launcher reads."""
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -52,3 +53,17 @@ def test_it_refuses_a_config_that_is_not_a_flex(tmp_path: Path) -> None:
     cfg.write_text(json.dumps({"sdr_type": "hpsdr", "sdr_ip": "192.0.2.1"}))
     with pytest.raises(SystemExit, match="not a Flex config"):
         flex_station.main(["--config", str(cfg)])
+
+
+def test_a_status_file_that_cannot_be_written_is_logged_not_raised(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A full disk must not stop the station and every copy bound to it (audit 2026-10-22)."""
+    missing = tmp_path / "gone" / "station.json"
+    with caplog.at_level(logging.INFO, logger="sparkgap.flex"):
+        flex_station.write_status(missing, {"state": "live"})
+        flex_station.write_status(missing, {"state": "live"})
+        missing.parent.mkdir()
+        flex_station.write_status(missing, {"state": "live"})
+    assert caplog.text.count("not written") == 1 and "written to" in caplog.text
+    assert json.loads(missing.read_text()) == {"state": "live"}

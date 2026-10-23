@@ -28,11 +28,24 @@ EXIT_EXISTS = 3
 DEFAULT_CONTROL_PORT = 4992
 
 
+_status_error: list[str] = []  # the last write error, logged once until a write succeeds
+
+
 def write_status(path: Path, health: dict[str, Any]) -> None:
-    """Write health as JSON, replacing the file in one step so a reader never sees half of it."""
+    """Write health as JSON, replacing the file in one step so a reader never sees half of it.
+    A failed write is logged, never raised: status must not stop the station and its copies."""
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(health) + "\n")
-    os.replace(tmp, path)
+    try:
+        tmp.write_text(json.dumps(health) + "\n")
+        os.replace(tmp, path)
+    except OSError as e:
+        if _status_error != [str(e)]:
+            log.warning("[Flex] Station status not written to %s: %s", path, e)
+            _status_error[:] = [str(e)]
+        return
+    if _status_error:
+        log.info("[Flex] Station status written to %s again", path)
+        _status_error.clear()
 
 
 def station_from_config(path: Path) -> FlexStation:
