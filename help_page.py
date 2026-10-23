@@ -1,8 +1,9 @@
 """The SparkGap Web guide as a page, from the docs that ship with this code.
 
-The server serves it at /help (docs/WEBUI.md) and /help/<NAME>.md for the docs it links to, so the
-guide always matches the version running.  The Markdown here is what docs/ uses: headings,
-paragraphs, lists (nested by two spaces), fenced code, inline code, bold, links and images.
+The server serves it at /help (docs/WEBUI.md) and /help/<NAME>.md for the docs it links
+to, and no others, so the guide always matches the version running.  The Markdown here is what
+docs/ uses: headings, paragraphs, lists (nested by two spaces), fenced code, inline code, bold,
+links and images.
 """
 
 from __future__ import annotations
@@ -136,9 +137,15 @@ def render(markdown: str) -> str:
     return "\n".join(out)
 
 
+def served() -> set[str]:
+    """The guide and the docs and images it links to: other docs (runbooks) stay off the page."""
+    links = re.findall(r"\]\(([A-Za-z0-9_.-]+\.(?:md|png))", (DOCS / GUIDE).read_text())
+    return {GUIDE, *links}
+
+
 def page(name: str = GUIDE) -> tuple[bytes, str] | None:
-    """(body, content type) for a doc or image in docs/, else None."""
-    if not re.match(r"^[A-Za-z0-9_.-]+$", name) or name.startswith("."):
+    """(body, content type) for the guide or a doc or image it links to, else None."""
+    if not re.match(r"^[A-Za-z0-9_.-]+$", name) or name.startswith(".") or name not in served():
         return None
     path = DOCS / name
     if path.suffix not in SERVED or not path.is_file() or not path.resolve().is_relative_to(DOCS):

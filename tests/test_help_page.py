@@ -38,3 +38,8 @@ def test_nothing_outside_docs() -> None:
     for name in ("../sparkgap.py", "..", ".hidden.md", "x/../../etc", "agent.json", "nothing.md"):
         assert page(name) is None, name
     assert help_page.DOCS.name == "docs"
+
+
+def test_only_the_guide_and_what_it_links_are_served() -> None:
+    assert page("SERVER_PROTOCOL.md") is not None
+    assert page("production_ab_runbook.md") is None and page("ITILA2.md") is None
