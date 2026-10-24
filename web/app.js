@@ -1381,7 +1381,9 @@ function serversInfoHtml() {
   if (!servers.length) return '<div class="small muted">No server yet: add one under Settings.</div>';
   return '<div class="scards">' + servers.map(sv => {
     const a = sv.link, seat = a.seat || { instances: [], stations: [] };
-    const rows = [`<div class="srow"><span class="k">Server</span><span class="v">${esc(a.state === "live" ? `${(a.hello && a.hello.host) || ""} (${a.hello && a.hello.build ? a.hello.build : "-"})` : a.state)}</span></div>`];
+    const code = String(sv.token || "").replace(/[^0-9A-Za-z]/g, "").toUpperCase();
+    const rows = [`<div class="srow"><span class="k">Server</span><span class="v">${esc(a.state === "live" ? `${(a.hello && a.hello.host) || ""} (${a.hello && a.hello.build ? a.hello.build : "-"})` : a.state)}</span></div>`,
+      `<div class="srow"><span class="k">Join code</span><span class="v mono">${esc(code ? `${code.slice(0, 3)}-${code.slice(3)}` : "-")}</span></div>`];
     for (const st of seat.stations || []) {
       const loss = st.last_loss ? `, last ${utcTime(st.last_loss[0])}: ${st.last_loss[1]}` : "";
       rows.push(`<div class="srow"><span class="k">Station</span><span class="v">${esc(`${st.station || st.radio}: ${st.live || st.state}${typeof st.rtt_ms === "number" ? `, ping ${st.rtt_ms} ms` : ""}, ${Number(st.losses_hour) || 0} losses in the last hour${loss}`)}</span></div>`);
@@ -1552,8 +1554,11 @@ function copyCards(k, sv, i) {
     `<span data-value="${esc(JSON.stringify(v))}"${v === cur ? ' class="on"' : ""}>${esc(l)}</span>`).join("")}</div>`;
   const onOff = (k2, cur) => choices(k2, [[false, "off"], [true, "on"]], !!cur);
   const row = (label, control, hint) => `<span class="label"${hint ? ` title="${esc(hint)}"` : ""}>${label}</span>${control}`;  // hint: on hover
-  const bands = `<select class="bandsel${"band" in pend ? " pend" : ""}" ${at} data-key="band"${busy ? " disabled" : ""}>${(saved.bands_known && saved.bands_known.length ? saved.bands_known : [saved.band])
-    .map(b => `<option${b === st.band ? " selected" : ""}>${esc(String(b))}</option>`).join("")}</select>`;
+  const known = saved.bands_known && saved.bands_known.length ? saved.bands_known : [];
+  const bandOpts = known.includes(saved.band) || saved.band === undefined ? known : [saved.band, ...known];  // a centre in Hz is no band name
+  const bandText = b => /^\d+$/.test(String(b)) ? `${(Number(b) / 1000).toFixed(1)} kHz` : String(b);
+  const bands = `<select class="bandsel${"band" in pend ? " pend" : ""}" ${at} data-key="band"${busy ? " disabled" : ""}>${bandOpts
+    .map(b => `<option value="${esc(String(b))}"${b === st.band ? " selected" : ""}>${esc(bandText(b))}</option>`).join("")}</select>`;
   const state = busy ? `${busy}...` : run ? "running" : "stopped";
   const err = !run && i.last_error ? `<div class="small err">${esc(i.last_error)}</div>`
     : run && i.feed_failed ? '<div class="small err">Its feed did not start (port in use): no waterfall until it restarts.</div>' : "";
@@ -1562,7 +1567,7 @@ function copyCards(k, sv, i) {
   const bar = n ? `<div class="applybar"><span class="small">${n} change${n > 1 ? "s" : ""}</span><span class="grow"></span>`
     + `<button class="btn small primary" ${at} data-cmd="apply"${busy ? " disabled" : ""}>${live ? "Apply (changes band live)" : run ? `Apply (restarts ${esc(i.name)})` : "Save"}</button>`
     + `<button class="btn small" ${at} data-cmd="discard">Discard</button></div>` : "";
-  return `<section class="scard wide"><h3><span>${esc(i.name)} · ${esc(String(saved.band || i.band || ""))}</span><span>${esc(host)}</span></h3>
+  return `<section class="scard wide"><h3><span>${esc(i.name)} · ${esc(bandText(saved.band || i.band || ""))}</span><span>${esc(host)}</span></h3>
     <div class="actions"><span class="${run ? "good" : "muted"}">${esc(state)}</span><span class="grow"></span>${btn("show", shown ? "Shown" : "Show", run && !shown)}
       <span class="group">${btn("start", "Start", !run)}${btn("restart", "Restart", run)}${btn("stop", "Stop", run)}</span></div>${err}</section>
     <section class="scard wide"><h3><span>SETTINGS</span><span>${run ? `band changes live, the rest by restarting ${esc(i.name)}` : "used at its next start"}</span></h3>

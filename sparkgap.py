@@ -443,6 +443,12 @@ def _log_rbn_span(t, centres_khz, rate):
     log.info("RBN span: %s %s", _rbn_utc(t), ' '.join(
         '%.1f-%.1f' % (c - rate / 2000, c + rate / 2000) for c in centres_khz))
 
+def _decode_span(bmin, bmax, center_khz, sample_rate):
+    """The CW window as decoded: the band plan's segment cut to the IQ span around the centre."""
+    half = sample_rate / 2000.0
+    return (max(bmin, center_khz - half), min(bmax, center_khz + half))
+
+
 def _derive_cw_window(center_khz, exclude_ft8=True, exclude_ft4=False):
     """Look up the CW window for the IARU R2 band containing center_khz.
 
@@ -5164,7 +5170,7 @@ class InstanceManager:
                         log.warning("CW window for %.0f kHz: no band-plan "
                                     "match, using fallback [%.0f, %.0f] kHz",
                                     center_khz, bmin, bmax)
-                self.decode_khz = (bmin, bmax)
+                self.decode_khz = _decode_span(bmin, bmax, center_khz, self.sample_rate)
                 self._itila_scanner = _ItilaScanner(
                     self.sample_rate, center_khz,
                     ev_thresh=self.itila_ev_thresh,
