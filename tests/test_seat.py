@@ -233,3 +233,66 @@ def test_status_from_many_threads_counts_each_spot_once(seat: Seat) -> None:
     for t in threads:
         t.join()
     assert seat.status(seat.instance("dallas1"))["spots"] == 2_001
+
+
+def _cfg(seat: Seat, name: str) -> dict[str, object]:
+    return json.loads((seat.root / "config" / f"{name}.local.json").read_text())
+
+
+def test_a_running_copy_changes_its_receive_path_on_the_radio_first(seat: Seat) -> None:
+    seat.start("dallas2")
+    pid = seat.pid("dallas2")
+    asked: list[dict[str, object]] = []
+
+    def live_rx(name: str, rx: dict[str, object]) -> tuple[bool, str]:
+        asked.append(rx)
+        assert "flex_rxant" not in _cfg(seat, name)  # the radio before the config
+        return True, "receive path rxant=ANT2 loopa=1 rfgain=16"
+
+    out = seat.change(
+        "dallas2", {"antenna": "ANT2", "loop_a": True, "rf_gain": 16}, live_rx=live_rx
+    )
+    assert asked == [{"rxant": "ANT2", "loopa": True, "rfgain": 16}]
+    assert (
+        out == "dallas2: receive path rxant=ANT2 loopa=1 rfgain=16" and seat.pid("dallas2") == pid
+    )
+    cfg = _cfg(seat, "dallas2")
+    assert cfg["flex_rxant"] == "ANT2" and cfg["flex_loopa"] is True and cfg["flex_rfgain"] == 16
+
+
+@pytest.mark.parametrize(
+    "answer, error",
+    [((False, "the radio refused rxant=ANT2"), "refused"), (None, "did not answer")],
+)
+def test_a_receive_path_the_radio_did_not_take_changes_nothing(
+    seat: Seat, answer: tuple[bool, str] | None, error: str
+) -> None:
+    seat.start("dallas2")
+    pid = seat.pid("dallas2")
+    with pytest.raises(SeatError, match=error):
+        seat.change("dallas2", {"antenna": "ANT2"}, live_rx=lambda _n, _rx: answer)
+    assert "flex_rxant" not in _cfg(seat, "dallas2") and seat.pid("dallas2") == pid
+
+
+def test_a_stopped_copy_gets_its_receive_path_as_the_start_target(seat: Seat) -> None:
+    assert (
+        seat.change("dallas1", {"loop_b": True}, live_rx=lambda *_: None) == "dallas1: loop_b True"
+    )
+    assert _cfg(seat, "dallas1")["flex_loopb"] is True
+
+
+@pytest.mark.parametrize(
+    "settings, error",
+    [
+        ({"antenna": "ANT 1; x"}, "antenna must be"),
+        ({"loop_a": 1}, "true or false"),
+        ({"rf_gain": "16"}, "whole number"),
+        ({"rf_gain": True}, "whole number"),
+    ],
+)
+def test_a_receive_path_value_of_the_wrong_kind_is_refused(
+    seat: Seat, settings: dict[str, object], error: str
+) -> None:
+    with pytest.raises(SeatError, match=error):
+        seat.change("dallas1", settings)
+    assert not any(k.startswith("flex_") for k in _cfg(seat, "dallas1"))

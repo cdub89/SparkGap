@@ -7498,7 +7498,8 @@ class SparkGap:
                                            station=self.cfg.get('flex_station'),
                                            rxant=self.cfg.get('flex_rxant'),
                                            loopa=self.cfg.get('flex_loopa'),
-                                           loopb=self.cfg.get('flex_loopb'))
+                                           loopb=self.cfg.get('flex_loopb'),
+                                           rfgain=self.cfg.get('flex_rfgain'))
             log.info("Using FlexRadio DAX-IQ receiver at %s", device_ip)
         else:
             # HPSDR Protocol 1 path (Red Pitaya) — supports n_receivers for multi-band
@@ -7655,7 +7656,10 @@ class SparkGap:
     async def _live_change(self, change, reply):
         """A band change from the GUI feed, without a restart: Flex, one band, not recording, no
         per-band settings. The radio moves first; only then are the old band's IQ, decoders and
-        waterfall dropped."""
+        waterfall dropped.  {"rx": {...}} changes our pan's receive path instead (antenna, loops,
+        RF gain), checked against what the radio offers."""
+        if set(change) == {'rx'}:
+            return await self._live_rx(change['rx'], reply)
         band = change.get('band')
         why = None
         if set(change) != {'band'}:
@@ -7701,6 +7705,18 @@ class SparkGap:
         _log_rbn_span(time.time(), [self._corrected_freq_khz(center_hz / 1000.0)], rate)
         log.info("Live change: %s (%.3f kHz) -> %s (%.3f kHz)", old_name, old_hz / 1000.0, name, center_hz / 1000.0)
         return reply(True, "retuned to %s" % name)
+
+    async def _live_rx(self, rx, reply):
+        """Our pan's antenna, loops or RF gain, changed on the radio in place."""
+        if not hasattr(self.receiver, 'set_rx') or not isinstance(rx, dict):
+            return reply(False, "not supported: only a Flex copy changes its receive path live")
+        try:
+            text = await asyncio.to_thread(self.receiver.set_rx, rx)
+        except (ValueError, RuntimeError) as e:
+            log.info("Live change %s refused: %s", rx, e)
+            return reply(False, str(e).replace("[Flex] ", ""))
+        log.info("Live change: %s", text)
+        return reply(True, text)
 
     def _diag_iq_snapshot(self, signum, frame):
         """SIGUSR1 handler — non-destructive snapshot of FT8 capture buffer

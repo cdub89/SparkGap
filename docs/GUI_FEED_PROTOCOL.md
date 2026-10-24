@@ -167,7 +167,10 @@ Every 2 seconds.
  "radio": {"type": "flex", "address": "192.168.1.20", "state": "live",
            "packets": 5023532, "lost": 0, "reconnects": 1,
            "last_reconnect": 1792019016, "station": "SparkGap-2",
-           "daxiq_channel": 2, "others": ["Shack (SmartSDR-Win)"]},
+           "daxiq_channel": 2, "others": ["Shack (SmartSDR-Win)"],
+           "rx": {"rxant": "ANT1", "loopa": false, "loopb": false, "rfgain": 8,
+                  "ant_list": ["ANT1", "ANT2", "RX_A", "XVTA"],
+                  "rfgain_range": [-8, 32, 8]}},
  "telnet": {"port": 7300, "clients": 1}, "iq_trimmed_s": 0.0,
  "recording": {"file": "/srv/sparkgap/rec/40m.wav", "bytes": 2473963564},
  "windows": 72823, "calls": 97, "spots_hour": 41, "bins_peak": 52,
@@ -201,7 +204,10 @@ The station (absent in file mode except `radio`):
   or the file being replayed) and `state` (`connecting`, `live`, `reconnecting`,
   `waiting` or `replaying`). A Flex adds `packets`, `lost`, `reconnects`,
   `last_reconnect` (UTC seconds or `null`), its `station` name, its
-  `daxiq_channel` and the `others` stations on the radio at the last connect.
+  `daxiq_channel`, the `others` stations on the radio at the last connect, and
+  `rx`: our pan's receive path as the radio reports it (`rxant`, `loopa`,
+  `loopb`, `rfgain`, `null` when the radio reports none), the antennas the pan
+  offers (`ant_list`) and its RF gain `[low, high, step]` (`rfgain_range`).
   The HPSDR C receiver adds `packets`, `lost` and `pkt_per_s`; file mode adds
   `position_s`.
 - `telnet`: the spot port and how many telnet clients are connected.
@@ -263,7 +269,11 @@ Changes the running SparkGap, live.
 - `id`: a string or an integer, up to 64 characters. A message with no usable
   `id` gets no answer.
 - `set`: a non-empty object, else the answer is the error `set must be an
-  object`. Only `band` can change live (a band name such as `40m`).
+  object`. Either `band` (a band name such as `40m`) or `rx`, our pan's
+  receive path: any of `rxant` (one of the pan's `ant_list`), `loopa` and
+  `loopb` (true or false, only when the radio reports them for our pan) and
+  `rfgain` (in the radio's `rfgain_range` steps), as in
+  `{"rx": {"rxant": "ANT2", "rfgain": 16}}`.
 
 The answer goes only to the client that asked:
 
@@ -278,7 +288,12 @@ recording (`record_wav`), and without per-band settings (`per_band_min_snr`,
 `pfb_scanner_bands`). Otherwise the error says why: `not supported` (HPSDR,
 file replay), `only the band can be changed live`, `not supported with more
 than one band`, `not supported while recording`, `unknown band '6m'`, or `not
-supported with per-band settings`. One change runs at a time: another sent
+supported with per-band settings`. An `rx` change works for a FlexRadio copy
+running live; a value the radio does not offer is refused before anything is
+sent, and a change the radio refuses is put back to what it reported before.
+Loops are shared by every pan on that antenna and RF gain by every pan on the
+same SCU, so either can also change under the copy; `status` shows what the
+radio reports. One change runs at a time: another sent
 meanwhile is answered `busy: a change is under way`. A copy already on that
 band answers ok with `already on 40m`.
 

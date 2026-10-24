@@ -64,7 +64,7 @@ from feed_server import (
     unmask,
     valid_code,
 )
-from seat import Seat, SeatError
+from seat import RX_SETTINGS, Seat, SeatError
 
 log = logging.getLogger("sparkgap.server")
 
@@ -431,8 +431,10 @@ class Server:
         if self.queued >= MAX_QUEUED_OPS:
             return result(False, "too many requests waiting")
         band_only = cmd == "set" and set(settings) == {"band"}
+        rx_only = cmd == "set" and bool(settings) and set(settings) <= set(RX_SETTINGS)
         self.busy[name] = (
             "changing band" if band_only else
+            "changing the receive path" if rx_only else
             {"set": "restarting"}.get(cmd, cmd + ("ing" if cmd != "stop" else "ping"))
         )
         self.queued += 1
@@ -461,7 +463,7 @@ class Server:
             return self.seat.stop(name)
         if cmd == "restart":
             return self.seat.restart(name)
-        return self.seat.change(name, settings, live=self._live_band)
+        return self.seat.change(name, settings, live=self._live_band, live_rx=self._live_rx)
 
     def _live_band(self, name: str, band: str) -> str | None:
         """Ask the running copy to move to band in place; its answer, or None to restart it."""
@@ -477,6 +479,16 @@ class Server:
             log.info("Server: %s did not change band live (%s): restarting it", name, text)
             return None
         return text
+
+    def _live_rx(self, name: str, rx: dict[str, Any]) -> tuple[bool, str] | None:
+        """Ask the running copy to change its pan's receive path; (ok, its answer), or None when
+        it gave none.  A refusal is reported, never followed by a restart: the radio keeps what it
+        has."""
+        target = self._feed_target(name)
+        answer = feed_control(*target, {"rx": rx}) if target else None
+        if answer is None:
+            log.warning("Server: %s gave no answer to a receive path change", name)
+        return answer
 
     def _send_json(self, c: Client, msg: dict[str, Any]) -> None:
         self._send(c, encode_frame(OP_TEXT, json.dumps(msg).encode()))

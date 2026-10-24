@@ -122,3 +122,26 @@ def test_a_second_change_while_one_is_under_way_is_busy() -> None:
     sg._take_control({"band": "20m"}, lambda ok, text: out.append((ok, text)))
     sg._take_control({"band": "17m"}, lambda ok, text: out.append((ok, text)))
     assert len(sg._controls) == 1 and out == [(False, "busy: a change is under way")]
+
+
+class RxRadio(Radio):
+    def set_rx(self, change: dict[str, Any]) -> str:
+        self.events.append(f"set_rx {sorted(change.items())}")
+        if change.get("rxant") == "ANT9":
+            raise ValueError("antenna 'ANT9' is not one this pan offers (ANT1, ANT2)")
+        return "receive path rxant=ANT2"
+
+
+def test_a_receive_path_change_goes_to_the_radio_and_nothing_else() -> None:
+    events: list[str] = []
+    sg = _copy(events)
+    sg.receiver = RxRadio(events)
+    assert _change(sg, {"rx": {"rxant": "ANT2"}}) == (True, "receive path rxant=ANT2")
+    assert events == ["set_rx [('rxant', 'ANT2')]"]  # same band: no scanner rebuild, no IQ dropped
+    assert _change(sg, {"rx": {"rxant": "ANT9"}})[0] is False
+
+
+def test_a_receiver_without_a_receive_path_says_so() -> None:
+    sg = _copy([])
+    ok, text = _change(sg, {"rx": {"rxant": "ANT2"}})
+    assert not ok and "only a Flex copy" in text

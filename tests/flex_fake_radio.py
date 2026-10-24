@@ -29,6 +29,10 @@ class Pan:
     owner: int
     center: float = 14.1
     channel: int = 0
+    rxant: str = "ANT1"
+    loopa: bool = False
+    loopb: bool = False
+    rfgain: int = 0
 
 
 @dataclass
@@ -64,6 +68,9 @@ class FakeRadio:
     down: int = 0  # an outage: the next this many commands and connects get nothing
     unanswered: dict[str, int] = field(default_factory=dict)  # prefix -> times it goes unanswered
     slices_locked: bool = False  # new slices come up locked (the radio keeps a band's lock)
+    ant_list: str = "ANT1,ANT2,RX_A,XVTA"  # what a pan offers (FLEX-6400M)
+    loops: bool = False  # receive loops in pan status (a FLEX-6700 has them; a 6400M does not)
+    rfgain_info: str = "-8,32,8"  # low,high,step
     conns: list["FakeConnection"] = field(default_factory=list)
     log: list[tuple[int, str]] = field(default_factory=list)  # (client handle, command)
     _next_handle: int = 0x1000_0001
@@ -131,11 +138,7 @@ class FakeRadio:
                 if c.gui
             ]
         if what == "pan":
-            return [
-                f"S0|display pan 0x{p:08X} client_handle=0x{pan.owner:08X} center={pan.center:.6f} "
-                f"daxiq_channel={pan.channel}"
-                for p, pan in self.pans.items()
-            ]
+            return [self.pan_line(p) for p in self.pans]
         if what == "slice":
             return [
                 f"S0|slice {n} in_use=1 RF_frequency={s.freq:.6f} "
@@ -149,6 +152,15 @@ class FakeRadio:
                 for s, st in self.streams.items()
             ]
         return []
+
+    def pan_line(self, p: int) -> str:
+        pan = self.pans[p]
+        return (
+            f"S0|display pan 0x{p:08X} client_handle=0x{pan.owner:08X} center={pan.center:.6f} "
+            f"daxiq_channel={pan.channel} rxant={pan.rxant} "
+            + (f"loopa={int(pan.loopa)} loopb={int(pan.loopb)} " if self.loops else "")
+            + f"rfgain={pan.rfgain} ant_list={self.ant_list}"
+        )
 
     def run(self, handle: int, cmd: str) -> tuple[str, str, list[str]]:
         """(code, text, status lines) for one command from client `handle`."""
@@ -205,10 +217,20 @@ class FakeRadio:
                 return "50000005", "", []
             pan.center = float(kv.get("center", pan.center))
             pan.channel = int(kv.get("daxiq_channel", pan.channel))
+            pan.rxant = kv.get("rxant", pan.rxant)
+            pan.loopa = kv.get("loopa", str(int(pan.loopa))) == "1"
+            pan.loopb = kv.get("loopb", str(int(pan.loopb))) == "1"
+            pan.rfgain = int(kv.get("rfgain", pan.rfgain))
             for st in self.streams.values():
                 if "daxiq_channel" in kv and st.channel == pan.channel and st.client == handle:
                     st.pan = int(words[3], 16)
-            return "0", "", []
+            return "0", "", [self.pan_line(int(words[3], 16))]
+        if cmd.startswith("display pan rfgain_info "):
+            return (
+                ("0", self.rfgain_info, [])
+                if int(words[3], 16) in self.pans
+                else ("50000005", "", [])
+            )
         if cmd.startswith("display pan remove "):
             p = int(words[3], 16)
             if p not in self.pans:

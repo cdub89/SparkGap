@@ -18,6 +18,9 @@ const RULE_FLAGS = [
   ["spot_rule_contest_words", "Contest words", "CWT, SST or MST right before a call opens a CQ group as CQ does: runners who send CWT K5AX without the CQ."],
   ["spot_rule_cq_repeats", "CQ repeats", "Back-to-back CQs from one call count as separate copies, so a runner is spotted sooner."],
 ];
+const RX_KEYS = ["antenna", "loop_a", "loop_b", "rf_gain"];  // a Flex copy's receive path: the radio's, changed live
+const SHARED_NOTE = "Loops are shared by every pan on that antenna, and RF gain by every pan on the same receiver (SCU): "
+  + "a change here changes them for every copy and program using it.";
 const HINTS = {
   validation: "A confidence score decides which calls are spotted: permissive spots more, aggressive fewer (docs/ITILA2.md). Off: a set number of copies, 2 to 4 by how common the call's pattern is.",
   call_source: "Calls known from this list score higher in validation: SCP, calls RBN skimmers heard in the last days, or those plus the SKCC roster.",
@@ -1551,7 +1554,9 @@ function removeConn(n) {
 function copyCards(k, sv, i) {
   const run = i.state === "running", busy = i.busy, saved = i.settings || {};
   const pend = app.pending[pendKey(sv, i.name)] || {}, st = { ...saved, ...pend }, n = Object.keys(pend).length;
-  const live = run && n === 1 && "band" in pend;  // a band change alone moves a running copy in place
+  const others = Object.keys(pend).filter(x => !RX_KEYS.includes(x));
+  const live = run && (!others.length || (others.length === 1 && others[0] === "band"));  // band and receive path: in place
+  const rx = run && i.radio ? rxOf(sv, i.name) : null, rs = rx ? { ...rx, ...pend } : {};
   const at = `data-server="${k}" data-name="${esc(i.name)}"`;
   const btn = (cmd, label, on) => `<button class="btn small" ${at} data-cmd="${cmd}"${on && !busy ? "" : " disabled"}>${label}</button>`;
   const choices = (k2, opts, cur, off = false) => `<div class="seg${k2 in pend ? " pend" : ""}${off ? " off" : ""}" ${at} data-key="${k2}"${off ? ' title="not used while call validation is off"' : ""}>${opts.map(([v, l]) =>
@@ -1569,12 +1574,26 @@ function copyCards(k, sv, i) {
   const shown = !!inst() && inst().server === sv && copyName(inst()) === i.name;
   const host = (sv.link.hello && sv.link.hello.host) || sv.address, valid = st.validation || "off";
   const bar = n ? `<div class="applybar"><span class="small">${n} change${n > 1 ? "s" : ""}</span><span class="grow"></span>`
-    + `<button class="btn small primary" ${at} data-cmd="apply"${busy ? " disabled" : ""}>${live ? "Apply (changes band live)" : run ? `Apply (restarts ${esc(i.name)})` : "Save"}</button>`
+    + `<button class="btn small primary" ${at} data-cmd="apply"${busy ? " disabled" : ""}>${live ? "Apply (live)" : run ? `Apply (restarts ${esc(i.name)})` : "Save"}</button>`
     + `<button class="btn small" ${at} data-cmd="discard">Discard</button></div>` : "";
+  const shown2 = v => v === true ? "on" : v === false ? "off" : String(v);
+  const starts = key => saved[key] !== null && saved[key] !== undefined && rx && saved[key] !== rx[key]
+    ? `<span class="small faint">starts at ${esc(shown2(saved[key]))}</span>` : "";  // the config's target differs from the radio
+  const sel = (key, opts, cur) => `<select class="bandsel${key in pend ? " pend" : ""}" ${at} data-key="${key}"${busy ? " disabled" : ""}>${
+    (opts.some(([v]) => v === cur) ? opts : [[cur, String(cur)], ...opts]).map(([v, l]) =>
+      `<option value="${esc(String(v))}"${v === cur ? " selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
+  const gains = rx && rx.range ? Array.from({ length: Math.floor((rx.range[1] - rx.range[0]) / rx.range[2]) + 1 }, (_, g) => rx.range[0] + g * rx.range[2]) : [];
+  const radio = !i.radio ? "" : !rx ? `<section class="scard wide"><h3><span>RADIO</span></h3><div class="small muted">Antenna, loops and RF gain are read from the radio while ${esc(i.name)} runs.</div></section>`
+    : `<section class="scard wide"><h3><span>RADIO</span><span>as the radio reports it; Apply changes it there</span></h3>
+    <div class="grid setgrid">${rxHas(rx, "antenna") ? row("ANTENNA", `<div class="inline">${sel("antenna", rx.ant_list.map(a => [a, a]), rs.antenna)}${starts("antenna")}</div>`) : ""}${
+      rxHas(rx, "loop_a") ? row("LOOP A", `<div class="inline">${onOff("loop_a", rs.loop_a)}${starts("loop_a")}</div>`, SHARED_NOTE) : ""}${
+      rxHas(rx, "loop_b") ? row("LOOP B", `<div class="inline">${onOff("loop_b", rs.loop_b)}${starts("loop_b")}</div>`, SHARED_NOTE) : ""}${
+      rxHas(rx, "rf_gain") ? row("RF GAIN", `<div class="inline">${sel("rf_gain", gains.map(g => [g, `${g} dB`]), rs.rf_gain)}${starts("rf_gain")}</div>`, SHARED_NOTE) : ""}</div>
+    <div class="small muted">${esc(SHARED_NOTE)}</div></section>`;
   return `<section class="scard wide"><h3><span>${esc(i.name)} · ${esc(bandText(saved.band || i.band || ""))}</span><span>${esc(host)}</span></h3>
     <div class="actions"><span class="${run ? "good" : "muted"}">${esc(state)}</span><span class="grow"></span>${btn("show", shown ? "Shown" : "Show", run && !shown)}
       <span class="group">${btn("start", "Start", !run)}${btn("restart", "Restart", run)}${btn("stop", "Stop", run)}</span></div>${err}</section>
-    <section class="scard wide"><h3><span>SETTINGS</span><span>${run ? `band changes live, the rest by restarting ${esc(i.name)}` : "used at its next start"}</span></h3>
+    ${radio}<section class="scard wide"><h3><span>SETTINGS</span><span>${run ? `band changes live, the rest by restarting ${esc(i.name)}` : "used at its next start"}</span></h3>
     <div class="grid setgrid">${row("BAND", bands)}${row("RECORDING", onOff("record", st.record))}${row("CALL VALIDATION", `<div class="inline">${choices("validation", VALIDATION.map(v => [v, v]), valid)}</div>`, HINTS.validation)}${row("KNOWN CALL LIST", choices("call_source", CALL_SOURCES, st.call_source, valid === "off"), HINTS.call_source)}</div>
     <details class="adv"${app.advOpen ? " open" : ""}><summary>ADVANCED: SPOT RULE</summary>
     <div class="grid setgrid">${RULE_FLAGS.map(([k2, l, hint]) => row(l.toUpperCase(), onOff(k2, st[k2]), hint)).join("")}</div></details>${bar}</section>`;
@@ -1588,6 +1607,19 @@ function dropPending(address, gone) {
   }
 }
 
+// a running Flex copy's receive path as its radio reports it (the copy's own feed status), or null
+function rxOf(sv, name) {
+  const c = app.instances.find(x => x.server === sv && copyName(x) === name);
+  const r = c && c.status && c.status.radio && c.status.radio.rx;
+  return r ? { antenna: r.rxant, loop_a: r.loopa, loop_b: r.loopb, rf_gain: r.rfgain, ant_list: r.ant_list || [], range: r.rfgain_range } : null;
+}
+// what the radio reports for our pan is all that is offered: a loop only where its status has one
+function rxHas(rx, key) {
+  if (key === "antenna") return rx.ant_list.length > 0 && typeof rx.antenna === "string";
+  if (key === "rf_gain") return !!rx.range && typeof rx.rf_gain === "number";
+  return rx[key] === true || rx[key] === false;
+}
+
 // pending settings belong to an server by its address, which does not move when the list changes
 function pendKey(sv, name) { return `${sv.address}|${name}`; }
 
@@ -1595,7 +1627,8 @@ function pendKey(sv, name) { return `${sv.address}|${name}`; }
 function pickSetting(link, name, key, value) {
   const k = pendKey(link.server, name), i = ((link.seat && link.seat.instances) || []).find(x => x.name === name);
   const saved = (i && i.settings) || {}, pend = app.pending[k] || (app.pending[k] = {});
-  if (saved[key] === value || (key === "validation" && (saved[key] || "off") === value)) delete pend[key]; else pend[key] = value;
+  const base = RX_KEYS.includes(key) ? (rxOf(link.server, name) || {})[key] : saved[key];  // the receive path: the radio's
+  if (base === value || (key === "validation" && (saved[key] || "off") === value)) delete pend[key]; else pend[key] = value;
   if (!Object.keys(pend).length) delete app.pending[k];
   renderSettings();
 }
@@ -1614,7 +1647,8 @@ async function applySettings(link, name) {
   if (!settings) return;
   const i = ((link.seat && link.seat.instances) || []).find(x => x.name === name);
   const what = Object.entries(settings).map(([key, v]) => `${key.replace(/^spot_rule_/, "").replace(/_/g, " ")} ${v === true ? "on" : v === false ? "off" : v}`).join(", ");
-  const live = Object.keys(settings).length === 1 && "band" in settings;  // no restart unless the copy cannot
+  const others = Object.keys(settings).filter(x => !RX_KEYS.includes(x));
+  const live = !others.length || (others.length === 1 && others[0] === "band");  // no restart unless the copy cannot
   if (i && i.state === "running" && !live && !confirm(`${name}: ${what}. This restarts ${name}. Go ahead?`)) return;
   const ok = await seatRequest(link, "set", name, settings);
   const now = app.pending[k];
@@ -1660,9 +1694,10 @@ function bindInput() {
   $("tabCopy").addEventListener("toggle", e => { if (e.target.classList.contains("adv")) app.advOpen = e.target.open; }, true);
   $("tabCopy").onchange = e => {
     const [link, name, holder] = seatTarget(e.target);
-    if (!link || holder.dataset.key !== "band") return;
+    const key = holder && holder.dataset.key;
+    if (!link || !["band", "antenna", "rf_gain"].includes(key)) return;
     e.target.blur();  // a focused select holds back the redraw that shows Apply
-    pickSetting(link, name, "band", e.target.value);
+    pickSetting(link, name, key, key === "rf_gain" ? Number(e.target.value) : e.target.value);
   };
   $("dCopy").onclick = () => copyText($("dWins").innerText).then(ok => {
     $("dCopy").textContent = ok ? "Copied" : "Copy failed";

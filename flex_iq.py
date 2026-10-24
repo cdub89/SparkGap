@@ -245,6 +245,52 @@ def pan_slices(lines, pan_id):
             for m in [re.search(r'\|slice (\d+) ', line)] if m}
 
 
+RX_KEYS = ('rxant', 'loopa', 'loopb', 'rfgain')   # our pan's receive path, as the radio reports it
+
+
+def pan_rx(lines, pan_id, out=None):
+    """Our pan's receive path from its status lines, folded into out: rxant, loopa, loopb, rfgain
+    and the antennas the pan offers (ant_list).  A loop is shared by every pan on its antenna and
+    RF gain by every pan on the same SCU, so another station can change them under us."""
+    out = dict(out or {})
+    tag = re.compile(r'\|display pan 0x0*%x( .*|$)' % pan_id, re.I)
+    for line in lines:
+        m = tag.search(line)
+        if not m:
+            continue
+        kv = dict(p.split('=', 1) for p in m.group(1).split() if '=' in p)
+        if 'rxant' in kv:
+            out['rxant'] = kv['rxant']
+        for k in ('loopa', 'loopb'):
+            if k in kv:
+                out[k] = kv[k] == '1'
+        if 'rfgain' in kv:
+            try:
+                out['rfgain'] = int(float(kv['rfgain']))
+            except ValueError:
+                pass
+        if 'ant_list' in kv:
+            out['ant_list'] = [a for a in kv['ant_list'].split(',') if a]
+    return out
+
+
+def rfgain_steps(reply):
+    """(low, high, step) from the reply to `display pan rfgain_info`, or None."""
+    parts = (reply or '').split('|')
+    if len(parts) < 3 or parts[1] != '0':
+        return None
+    try:
+        low, high, step = (int(float(v)) for v in parts[2].split(',')[:3])
+    except ValueError:
+        return None
+    return (low, high, step) if step > 0 and high >= low else None
+
+
+def rx_args(vals):
+    """' rxant=ANT1 loopa=1 ...' for a radio command."""
+    return ''.join(f' {k}={int(v) if isinstance(v, bool) else v}' for k, v in vals.items() if v is not None)
+
+
 class StationExists(RuntimeError):
     """The radio already has this SparkGap station: another station process holds it."""
 
@@ -697,7 +743,7 @@ class FlexIQReceiver:
 
     def __init__(self, ip, freq_hz=7040000, sample_rate=192000,
                  daxiq_channel=1, udp_port=7791, control_port=4992, station=None,
-                 rxant=None, loopa=None, loopb=None):
+                 rxant=None, loopa=None, loopb=None, rfgain=None):
         if sample_rate not in VALID_RATES:
             raise ValueError(f"sample_rate must be one of {VALID_RATES}")
         self.ip = ip
@@ -706,13 +752,16 @@ class FlexIQReceiver:
         self.sample_rate = sample_rate
         self.channel = daxiq_channel
         self._station_cfg = station  # flex_station; else SparkGap-<radio nickname>, set on connect
-        # flex_rxant / flex_loopa / flex_loopb: set on our pan and slice; None leaves the radio's
-        # (band-persistence) value.  A receive loop is shared by every pan on that antenna, so a
-        # pan that comes up with the loop off turns it off for whatever hangs on the loop.
-        self.rx_path = ''.join(f' {k}={v}' for k, v in (('rxant', rxant),
-                                                       ('loopa', None if loopa is None else int(bool(loopa))),
-                                                       ('loopb', None if loopb is None else int(bool(loopb))))
-                               if v is not None)
+        # flex_rxant / flex_loopa / flex_loopb / flex_rfgain: the receive path our pan starts with;
+        # None leaves the radio's (band-persistence) value.  A receive loop is shared by every pan on
+        # that antenna and RF gain by every pan on the same SCU, so a pan that comes up with the loop
+        # off turns it off for whatever hangs on the loop.  The radio's state is the truth: once live,
+        # the target follows what the radio reports, so a reconnect restores that, not the config.
+        self._target = {'rxant': rxant, 'loopa': None if loopa is None else bool(loopa),
+                        'loopb': None if loopb is None else bool(loopb),
+                        'rfgain': None if rfgain is None else int(rfgain)}
+        self.rx = {}                  # our pan's receive path as the radio last reported it (pan_rx)
+        self.rfgain_range = None      # (low, high, step) from display pan rfgain_info
         self.station = station or STATION_NAME
         self.udp_port = udp_port
         self.control_port = control_port
@@ -748,6 +797,11 @@ class FlexIQReceiver:
         self.others = []          # other stations on the radio at the last connect
         self._tx_since = None     # arrival time of the key-down in progress
         self._tx_spans = []       # (key-down, key-up) arrival times, newest last
+
+    @property
+    def rx_path(self):
+        """' rxant=.. loopa=.. loopb=..' for our pan and slice, from the target."""
+        return rx_args({k: self._target[k] for k in ('rxant', 'loopa', 'loopb')})
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -858,7 +912,8 @@ class FlexIQReceiver:
         bw_mhz = self.sample_rate / 1e6
         if not conn.ok(f"pan 0x{self._pan_id:08x} center {self.freq_mhz:.6f} MHz, bandwidth {bw_mhz:.3f} MHz",
                        conn.cmd(f"display pan set 0x{self._pan_id:08x} "
-                                f"center={self.freq_mhz:.6f} bandwidth={bw_mhz:.6f}{self.rx_path}")):
+                                f"center={self.freq_mhz:.6f} bandwidth={bw_mhz:.6f}{self.rx_path}"
+                                f"{rx_args({'rfgain': self._target['rfgain']})}")):
             raise RuntimeError(f"[Flex] The radio refused to set pan 0x{self._pan_id:08x}")
 
         # One slice keeps the RF path live (without one the Flex streams zeros).  The radio puts a
@@ -892,6 +947,12 @@ class FlexIQReceiver:
             raise RuntimeError(f"[Flex] The radio refused{self.rx_path} on slice {self._slice_id}")
         # locked, a click on its VFO (SmartSDR, Maestro, front panel) cannot move it or our pan (FlexLib Slice.Lock)
         conn.ok(f"slice {self._slice_id} locked", conn.cmd(f"slice lock {self._slice_id}"))
+        # what the radio now reports for our pan's receive path, and the RF gain steps it offers
+        self.rx = pan_rx(conn.cmd("sub pan all", settle=0.3), self._pan_id)
+        self.rfgain_range = rfgain_steps(conn.reply(conn.cmd(f"display pan rfgain_info 0x{self._pan_id:08x}")))
+        log.info("[Flex] Receive path:%s (antennas %s; RF gain %s)", rx_args({k: self.rx.get(k) for k in RX_KEYS}),
+                 ','.join(self.rx.get('ant_list', [])) or "not reported",
+                 "%d to %d in steps of %d" % self.rfgain_range if self.rfgain_range else "range not reported")
 
         self._make_stream()
         if self._udp is None:
@@ -987,11 +1048,72 @@ class FlexIQReceiver:
             m = re.search(r'\|client (0x[0-9A-F]+) disconnected', line, re.I)
             if m and int(m.group(1), 16) == self._station_handle:
                 self._station_lost = True
+        if self._pan_id is not None:
+            self._note_rx(pan_rx(lines, self._pan_id, self.rx))
         if ptt_ours(lines) and not self._ptt_warned:
             self._ptt_warned = True
             log.warning("[Flex] The radio's key and PTT jacks now follow the SparkGap station, "
                         "not the operator's: set local PTT in SmartSDR")
         return lines
+
+    def _note_rx(self, rx):
+        """The radio reported our pan's receive path: it is what we run with and what a reconnect restores."""
+        changed = {k: rx[k] for k in RX_KEYS if k in rx and rx.get(k) != self.rx.get(k)}
+        if changed and self.rx:
+            log.info("[Flex] Our pan now reports%s", rx_args(changed))
+        self.rx = rx
+        self._target.update({k: rx[k] for k in RX_KEYS if k in rx})
+
+    def set_rx(self, change):
+        """Change our pan's receive path in place: any of rxant (one the pan offers), loopa, loopb
+        (true or false), rfgain (in the radio's steps).  What the radio then reports is what we run
+        with; a refusal puts back what it reported before.  Returns a line for the GUI; raises
+        ValueError for a value the radio does not offer, RuntimeError when the radio refuses."""
+        with self._lock:
+            conn, pan, sl = self.conn, self._pan_id, self._slice_id
+            if self.state != "live" or not conn or pan is None or sl is None:
+                raise RuntimeError("[Flex] Not live: nothing to change")
+            want = {}
+            for k, v in change.items():
+                if k == 'rxant':
+                    ants = self.rx.get('ant_list') or []
+                    if v not in ants:
+                        raise ValueError(f"antenna {v!r} is not one this pan offers ({', '.join(ants) or 'none reported'})")
+                elif k in ('loopa', 'loopb'):
+                    if k not in self.rx:   # only what the radio reports for our pan (a loop: the 6700's)
+                        raise ValueError(f"the radio reports no {k} for our pan")
+                    if not isinstance(v, bool):
+                        raise ValueError(f"{k} must be true or false")
+                elif k == 'rfgain':
+                    r = self.rfgain_range
+                    if r is None:
+                        raise ValueError("the radio reports no RF gain range for our pan")
+                    if isinstance(v, bool) or not isinstance(v, int) or not r[0] <= v <= r[1] or (v - r[0]) % r[2]:
+                        raise ValueError(f"RF gain must be {r[0]} to {r[1]} in steps of {r[2]}")
+                else:
+                    raise ValueError(f"{k} cannot be changed live")
+                want[k] = v
+            if not want:
+                raise ValueError("nothing to change")
+            old = {k: self.rx[k] for k in want if k in self.rx}
+
+            def send(vals):
+                lines = conn.cmd(f"display pan set 0x{pan:08x}{rx_args(vals)}", settle=0.3)
+                ok = conn.ok(f"pan 0x{pan:08x}{rx_args(vals)}", lines)
+                path = {k: v for k, v in vals.items() if k != 'rfgain'}   # the slice keeps its own copy
+                if ok and path:
+                    more = conn.cmd(f"slice set {sl}{rx_args(path)}", settle=0.3)
+                    ok = conn.ok(f"slice {sl}{rx_args(path)}", more)
+                    lines += more
+                self._note_rx(pan_rx(lines, pan, self.rx))
+                return ok
+
+            if send(want):
+                self._target.update({k: v for k, v in want.items() if k not in self.rx})  # else as reported
+                return "receive path" + rx_args({k: self.rx.get(k, want[k]) for k in want})
+            back = not old or send(old)
+            raise RuntimeError(f"[Flex] The radio refused{rx_args(want)}"
+                               + ("" if back else "; what it had before could not be put back"))
 
     def _note_tx(self, state, now):
         """Key-down and key-up times from the interlock state, for the GUI's spectrum."""
@@ -1104,7 +1226,9 @@ class FlexIQReceiver:
         return {'type': 'flex', 'address': self.ip, 'state': self.state,
                 'packets': self.packets, 'lost': self.lost, 'reconnects': self.reconnects,
                 'last_reconnect': self.last_reconnect, 'station': self.station,
-                'daxiq_channel': self.channel, 'others': list(self.others)}
+                'daxiq_channel': self.channel, 'others': list(self.others),
+                'rx': {**{k: self.rx.get(k) for k in RX_KEYS}, 'ant_list': list(self.rx.get('ant_list', [])),
+                       'rfgain_range': list(self.rfgain_range) if self.rfgain_range else None}}
 
     def retune(self, freq_hz):
         """Move our pan and slice to freq_hz in place: nothing is torn down and no other copy is touched.

@@ -41,6 +41,15 @@ RADIO_RE = re.compile(
 VALIDATION = ("off", "permissive", "normal", "aggressive")
 CALL_SOURCES = ("scp", "rbn", "rbn+skcc")
 RULE_FLAGS = ("spot_rule_split_runs", "spot_rule_contest_words", "spot_rule_cq_repeats")
+# a Flex copy's receive path: setting -> (the copy's live key, its config key).  The radio's
+# state is the truth: a running copy changes it live first, then its config
+RX_SETTINGS = {
+    "antenna": ("rxant", "flex_rxant"),
+    "loop_a": ("loopa", "flex_loopa"),
+    "loop_b": ("loopb", "flex_loopb"),
+    "rf_gain": ("rfgain", "flex_rfgain"),
+}
+ANTENNA_RE = re.compile(r"^[A-Za-z0-9_]{1,16}$")
 TOP_CALLS = 10
 ERRORS_KEPT = 5
 IQ_TRIMMED_RE = re.compile(r"IQ trimmed before scanner: ([\d.]+s)")
@@ -383,6 +392,8 @@ class Seat:
             "call_source": cfg.get("spot_validation_calls") or "scp",
             **{k: bool(cfg.get(k, False)) for k in RULE_FLAGS},
             "record": bool(cfg.get("record_wav")),
+            # a Flex copy's receive path as its config sets it at start (None: the radio's own)
+            **{k: cfg.get(c) for k, (_, c) in RX_SETTINGS.items()},
         }
 
     def change(
@@ -390,14 +401,28 @@ class Seat:
         name: str,
         settings: dict[str, Any],
         live: Callable[[str, str], str | None] | None = None,
+        live_rx: Callable[[str, dict[str, Any]], tuple[bool, str] | None] | None = None,
     ) -> str:
         """Check every setting, write them all at once, restart the copy if it runs. A band change
         alone first goes to live(name, band), which moves the running copy in place and returns its
-        answer, or None when it could not (then the copy restarts, onto the band just written)."""
+        answer, or None when it could not (then the copy restarts, onto the band just written).
+        Receive path settings (RX_SETTINGS) on a running copy go to live_rx(name, change) first; the
+        config is written only when the radio took them, and a refusal changes nothing."""
         i = self.instance(name)
         changes: dict[str, Any] = {}
+        rx: dict[str, Any] = {}
         for key, value in settings.items():
-            if key == "band":
+            if key in RX_SETTINGS:
+                if self.radio(i) is None:
+                    raise SeatError(f"{key} is a FlexRadio setting")
+                if key == "antenna" and not (isinstance(value, str) and ANTENNA_RE.match(value)):
+                    raise SeatError("antenna must be one the radio lists")
+                if key in ("loop_a", "loop_b") and not isinstance(value, bool):
+                    raise SeatError(f"{key} must be true or false")
+                if key == "rf_gain" and (isinstance(value, bool) or not isinstance(value, int)):
+                    raise SeatError("rf_gain must be a whole number of dB")
+                rx[key] = value
+            elif key == "band":
                 if value not in self.bands_known(i):
                     raise SeatError(f"band must be one of: {' '.join(self.bands_known(i))}")
                 changes["bands"] = [value]
@@ -428,14 +453,25 @@ class Seat:
                 )
             else:
                 raise SeatError(f"{key} cannot be changed here")
-        if not changes:
+        if not changes and not rx:
             raise SeatError("nothing to change")
         done = f"{name}: {', '.join(f'{k} {v}' for k, v in settings.items())}"
+        rest = {k: v for k, v in settings.items() if k not in rx}
         with self.lock(i):  # the write and its restart as one step: nothing slips in between
+            running = bool(self.pid(name))
+            if rx and running:
+                change = {RX_SETTINGS[k][0]: v for k, v in rx.items()}
+                took = live_rx(name, change) if live_rx else None
+                if took is None:
+                    raise SeatError(f"{name} did not answer; nothing changed")
+                if not took[0]:
+                    raise SeatError(f"{name}: {took[1]}")
+                done = f"{name}: {took[1]}"
+            changes.update({RX_SETTINGS[k][1]: v for k, v in rx.items()})
             write_config(i.config, changes)
-            if not self.pid(name):
+            if not running or not rest:
                 return done
-            if live is not None and set(settings) == {"band"}:
+            if live is not None and set(rest) == {"band"}:
                 answer = live(name, settings["band"])
                 if answer:
                     return f"{name}: {answer}"
