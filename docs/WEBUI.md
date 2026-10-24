@@ -68,7 +68,9 @@ Settings, in plain terms:
   were asked to record.
 - **Call validation**: how sure SparkGap must be before it spots a call.
   Permissive spots more calls but gets more wrong; aggressive spots fewer but
-  surer ones. Normal suits most stations.
+  surer ones. Normal suits most stations. Off uses no score: a call is spotted
+  once it is copied a set number of times (2, 3 or 4, by how common its
+  pattern is), and the known call list is not used.
 - **Known call list**: calls on this list count as more likely to be right.
   SCP is the contest call list; RBN adds calls other RBN skimmers heard in the
   past week; RBN + SKCC adds the SKCC roster, good for hand-keyed CW.

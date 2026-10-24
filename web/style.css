@@ -148,6 +148,7 @@ footer .v { font-family: "IBM Plex Mono", ui-monospace, monospace; font-feature-
 .grid { display: grid; grid-template-columns: 92px auto; gap: 8px 10px; align-items: center; justify-items: start; }
 .hint { margin-top: -6px; padding: 8px 10px; border-radius: 8px; background: var(--sunken); color: var(--muted); font-size: 12px; }
 .seg.ro span { cursor: default; }
+.seg.off { opacity: 0.4; } .seg.off span { cursor: not-allowed; }
 
 /* server and band picker */
 .bandsel { height: 30px; max-width: 220px; padding: 0 8px; border-radius: 8px; border: 1px solid var(--edge); background: var(--sunken);

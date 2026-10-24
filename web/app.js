@@ -11,7 +11,7 @@ const SCAN_TIMEOUT_S = 3;
 const SERVER_PORT = 7320;  // a machine's server: it runs that machine's copies and passes their feeds through
 const SERVER_PROTOCOL = "sparkgap.server.v1";
 const SERVER_LOG_KEPT = 200;  // server log lines kept for its console
-const VALIDATION = ["permissive", "normal", "aggressive"];  // "off" stays a config setting, not offered here
+const VALIDATION = ["off", "permissive", "normal", "aggressive"];
 const CALL_SOURCES = [["scp", "SCP"], ["rbn", "RBN"], ["rbn+skcc", "RBN + SKCC"]];
 const RULE_FLAGS = [
   ["spot_rule_split_runs", "Split runs", "Words sent with no gap are split before the rule reads them: CQCQDE becomes CQ CQ DE (hand-sent CW)."],
@@ -19,7 +19,7 @@ const RULE_FLAGS = [
   ["spot_rule_cq_repeats", "CQ repeats", "Back-to-back CQs from one call count as separate copies, so a runner is spotted sooner."],
 ];
 const HINTS = {
-  validation: "A confidence score decides which calls are spotted: permissive spots more, aggressive fewer (docs/ITILA2.md).",
+  validation: "A confidence score decides which calls are spotted: permissive spots more, aggressive fewer (docs/ITILA2.md). Off: a set number of copies, 2 to 4 by how common the call's pattern is.",
   call_source: "Calls known from this list score higher in validation: SCP, calls RBN skimmers heard in the last days, or those plus the SKCC roster.",
 };
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
@@ -1554,7 +1554,7 @@ function copyCards(k, sv, i) {
   const live = run && n === 1 && "band" in pend;  // a band change alone moves a running copy in place
   const at = `data-server="${k}" data-name="${esc(i.name)}"`;
   const btn = (cmd, label, on) => `<button class="btn small" ${at} data-cmd="${cmd}"${on && !busy ? "" : " disabled"}>${label}</button>`;
-  const choices = (k2, opts, cur) => `<div class="seg${k2 in pend ? " pend" : ""}" ${at} data-key="${k2}">${opts.map(([v, l]) =>
+  const choices = (k2, opts, cur, off = false) => `<div class="seg${k2 in pend ? " pend" : ""}${off ? " off" : ""}" ${at} data-key="${k2}"${off ? ' title="not used while call validation is off"' : ""}>${opts.map(([v, l]) =>
     `<span data-value="${esc(JSON.stringify(v))}"${v === cur ? ' class="on"' : ""}>${esc(l)}</span>`).join("")}</div>`;
   const onOff = (k2, cur) => choices(k2, [[false, "off"], [true, "on"]], !!cur);
   const row = (label, control, hint) => `<span class="label"${hint ? ` title="${esc(hint)}"` : ""}>${label}</span>${control}`;  // hint: on hover
@@ -1575,7 +1575,7 @@ function copyCards(k, sv, i) {
     <div class="actions"><span class="${run ? "good" : "muted"}">${esc(state)}</span><span class="grow"></span>${btn("show", shown ? "Shown" : "Show", run && !shown)}
       <span class="group">${btn("start", "Start", !run)}${btn("restart", "Restart", run)}${btn("stop", "Stop", run)}</span></div>${err}</section>
     <section class="scard wide"><h3><span>SETTINGS</span><span>${run ? `band changes live, the rest by restarting ${esc(i.name)}` : "used at its next start"}</span></h3>
-    <div class="grid setgrid">${row("BAND", bands)}${row("RECORDING", onOff("record", st.record))}${row("CALL VALIDATION", `<div class="inline">${choices("validation", VALIDATION.map(v => [v, v]), valid)}${valid === "off" ? '<span class="small faint">off (set in its config)</span>' : ""}</div>`, HINTS.validation)}${row("KNOWN CALL LIST", choices("call_source", CALL_SOURCES, st.call_source), HINTS.call_source)}</div>
+    <div class="grid setgrid">${row("BAND", bands)}${row("RECORDING", onOff("record", st.record))}${row("CALL VALIDATION", `<div class="inline">${choices("validation", VALIDATION.map(v => [v, v]), valid)}</div>`, HINTS.validation)}${row("KNOWN CALL LIST", choices("call_source", CALL_SOURCES, st.call_source, valid === "off"), HINTS.call_source)}</div>
     <details class="adv"${app.advOpen ? " open" : ""}><summary>ADVANCED: SPOT RULE</summary>
     <div class="grid setgrid">${RULE_FLAGS.map(([k2, l, hint]) => row(l.toUpperCase(), onOff(k2, st[k2]), hint)).join("")}</div></details>${bar}</section>`;
 }
@@ -1644,7 +1644,7 @@ function bindInput() {
   };
   $("tabCopy").onclick = e => {
     const t = e.target.closest("[data-cmd], [data-value]");
-    if (!t || t.disabled) return;
+    if (!t || t.disabled || t.closest(".seg.off")) return;  // the known call list while validation is off
     const [link, name, holder] = seatTarget(t);
     if (!link) return;
     if (t.dataset.cmd === "show") {
