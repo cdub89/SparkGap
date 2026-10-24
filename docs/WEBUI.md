@@ -20,6 +20,11 @@ join code (for example `KTR-49X`).
 3. The waterfall starts. If the computer runs more than one skimmer, pick one
    from the band list at the top.
 
+**⚙**, **Settings**, **Servers** lists each server you added, with the
+skimmers it runs:
+
+![Servers under Settings](web-settings.png)
+
 The page remembers the server, so next time it opens straight to the
 waterfall. A wrong code five times in a row locks your browser out for ten
 minutes.
@@ -37,7 +42,8 @@ minutes.
 - **Search** (Ctrl+F): type a call, some text or a frequency in kHz to jump to
   it.
 - **Zoom**: drag to move along the band; Ctrl+scroll or pinch to zoom. The
-  **Zoom** button steps through the whole band, half and a quarter.
+  **Zoom** button steps through the whole band, half and a quarter. Each
+  skimmer opens at the zoom you last left it at, in this browser.
 - **Bottom bar**: how hard the computer is working, how many browsers are
   watching, and how long the skimmer has been running.
 
@@ -51,7 +57,9 @@ Click **⚙**, then the skimmer's tab (its name, such as `shack40`).
   several at once; they take effect together. **Discard** forgets them.
 - **Band**: changes straight away while the skimmer runs, in about a second,
   and the waterfall starts over on the new band. Other settings restart the
-  skimmer, which takes about half a minute.
+  skimmer, which takes about half a minute. A skimmer set up to listen at an
+  exact frequency rather than a band shows that frequency first in the list,
+  for example `7038.0 kHz`; picking a band name moves it to that band.
 
 Settings, in plain terms:
 
@@ -91,9 +99,19 @@ wrong, worst first. Common ones:
 - **A stopped skimmer**: its tab shows why. Try **Start**; if it stops again,
   send the message to whoever set it up.
 
-The **Servers** tab under Info shows the server's log: every start, stop and
-setting change, with its result. It is the first thing to look at, and the
-thing to send along when asking for help.
+The **Servers** tab under Info shows each server's join code, its skimmers,
+and the server's log: every start, stop and setting change, with its result.
+The log is the first thing to look at, and the thing to send along when
+asking for help.
+
+Under each running skimmer, **running with** lists every setting it is using
+right now, as the skimmer itself reports it. That can differ from what
+Settings shows if a setting was changed but the skimmer has not restarted
+yet. Settings in full colour were set for this skimmer; dimmer ones are built
+into the spot rule; the dimmest are left at SparkGap's default. Hover over one
+to see which.
+
+![Servers under Info](web-info.png)
 
 ## This browser
 
