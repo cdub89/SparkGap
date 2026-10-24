@@ -522,8 +522,8 @@ class Waterfall {
       this.setView(inst.goKhz - span / 2, inst.goKhz + span / 2);
       inst.goKhz = null;
     } else if (inst && inst.nBins && !(inst.lowKhz <= this.lo && this.lo < this.hi && this.hi <= inst.highKhz)) {
-      const mid = (inst.lowKhz + inst.highKhz) / 2;
-      this.setView(mid - 15, mid + 15);
+      const mid = (inst.lowKhz + inst.highKhz) / 2, span = Number(load(zoomKey(inst), 30)) || 30;  // the copy's last zoom
+      this.setView(mid - span / 2, mid + span / 2);
     }
     this.dirty = true;
   }
@@ -536,6 +536,7 @@ class Waterfall {
       hi = lo + span;
     }
     if (lo === this.lo && hi === this.hi) return;
+    if (inst && inst.nBins && Math.abs((hi - lo) - (this.hi - this.lo)) > 1e-6) save(zoomKey(inst), hi - lo);
     this.lo = lo; this.hi = hi;
     this.dirty = true;
     this.onview();
@@ -843,6 +844,9 @@ function serverCopies(s) {
     .map(i => serverUrl(s.address, "/feed/" + encodeURIComponent(i.name)));
   reconcileUrls(s, urls);
 }
+// where a copy's last zoom is kept in this browser: its server and name, else its feed address
+function zoomKey(i) { return "zoom." + (copyName(i) ? `${i.server.address}|${copyName(i)}` : i.url); }
+
 // the server's name for a copy opened through it, or "" for a copy found by searching ports
 function copyName(i) {
   const m = i && i.server && i.server.link && i.url.match(/\/feed\/([^/]+)$/);
