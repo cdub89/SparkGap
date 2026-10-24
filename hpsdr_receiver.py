@@ -264,6 +264,11 @@ class HPSDRReceiver:
         self.sock.setblocking(False)
         self.seq = 0
         self.frequencies = [7000000] * n_receivers  # Default 40m
+        # Restart on silence (as the C receiver, hpsdr_fast.c): a Red Pitaya streams to one client and
+        # any client's STOP stops it, so with no IQ for this long the start sequence is sent again
+        # (0 = never; passive mode never sends it). SparkGap sets it from hpsdr_restart_after_s.
+        self.restart_after_s = 30.0
+        self.restarts = 0
 
     def set_frequency(self, rx_index, freq_hz):
         """Set frequency for a receiver (in Hz).
@@ -281,26 +286,28 @@ class HPSDRReceiver:
         self.sock.sendto(pkt, (self.ip, self.port))
         self.seq += 1
 
-    def start(self):
+    def start(self, quiet=False):
         """Start the receiver — send configuration and start command.
 
         In passive mode, skips all C&C commands — just listens for IQ packets
-        from an upstream source (proxy or direct).
+        from an upstream source (proxy or direct). quiet: no banner (a restart after silence,
+        every restart_after_s while the radio stays quiet, would repeat it).
         """
+        say = (lambda *a, **k: None) if quiet else print
         if self.passive:
             mode = f"PASSIVE (rx_filter={self.rx_filter})" if self.rx_filter is not None else "PASSIVE (all receivers)"
-            print(f"Starting HPSDR receiver at {self.ip}:{self.port} — {mode}", file=sys.stderr)
-            print(f"  {self.n_receivers} receivers at {self.sample_rate} Hz", file=sys.stderr)
-            print(f"  No C&C — listening only", file=sys.stderr)
+            say(f"Starting HPSDR receiver at {self.ip}:{self.port} — {mode}", file=sys.stderr)
+            say(f"  {self.n_receivers} receivers at {self.sample_rate} Hz", file=sys.stderr)
+            say(f"  No C&C — listening only", file=sys.stderr)
             return
 
-        print(f"Starting HPSDR receiver at {self.ip}:{self.port}", file=sys.stderr)
-        print(f"  {self.n_receivers} receivers at {self.sample_rate} Hz", file=sys.stderr)
+        say(f"Starting HPSDR receiver at {self.ip}:{self.port}", file=sys.stderr)
+        say(f"  {self.n_receivers} receivers at {self.sample_rate} Hz", file=sys.stderr)
 
         # Send start command: 0xEF 0xFE 0x04 0x01 + zeros
         start_pkt = bytes([0xEF, 0xFE, 0x04, 0x01]) + bytes(60)
         self.sock.sendto(start_pkt, (self.ip, self.port))
-        print(f"  START pkt: {start_pkt[:8].hex(' ')}", file=sys.stderr)
+        say(f"  START pkt: {start_pkt[:8].hex(' ')}", file=sys.stderr)
         time.sleep(0.1)
 
         # Send initial configuration
@@ -314,21 +321,21 @@ class HPSDRReceiver:
         # Bits 6:0 = gain in dB (0-60), bit 7 = 0
         lna_gain = getattr(self, 'lna_gain', 20)
         gain_c0c4 = bytes([0x14, 0x00, 0x00, 0x00, lna_gain & 0x7F])
-        print(f"  config C0-C4: {config_c0c4.hex(' ')}  lna C0-C4: {gain_c0c4.hex(' ')}", file=sys.stderr)
+        say(f"  config C0-C4: {config_c0c4.hex(' ')}  lna C0-C4: {gain_c0c4.hex(' ')}", file=sys.stderr)
         self._send_packet(config_c0c4, gain_c0c4)
         time.sleep(0.01)
-        print(f"  LNA gain: {lna_gain} dB", file=sys.stderr)
+        say(f"  LNA gain: {lna_gain} dB", file=sys.stderr)
 
         # Send frequency for each receiver
         for i in range(self.n_receivers):
             freq_c0c4 = build_freq_packet(i, self.frequencies[i])
-            print(f"  freq C0-C4 RX{i}: {freq_c0c4.hex(' ')}  ({self.frequencies[i]/1000:.3f} kHz)", file=sys.stderr)
+            say(f"  freq C0-C4 RX{i}: {freq_c0c4.hex(' ')}  ({self.frequencies[i]/1000:.3f} kHz)", file=sys.stderr)
             self._send_packet(config_c0c4, freq_c0c4)
             time.sleep(0.01)
 
-        print(f"  Frequencies set:", file=sys.stderr)
+        say(f"  Frequencies set:", file=sys.stderr)
         for i in range(self.n_receivers):
-            print(f"    RX{i}: {self.frequencies[i] / 1000:.1f} kHz", file=sys.stderr)
+            say(f"    RX{i}: {self.frequencies[i] / 1000:.1f} kHz", file=sys.stderr)
 
     def stop(self):
         """Stop the receiver. In passive mode, just closes — no STOP command."""
@@ -345,10 +352,20 @@ class HPSDRReceiver:
         start_time = time.time()
         pkt_count = 0
         last_report = start_time
+        last_iq = start_time
 
         while running:
             if duration and (time.time() - start_time) >= duration:
                 break
+            if (not self.passive and self.restart_after_s > 0
+                    and time.time() - last_iq >= self.restart_after_s):
+                self.restarts += 1
+                self.start(quiet=True)
+                # the C receiver's wording (README), so one grep finds both
+                print(f"Receiver: no IQ from {self.ip}, sent the start sequence again "
+                      f"({self.restarts} time{'' if self.restarts == 1 else 's'} so far)",
+                      file=sys.stderr, flush=True)
+                last_iq = time.time()          # and again after another restart_after_s
 
             ready = select.select([self.sock], [], [], 0.1)
             if not ready[0]:
@@ -375,6 +392,7 @@ class HPSDRReceiver:
 
             seq, all_iq = result
             pkt_count += 1
+            last_iq = time.time()
 
             for rx in range(self.n_receivers):
                 if all_iq[rx]:
