@@ -65,6 +65,8 @@ REPEAT_S = 600.0              # copies count for 10 minutes; one spot per call a
 MOVE_KHZ = 1.0                # ...unless it moves more than this (CW Skimmer re-spots 1 kHz moves)
 OWNER_CELL_KHZ = 0.25         # owner_cell: a new owner replaces only the owner within this
 STRONGEST_S = 60.0            # strongest: a stronger copy of the call elsewhere in the band this recently
+OWNED_WAIVE_GROUPS = 3        # owned_two_windows: a challenger with this many CQ groups in a window spots,
+                              # unless it is a piece of the owner's call or one edit from it (K B3NKL of KB3NKL)
 LOCK_IDLE_S = 180.0           # lock-on: ownership lapses after this long without the owner's call
 
 CALL_RE = re.compile(r"^(?:[A-Z0-9]{1,3}/)?"                      # HK3/
@@ -161,10 +163,12 @@ def split_runs(text: str) -> str:
     return " ".join(out)
 
 
-def tokens(text: str, gluek: bool = False) -> list[str]:
+def tokens(text: str, gluek: bool | Callable[[str], bool] = False) -> list[str]:
     """Upper-case word tokens of decoded text, merged keyword prefixes split off. gluek
     (spot_rule_gluek): a token CALL+K whose CALL (4 or more characters) is itself a token of
-    the text reads as CALL K, the K prosign glued to the call (WB0MQA ... WB0MQAK)."""
+    the text reads as CALL K, the K prosign glued to the call (WB0MQA ... WB0MQAK). gluek may
+    be the validation list instead of True: then also when CALL is listed and CALL+K is not
+    (POTA DE KN6FVK, KN6FV never sent bare)."""
     out: list[str] = []
     for t in _SPLIT_RE.split(text.upper()):
         t = t.strip("/")
@@ -175,7 +179,8 @@ def tokens(text: str, gluek: bool = False) -> list[str]:
         split: list[str] = []
         for t in out:
             c = t[:-1]
-            if t.endswith("K") and len(c) >= 4 and c in present and CALL_RE.match(c):
+            known = callable(gluek) and gluek(c) and not gluek(t)
+            if t.endswith("K") and len(c) >= 4 and (c in present or known) and CALL_RE.match(c):
                 split.extend([c, "K"])
             else:
                 split.append(t)
@@ -201,15 +206,20 @@ def _is_trigger_like(t: str) -> bool:
     return t in _TRIGGER_WORDS or any(_one_sub_same_kind(t, w) for w in ("CWT", "TEST"))
 
 
-def sender(toks: list[str], i: int, la1d: bool = False) -> int | None:
+def sender(toks: list[str], i: int, la1d: bool = False,
+           skip: frozenset[str] = frozenset()) -> int | None:
     """Index of the first callsign within LOOKAHEAD tokens after keyword toks[i]. la1d
     (spot_rule_la1d): a single noise letter (E T I S ?) takes no LOOKAHEAD slot and a sign-off
     prosign (K AR KN SK BK TU) ends the search: CQ CQ E E HFT ON6FT names ON6FT, CQ K W1AW
-    names nobody (a finished CQ, W1AW is the caller)."""
+    names nobody (a finished CQ, W1AW is the caller). skip: the window's CQ qualifiers (with
+    cq_qualifiers); a qualifier repeated right after itself takes no slot: CQ CQ SKCC SKCC DE
+    N5QLZ names N5QLZ."""
     seen = 0
     for j in range(i + 1, len(toks)):
         t = toks[j]
         if la1d and len(t) == 1 and t in _NOISE_LETTERS:
+            continue
+        if t in skip and toks[j - 1] == t:      # a doubled qualifier, the second of SKCC SKCC
             continue
         if CALL_RE.match(t):
             return j
@@ -254,7 +264,8 @@ def _cq_before(toks: list[str], i: int) -> bool:
 def runner_calls(text: str, every: bool = False, qualifiers: bool = False,
                  doubled: bool = False, split_up: bool = False,
                  contest_words: bool = False, cq_repeats: bool = False,
-                 stray: bool = False, la1d: bool = False, gluek: bool = False) -> list[str]:
+                 stray: bool = False, la1d: bool = False,
+                 gluek: bool | Callable[[str], bool] = False) -> list[str]:
     """Senders of CQ groups (rules 1 and 4). A group opens at CQ or TEST, or at DE after a CQ.
     Its sender is the call inside it or right after the keywords (within LOOKAHEAD). Keywords
     right after the sender close the group; the next transmission (usually a caller) starts
@@ -320,7 +331,7 @@ def _split_signoff(toks: list[str], i: int) -> int | None:
 def runner_groups(text: str, every: bool = False, qualifiers: bool = False,
                   doubled: bool = False, split_up: bool = False, contest_words: bool = False,
                   cq_repeats: bool = False, stray: bool = False, la1d: bool = False,
-                  gluek: bool = False) -> list[tuple[str, str | None]]:
+                  gluek: bool | Callable[[str], bool] = False) -> list[tuple[str, str | None]]:
     """runner_calls() with, for each call, the callsign right before a bare TEST that opened
     its group (TU W6YH TEST EI4KF -> ("EI4KF", "W6YH")), else None. Lock-on uses it: when W6YH
     owns the frequency, that TEST is W6YH signing and EI4KF is a caller.
@@ -329,6 +340,7 @@ def runner_groups(text: str, every: bool = False, qualifiers: bool = False,
     opens the next group instead of closing this one, so CQ CWT N1DC CQ CWT N1DC is two
     copies, not one. la1d, gluek: see sender() and tokens()."""
     toks = tokens(text, gluek)
+    quals = frozenset(_qualifiers(toks)) if qualifiers else frozenset()
     out: list[tuple[str, str | None]] = []
     i, n = 0, len(toks)
     while i < n:
@@ -341,12 +353,13 @@ def runner_groups(text: str, every: bool = False, qualifiers: bool = False,
                 i = j + 2
                 continue
         de = t == "DE" and _cq_before(toks, i)
-        cw = (contest_words and t in CONTEST_WORDS and i + 1 < n and len(toks[i + 1]) >= 4
-              and CALL_RE.match(toks[i + 1]) is not None)     # not 3-character pieces (N0K, K1S)
+        nxt = i + 2 if i + 1 < n and toks[i + 1] == "DE" else i + 1   # CWT DE K4FN as CWT K4FN
+        cw = (contest_words and t in CONTEST_WORDS and nxt < n and len(toks[nxt]) >= 4
+              and CALL_RE.match(toks[nxt]) is not None)       # not 3-character pieces (N0K, K1S)
         if not (t in KEYWORDS or de or cw):
             i += 1
             continue
-        j = sender(toks, i, la1d)
+        j = sender(toks, i, la1d, quals)
         if j is None or (de and toks.count(toks[j]) < 2):
             i += 1
             continue
@@ -354,7 +367,7 @@ def runner_groups(text: str, every: bool = False, qualifiers: bool = False,
         while k < n and toks[k] == toks[j]:       # call sent twice before the closing keyword
             k += 1
         if t == "CQ" and j == i + 1 and k < n and toks[k] == "DE":
-            j2 = sender(toks, k, la1d)
+            j2 = sender(toks, k, la1d, quals)
             if j2 is not None and toks[j2] != toks[j]:
                 i = k                             # CQ S52Y DE N8EM: S52Y is being called; after
                                                   # TEST or DE the call is the runner's
@@ -366,7 +379,7 @@ def runner_groups(text: str, every: bool = False, qualifiers: bool = False,
                 out.extend([out[-1]] * (k - j - 1))   # doubled: each copy counts
         i = k
         while i < n and toks[i] in KEYWORDS:      # closing keywords end the group
-            if cq_repeats and sender(toks, i, la1d) is not None and toks[sender(toks, i, la1d)] == toks[j]:
+            if cq_repeats and sender(toks, i, la1d, quals) is not None and toks[sender(toks, i, la1d, quals)] == toks[j]:
                 break                             # ... unless the same call follows: a new CQ
             i += 1
     return out
@@ -480,6 +493,7 @@ class RepeatSpotRule:
         self.owner_listed = owner_listed        # one copy owns an empty frequency only when listed
         self.la1d = la1d                        # sender(): noise letters and sign-offs, see sender()
         self.gluek = gluek                      # tokens(): CALL+K reads as CALL K, see tokens()
+        self._glue = listed if gluek and listed else gluek   # with a call list, the list decides too
         self.norival = norival                  # score(): no rival penalty for a listed call from an unlisted rival
         self.strongest_db = strongest_db        # a copy this many dB stronger elsewhere in the band: no spot here
         self._owners: list[list] = []                           # lock-on: [call, freq_khz, last seen]
@@ -511,13 +525,13 @@ class RepeatSpotRule:
         if self.split_runs:
             text = split_runs(text)
         if self.threshold is not None:
-            self._paths.setdefault(window, []).append(Counter(tokens(text, self.gluek)))
+            self._paths.setdefault(window, []).append(Counter(tokens(text, self._glue)))
         spots = []
         calls = (self._lockon_calls(freq_khz, text, now) if self.lockon
                  else runner_calls(text, every=self.cq_groups, qualifiers=self.cq_qualifiers,
                                    doubled=self.doubled, split_up=self.split_up,
                                    contest_words=self.contest_words, cq_repeats=self.cq_repeats,
-                                   stray=self.stray, la1d=self.la1d, gluek=self.gluek))
+                                   stray=self.stray, la1d=self.la1d, gluek=self._glue))
         for call, n in Counter(calls).items():
             new = 0
             for nth in range(n):
@@ -543,7 +557,10 @@ class RepeatSpotRule:
                                       and k >= (counts[call] if self.fragments == 'even' else 1)
                                       for other, k in counts.items()):
                 continue          # a piece of a longer call heard here (K1V of K1VUT): wait
-            if owned is not None and owned != call and len({c.window for c in near if c.call == call}) < 2:
+            waive = (n >= OWNED_WAIVE_GROUPS and owned is not None    # not a piece or misread of the owner
+                     and not _fragment(call, owned) and not _lev1(call, owned))
+            if (owned is not None and owned != call and not waive
+                    and len({c.window for c in near if c.call == call}) < 2):
                 continue          # another call owns this frequency: a caller read as the runner waits
             best = max((c for c in near if c.call == call), key=lambda c: c.snr)
             spot_f = best.freq_khz
@@ -644,12 +661,12 @@ class RepeatSpotRule:
     def _lockon_calls(self, freq_khz: float, text: str, now: float) -> list[str]:
         """Calls one decoded text counts as copies of, with lock-on (see the module docstring)."""
         calls: list[str] = []
-        toks = tokens(text, self.gluek)
+        toks = tokens(text, self._glue)
         for call, after in runner_groups(text, every=self.cq_groups,
                                          qualifiers=self.cq_qualifiers, doubled=self.doubled,
                                          split_up=self.split_up, contest_words=self.contest_words,
                                          cq_repeats=self.cq_repeats, stray=self.stray,
-                                         la1d=self.la1d, gluek=self.gluek):
+                                         la1d=self.la1d, gluek=self._glue):
             owner = self.owner(freq_khz, now, self.takeover_idle_s)   # who may block or be challenged
             if after is not None and after != call and owner == after:
                 continue                          # the owner signing (W6YH TEST): call is a caller

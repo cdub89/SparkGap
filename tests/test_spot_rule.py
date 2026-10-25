@@ -970,3 +970,41 @@ def test_a_stronger_bin_taking_the_same_audio_keeps_its_report() -> None:
     r.feed(1, 7019.40, "CQ K1ABC K1ABC", 1.0, 30.0, 11.0)   # same audio, stronger: takes the copy
     r.feed(2, 7019.40, "CQ K1ABC K1ABC", 40.0, 25.0, 10.0)
     assert r.spot_snr["K1ABC"] == 11.0
+
+
+def test_doubled_qualifier_before_de_names_the_runner() -> None:
+    # N5QLZ 40m 2026-10-21: CQ CQ SKCC SKCC DE N5QLZ was no group; CQ qualifiers take no slot
+    assert runner_calls("CQ CQ SKCC SKCC DE N5QLZ", qualifiers=True) == ["N5QLZ"]
+    assert runner_calls("CQ CQ SKCC SKCC DE N5QLZ") == []
+
+
+def test_contest_word_then_de_opens_a_group() -> None:
+    # K4FN 40m CWT 2026-10-21: CWT DE K4FN, the CQ dropped
+    assert runner_calls("E E CWT DE K4FN EEE", contest_words=True) == ["K4FN"]
+    assert runner_calls("E E CWT DE K4FN EEE") == []
+
+
+def test_owned_two_windows_waives_a_challenger_with_three_cq_groups() -> None:
+    # N2IC 20m CWT 2026-10-21: three CQ groups in one window on a frequency K6AR still owned
+    r = RepeatSpotRule(_tier2, cq_groups=True, lockon=True, cq_repeats=True, owned_two_windows=True)
+    _feed(r, ["CQ CWT K6AR K6AR", "CQ CWT K6AR K6AR"])
+    assert _feed(r, ["CQ CWT N2IC CQ CWT N2IC CQ CWT N2IC"], t0=120.0) == [("N2IC", 7019.3)]
+    r2 = RepeatSpotRule(_tier2, cq_groups=True, lockon=True, cq_repeats=True, owned_two_windows=True)
+    _feed(r2, ["CQ CWT K6AR K6AR", "CQ CWT K6AR K6AR"])
+    assert _feed(r2, ["CQ CWT N2IC CQ CWT N2IC"], t0=120.0) == []      # two groups still wait
+
+
+def test_gluek_with_a_call_list_reads_call_k_when_only_the_bare_call_is_listed() -> None:
+    from spot_rule import tokens
+    listed = {"KN6FV"}.__contains__
+    assert tokens("POTA DE KN6FVK KN6FVK K", gluek=listed) == ["POTA", "DE", "KN6FV", "K", "KN6FV", "K", "K"]
+    assert tokens("POTA DE KN6FVK KN6FVK K", gluek=True) == ["POTA", "DE", "KN6FVK", "KN6FVK", "K"]
+    both = {"KN6FV", "KN6FVK"}.__contains__                          # CALL+K listed too: left alone
+    assert tokens("DE KN6FVK", gluek=both) == ["DE", "KN6FVK"]
+
+
+def test_owned_two_windows_never_waives_a_piece_of_the_owners_call() -> None:
+    # KB3NKL 20m 2026-10-25: CQ DX DE K B3NKL K B3NKL K B3NKL K, the call split by a gap
+    r = RepeatSpotRule(_tier2, cq_groups=True, lockon=True, cq_repeats=True, owned_two_windows=True)
+    _feed(r, ["CQ DX KB3NKL KB3NKL", "CQ DX KB3NKL KB3NKL"])
+    assert _feed(r, ["CQ B3NKL CQ B3NKL CQ B3NKL"], t0=120.0) == []
