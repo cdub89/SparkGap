@@ -89,6 +89,7 @@ _SIGNOFF = frozenset({"K", "AR", "KN", "SK", "BK", "TU"})    # la1d: ends the se
 # 10-12..10-14 dry run (cdub89/SparkGap#10), every spot checked against RBN; thresholds from
 # the curve with each leg scored by weights fitted on the other two.
 VALIDATION = {"permissive": 1.25, "normal": 3.0, "aggressive": 5.0}
+BOTH_PATHS_BAR = 2.0          # validation: a listed call that both LPF paths of a window name passes at this
 _WEIGHTS = {"bias": 0.74, "single": -1.49, "three": 0.43, "four_plus": 0.42, "windows": 1.68,
             "tier3": -0.52, "tier4": -1.82, "heard_before": 1.87, "paths_agree": 0.65,
             "paths_disagree": -0.63, "doubled": 2.48, "rival": -1.64}
@@ -547,7 +548,13 @@ class RepeatSpotRule:
             if self.threshold is not None:
                 heard = self._heard.setdefault(call, [now, now])
                 heard[1] = now
-                if not new or self.score(call, near, counts, now - heard[0] >= REPEAT_S) < self.threshold:
+                # A listed call both paths of this window name is scored again when the second path
+                # arrives (it brings no new copy) and passes at BOTH_PATHS_BAR
+                agreed = bool(self.listed and self.listed(call)) and self._both_paths(window, call)
+                if not new and not agreed:
+                    continue
+                bar = min(self.threshold, BOTH_PATHS_BAR) if agreed else self.threshold
+                if self.score(call, near, counts, now - heard[0] >= REPEAT_S) < bar:
                     continue
             elif any(_lev1(other, call) and n >= counts[call] for other, n in counts.items()):
                 continue          # a call one edit away has as many copies here: undecided
@@ -591,6 +598,15 @@ class RepeatSpotRule:
         return any(c.call == best.call and int(c.freq_khz // 1000) == band
                    and abs(c.freq_khz - best.freq_khz) > MOVE_KHZ and now - c.time <= STRONGEST_S
                    and c.snr >= best.snr + self.strongest_db for c in self._copies)
+
+    def _both_paths(self, window: int, call: str) -> bool:
+        """Validation: both LPF paths of the window have decoded and both name call, and neither
+        holds a longer call call is a piece of (CQCQCQDEK C5WN KC5WN: C5WN is KC5WN split)."""
+        ps = self._paths.get(window, [])
+        return (len(ps) > 1 and all(p[call] for p in ps)
+                and not any(tok != call and (_fragment(call, tok) or (len(tok) == len(call) + 1 and call in tok
+                                                                       and CALL_RE.match(tok)))
+                            for p in ps for tok in p))
 
     def score(self, call: str, near: list[_Copy], counts: Counter, heard_before: bool) -> float:
         """Validation: confidence that call is what was sent, from its copies near one frequency."""

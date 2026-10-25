@@ -1008,3 +1008,30 @@ def test_owned_two_windows_never_waives_a_piece_of_the_owners_call() -> None:
     r = RepeatSpotRule(_tier2, cq_groups=True, lockon=True, cq_repeats=True, owned_two_windows=True)
     _feed(r, ["CQ DX KB3NKL KB3NKL", "CQ DX KB3NKL KB3NKL"])
     assert _feed(r, ["CQ B3NKL CQ B3NKL CQ B3NKL"], t0=120.0) == []
+
+
+def test_a_listed_call_both_paths_name_passes_at_the_lower_bar() -> None:
+    # KR4PMB 40m 2026-10-24: CQ CQ CQ DE KR4PMB K in both paths of one window scores 2.29 < 3.0
+    def rule(listed: set) -> RepeatSpotRule:
+        return RepeatSpotRule(lambda c: 2, cq_groups=True, cq_qualifiers=True, lockon=True,
+                              validation="normal", listed=listed.__contains__, listed_by="rbn+skcc")
+    text = "CQ CQ CQ DE KR4PMB K"
+    r = rule({"KR4PMB"})
+    w = r.window_id(1, 10, 0.0)
+    assert r.feed(w, 7048.1, text, 0.0) == []                         # first path: 2.29 < 3.0
+    assert r.feed(w, 7048.1, text, 0.5) == [("KR4PMB", 7048.1)]       # second path agrees
+    r = rule(set())                                                   # unlisted: the bar stays 3.0
+    w = r.window_id(1, 10, 0.0)
+    assert r.feed(w, 7048.1, text, 0.0) == [] and r.feed(w, 7048.1, text, 0.5) == []
+    r = rule({"KR4PMB"})                                              # the other path reads noise
+    w = r.window_id(1, 10, 0.0)
+    assert r.feed(w, 7048.1, text, 0.0) == [] and r.feed(w, 7048.1, "E E T", 0.5) == []
+
+
+def test_both_paths_never_lowers_the_bar_for_a_piece_of_a_longer_call_in_the_window() -> None:
+    # KC5WN 40m 2026-10-24: CQCQCQDEK C5WN KC5WN in both paths; C5WN is listed too
+    r = RepeatSpotRule(lambda c: 2, cq_groups=True, cq_qualifiers=True, lockon=True, validation="normal",
+                       listed={"C5WN", "KC5WN"}.__contains__, listed_by="rbn+skcc")
+    w = r.window_id(1, 10, 0.0)
+    text = "CQCQCQDEK C5WN KC5WN CQCQ"
+    assert r.feed(w, 7045.1, text, 0.0) == [] and r.feed(w, 7045.1, text, 0.5) == []
