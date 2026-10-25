@@ -765,3 +765,15 @@ def test_new_bands_leave_nothing_of_the_old_ones(feed: FeedServer) -> None:
     assert snap["windows"] == [] and snap["spots"] == [] and snap["signals"] == [] and snap["status"] is None
     late = WS(feed.port)
     assert late.json("hello")["bands"][0]["name"] == "20m" and late.json("snapshot")["windows"] == []
+
+
+def test_new_bands_count_windows_calls_and_spots_from_zero(feed: FeedServer) -> None:
+    feed.publish_window(7021.2, "CQ DE AF4PX AF4PX K", 22, 18.0, 0.4)
+    feed.publish_spot(7021.2, "AF4PX", 18, 22)
+    feed.publish_status({"bins": 9})
+    wait_for(lambda: feed.status is not None and feed.status["calls"] == 1)
+    feed.set_bands([{"name": "20m", "center_khz": 14038.4, "span_khz": 96.0}])
+    feed.publish_status({"bins": 2})
+    wait_for(lambda: feed.status is not None and feed.status.get("bins") == 2)
+    s = feed.status
+    assert (s["windows"], s["calls"], s["spots_hour"], s["bins_peak"]) == (0, 0, 0, 2)

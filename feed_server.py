@@ -429,6 +429,10 @@ class FeedServer:
         self.windows.clear()
         self.signals.clear()
         self.spots.clear()
+        self.n_windows = 0                     # a new band counts from zero, as a restart would
+        self.calls.clear()
+        self.spot_times.clear()
+        self.bins_peak = 0
         self.status = None
         frames = [encode_frame(OP_TEXT, json.dumps(m, separators=(",", ":")).encode())
                   for m in (self.hello, self.snapshot())]

@@ -1291,7 +1291,7 @@ function renderStatus() {
   $("rec").hidden = !rec;
   $("rec").title = rec ? `Recording IQ to ${rec.file}` : "";
   const items = [["Load", s.cpu !== undefined && s.cpu !== null ? s.cpu + "%" : "-"], ["Memory", s.rss_mb ? s.rss_mb + " MB" : "-"],
-    ["Bins", s.bins !== undefined ? s.bins : "-"], ["Consoles", s.clients ? s.clients.length : "-"],
+    ["Bins", s.bins !== undefined ? s.bins : "-"], ["Spots", s.spots !== undefined ? s.spots : "-"],
     ["Decoder", i && i.hello.decoder ? i.hello.decoder : "-"], ["Server Build", i && i.hello.build ? i.hello.build : "-"],
     ["Up", `${Math.floor(up / 3600)}h ${Math.floor(up % 3600 / 60)}m`]];
   $("statusbar").innerHTML = items.map(([k, v]) => `<span><span class="k">${k}</span><span class="v">${esc(String(v))}</span></span>`).join("");

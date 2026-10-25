@@ -7774,6 +7774,7 @@ class SparkGap:
         mgr.update_signals([], center_hz / 1000)
         self._band_meta[0] = (name, center_hz, rx_idx)
         self.cfg['bands'] = [name]
+        self.spot_count = 0   # the status page counts the new band from zero, as a restart would
         self._set_telnet_bands()
         if _gui_feed is not None and mgr._spectrum_tap is not None:
             import feed_server
