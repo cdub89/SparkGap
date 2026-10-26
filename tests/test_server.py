@@ -378,3 +378,24 @@ def test_a_feed_bound_off_this_machine_is_not_passed_through(server: Server, sea
                  {"gui_feed": {"bind": "192.0.2.5", "port": "auto", "join_code": "ABCDEF"}})
     seat.start("dallas1")
     assert server._feed_target("dallas1") is None  # pyright: ignore[reportPrivateUsage]
+
+
+def test_a_network_bind_also_serves_loopback(monkeypatch: pytest.MonkeyPatch) -> None:
+    own = sparkgap_server.own_addresses
+    assert own("127.0.0.1") == own("localhost") == own("0.0.0.0") == own("::") == []
+
+    def resolve(host: str, *_: object) -> list[tuple]:
+        assert host == "rednuc"
+        addrs = ("127.0.1.1", "127.0.0.1", "100.64.0.1")
+        return [(socket.AF_INET, 0, 0, "", (a, 0)) for a in addrs]
+
+    monkeypatch.setattr(sparkgap_server.socket, "getaddrinfo", resolve)
+    assert own("100.64.0.1", "rednuc") == ["127.0.0.1", "127.0.1.1"]
+
+
+def test_an_unknown_own_name_still_serves_localhost(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail(*_: object) -> list[tuple]:
+        raise socket.gaierror("no name")
+
+    monkeypatch.setattr(sparkgap_server.socket, "getaddrinfo", fail)
+    assert sparkgap_server.own_addresses("192.168.0.10", "nowhere") == ["127.0.0.1"]

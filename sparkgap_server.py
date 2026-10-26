@@ -107,6 +107,20 @@ def load_settings(root: Path) -> dict[str, Any]:
     return cfg
 
 
+def own_addresses(bind: str, hostname: str | None = None) -> list[str]:
+    """Loopback addresses also served when `bind` is a network address, so a browser on this
+    machine reaches the server by localhost or by the machine's own name (127.0.1.1 on Ubuntu)."""
+    if bind in ("0.0.0.0", "::", "") or is_loopback(bind):
+        return []
+    found = ["127.0.0.1"]
+    with contextlib.suppress(OSError):
+        for info in socket.getaddrinfo(hostname or socket.gethostname(), None, socket.AF_INET):
+            addr = str(info[4][0])
+            if is_loopback(addr) and addr not in found:
+                found.append(addr)
+    return found
+
+
 class LogRing(logging.Handler):
     """The server's last LOG_KEPT log lines, and each new one passed to `on_line` (any thread)."""
 
@@ -162,6 +176,7 @@ class Server:
         self.pending = 0
         self.conns: set[asyncio.StreamWriter] = set()  # every open connection, closed at shutdown
         self.listener: asyncio.Server | None = None
+        self.local_listener: asyncio.Server | None = None  # loopback, for a network bind
         self.busy: dict[str, str] = {}  # instance -> operation in progress or queued
         self.state: dict[str, Any] = {}
         self.ready = threading.Event()  # set once listening (for tests and callers)
@@ -182,6 +197,15 @@ class Server:
             self._broadcast, {"type": "log", "lines": [line]}
         )
         self.port = server.sockets[0].getsockname()[1]
+        local = own_addresses(self.bind)
+        if local:
+            try:
+                self.local_listener = await asyncio.start_server(
+                    self._handle, local, self.port, ssl=self.tls
+                )
+                log.info("Server also on %s for this machine", ", ".join(local))
+            except OSError as e:
+                log.warning("Server: not on %s for this machine: %s", ", ".join(local), e)
         log.info(
             "Server on %s://%s:%d (SparkGap Web at http%s://%s:%d/), root %s",
             "wss" if self.tls else "ws",
@@ -202,8 +226,9 @@ class Server:
         3.12 a cancelled serve_forever waits for open connections, so a browser left connected
         kept the process alive after SIGTERM (Dallas, 2026-10-22).  Aborted, not closed: a close
         first sends what is queued, which a browser that stopped reading never takes (Beelink)."""
-        if self.listener:
-            self.listener.close()
+        for listener in (self.listener, self.local_listener):
+            if listener:
+                listener.close()
         for w in list(self.conns):
             w.transport.abort()
 
