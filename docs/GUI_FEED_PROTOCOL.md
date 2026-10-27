@@ -168,6 +168,7 @@ Every 2 seconds.
            "packets": 5023532, "lost": 0, "reconnects": 1,
            "last_reconnect": 1792019016, "station": "SparkGap-2",
            "daxiq_channel": 2, "others": ["Shack (SmartSDR-Win)"],
+           "break_in_ms": 5, "tx_mute": false, "muted_packets": 0,
            "rx": {"rxant": "ANT1", "loopa": false, "loopb": false, "rfgain": 8,
                   "ant_list": ["ANT1", "ANT2", "RX_A", "XVTA"],
                   "rfgain_range": [-8, 32, 8]}},
@@ -204,7 +205,10 @@ The station (absent in file mode except `radio`):
   or the file being replayed) and `state` (`connecting`, `live`, `reconnecting`,
   `waiting` or `replaying`). A Flex adds `packets`, `lost`, `reconnects`,
   `last_reconnect` (UTC seconds or `null`), its `station` name, its
-  `daxiq_channel`, the `others` stations on the radio at the last connect, and
+  `daxiq_channel`, the `others` stations on the radio at the last connect, the
+  radio's CW break-in delay (`break_in_ms`), whether keyed IQ reaches the
+  decoders as silence (`tx_mute`) and how many packets it has silenced
+  (`muted_packets`), and
   `rx`: our pan's receive path as the radio reports it (`rxant`, `loopa`,
   `loopb`, `rfgain`, `null` when the radio reports none), the antennas the pan
   offers (`ant_list`) and its RF gain `[low, high, step]` (`rfgain_range`).

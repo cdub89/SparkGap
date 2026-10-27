@@ -226,6 +226,29 @@ def test_transmitting_at_covers_key_down_to_key_up_and_a_hold() -> None:
     assert rx.transmitting_at(102.5) and not rx.transmitting_at(101.5)
 
 
+TRANSMIT = [  # Dallas 6400M, 2026-10-27: sub tx all
+    "S0|transmit tx_slice_mode=CW vox_delay=10 break_in=1 break_in_delay=5 cwl_enabled=0",
+]
+
+
+def test_break_in_delay_is_read_from_the_transmit_status() -> None:
+    assert flex_iq.break_in_delay(TRANSMIT) == 0.005
+    assert flex_iq.break_in_delay(["S0|transmit break_in=1 break_in_delay=200"]) == 0.2
+    assert flex_iq.break_in_delay(["S0|transmit break_in=0 break_in_delay=200"]) == 0.0
+    assert flex_iq.break_in_delay(TX_LINES) is None  # no transmit line: keep what we had
+
+
+def test_the_hold_after_key_up_includes_the_break_in_delay() -> None:
+    rx = FlexIQReceiver("192.0.2.1")
+    rx._note_break_in(0.2)
+    rx._note_tx("TRANSMITTING", 100.0)
+    rx._note_tx("READY", 101.0)
+    assert rx.transmitting_at(101.0 + 0.2 + flex_iq.TX_HOLD_S - 0.001)
+    assert not rx.transmitting_at(101.0 + 0.2 + flex_iq.TX_HOLD_S + 0.01)
+    rx._note_break_in(None)  # a status line without it changes nothing
+    assert rx.break_in_s == 0.2
+
+
 def _lines_at(caplog: Caplog, level: int) -> list[str]:
     return [m for lv, m in _lines(caplog) if lv >= level]
 
