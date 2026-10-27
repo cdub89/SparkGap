@@ -59,9 +59,9 @@ minutes.
 
 Click **⚙**, then the skimmer's tab (its name, such as `shack40`).
 
-- The top card shows whether it runs. **Start**, **Stop** and **Restart** do
-  what they say. **Show** puts that skimmer on the main screen. **Recording**
-  is there too.
+- The top card shows whether it runs. **Run** on starts it and off stops it;
+  **Restart** restarts a running one. **Show** puts that skimmer on the main
+  screen. **Recording** is there too.
 - To change a setting, pick the new value and click **Apply**, which appears
   in the top card. You can change several at once; they take effect together.
   **Discard** forgets them.
@@ -110,9 +110,8 @@ Settings, in plain terms:
 
 Hover over a setting for a one-line reminder.
 
-The **Servers** tab under Settings lists each server's skimmers, with
-**Start**, **Stop** and **Restart** for each, and **Start all** and **Stop
-all**.
+The **Servers** tab under Settings lists each server's skimmers, each with
+its run switch and **Restart**, and **Start all** and **Stop all**.
 
 ## When something looks wrong
 
@@ -127,7 +126,7 @@ wrong, worst first. Common ones:
   programs, or run fewer skimmers.
 - **Clock not NTP synchronised**: the computer's clock is not set from the
   internet. Spot times will be off; turn on automatic time.
-- **A stopped skimmer**: its tab shows why. Try **Start**; if it stops again,
+- **A stopped skimmer**: its tab shows why. Turn **Run** on; if it stops again,
   send the message to whoever set it up.
 
 The **Servers** tab under Info shows each server's join code, its skimmers,

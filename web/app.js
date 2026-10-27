@@ -1597,6 +1597,12 @@ function removeConn(n) {
 // a status pill, as on the Info cards
 function pillHtml(text, cls) { return `<span class="pill ${cls}">${esc(text)}</span>`; }
 
+// a copy's run switch, styled as the on/off settings: off stops it, on starts it
+function runToggle(at, run, busy) {
+  return `<div class="seg runseg${busy ? " off" : ""}" ${at}${busy ? ` title="${esc(busy)}..."` : ""}>`
+    + `<span data-cmd="stop"${run ? "" : ' class="on"'}>off</span><span data-cmd="start"${run ? ' class="on"' : ""}>on</span></div>`;
+}
+
 // a server's card under Settings: the server, its stations, each copy with its controls, and all of them at once
 function serverCardHtml(sv, k) {
   const a = sv.link, seat = a.seat || { instances: [], stations: [] }, list = seat.instances || [];
@@ -1617,7 +1623,7 @@ function serverCardHtml(sv, k) {
     return `<div class="copyrow"><span class="cname">${esc(i.name)}</span><span class="small muted mono">${esc(String(i.band))}</span>`
       + pillHtml(busy ? `${busy}...` : run ? "running" : "stopped", busy ? "warnlvl" : run ? "ok" : "idle")
       + `<span class="small muted">${run ? `${Number(i.spots) || 0} spots` : ""}</span><span class="grow"></span>`
-      + `${btn("show", shown ? "Shown" : "Show", run && !shown)}<span class="group">${btn("start", "Start", !run)}${btn("restart", "Restart", run)}${btn("stop", "Stop", run)}</span></div>`;
+      + `${run ? btn("restart", "Restart", true) : ""}${btn("show", shown ? "Shown" : "Show", run && !shown)}${runToggle(at(i.name), run, busy)}</div>`;
   }).join("");
   const stopped = list.filter(i => i.state !== "running").length, running = list.length - stopped;
   const all = list.length > 1 ? `<div class="actions allrow"><span class="small muted">All skimmers on this server</span><span class="grow"></span>`
@@ -1678,9 +1684,8 @@ function copyCards(k, sv, i) {
     opt("KNOWN CALL LIST", choices("call_source", CALL_SOURCES, st.call_source, valid === "off"), HINTS.call_source, true),
     ...DECODER_OPTIONS.map(([key, label, hint, values]) => opt(label.toUpperCase(), values ? choices(key, values, st[key] === undefined ? null : st[key]) : onOff(key, st[key]), hint, values && values.length > 4))];
   return `<section class="scard wide copycard"><h3><span>${esc(i.name)} · ${esc(bandText(saved.band || i.band || ""))}</span>${pillHtml(state.toUpperCase(), busy ? "warnlvl" : run ? "ok" : "idle")}</h3>
-    <div class="actions"><span class="small muted">${esc(host)}${run ? "" : " · settings are used at its next start"}</span><span class="grow"></span>${btn("show", shown ? "Shown" : "Show", run && !shown)}
-      <span class="group">${btn("start", "Start", !run)}${btn("restart", "Restart", run)}${btn("stop", "Stop", run)}</span></div>
-    <div class="opts instopts">${opt("RECORDING", onOff("record", st.record), HINTS.record)}</div>${err}${bar}</section>
+    <div class="actions"><span class="small muted">${esc(host)}${run ? "" : " · settings are used at its next start"}</span><span class="grow"></span>${run ? btn("restart", "Restart", true) : ""}${btn("show", shown ? "Shown" : "Show", run && !shown)}</div>
+    <div class="opts instopts">${opt("RUN", runToggle(at, run, busy), "Off stops the skimmer, on starts it.")}${opt("RECORDING", onOff("record", st.record), HINTS.record)}</div>${err}${bar}</section>
     <section class="scard wide"><h3><span>RADIO</span>${radioTag}</h3><div class="opts">${radioOpts.join("")}</div>
     <div class="small muted cardnote">Band${rx ? ", antenna, loops and RF gain" : ""} change live; AFC restarts the skimmer.${radioNote ? ` ${esc(radioNote)}` : ""}</div></section>
     <section class="scard wide"><details class="adv"${app.advOpen ? " open" : ""}><summary><span>DECODER OPTIONS</span>${decTag}</summary>
@@ -1790,6 +1795,7 @@ async function seatClick(e) {
   if (!link) return;
   e.stopPropagation();
   const cmd = t.dataset.cmd;
+  if (t.tagName === "SPAN" && t.classList.contains("on")) return;  // the run switch, already there
   if (cmd === "show") {
     const n = app.instances.findIndex(x => x.server === link.server && copyName(x) === name);
     if (n >= 0) { setCurrent(n); closeSettings(); }
