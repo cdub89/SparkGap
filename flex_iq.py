@@ -775,7 +775,7 @@ class FlexIQReceiver:
 
     def __init__(self, ip, freq_hz=7040000, sample_rate=192000,
                  daxiq_channel=1, udp_port=7791, control_port=4992, station=None,
-                 rxant=None, loopa=None, loopb=None, rfgain=None, tx_mute=False):
+                 rxant=None, loopa=None, loopb=None, rfgain=None):
         if sample_rate not in VALID_RATES:
             raise ValueError(f"sample_rate must be one of {VALID_RATES}")
         self.ip = ip
@@ -830,7 +830,6 @@ class FlexIQReceiver:
         self.others = []          # other stations on the radio at the last connect
         self._tx_since = None     # arrival time of the key-down in progress
         self._tx_spans = []       # (key-down, key-up) arrival times, newest last
-        self.tx_mute = bool(tx_mute)  # flex_tx_mute: IQ that arrives while keyed reaches the decoders as silence
         self.muted_packets = 0
         self._trace = None   # DIAGNOSTIC: (file, end time, rows)
 
@@ -929,9 +928,8 @@ class FlexIQReceiver:
         status = (conn.cmd("sub pan all", settle=0.5) + conn.cmd("sub slice all", settle=0.5)
                   + conn.cmd("sub daxiq all", settle=0.5))
         conn.ok("transmit state for the GUI", conn.cmd("sub tx all", settle=0.3))  # key-down: an empty spectrum
-        if self.tx_mute:
-            log.info("[Flex] Decoding muted while the radio is keyed, until %d ms after its key-up",
-                     round(TX_HOLD_S * 1000))
+        log.info("[Flex] Decoding muted while the radio is keyed, until %d ms after its key-up",
+                 round(TX_HOLD_S * 1000))
         # A DAX-IQ channel another station's pan holds (Maestro, SmartSDR, DAX) is not ours to take,
         # nor one another client streams (another copy set to the same channel included).
         stations = gui_stations(self._clients)
@@ -1221,7 +1219,7 @@ class FlexIQReceiver:
     def transmitting_at(self, t):
         """Whether the radio was keyed at time t (seconds since the epoch, as the IQ arrived), with
         TX_HOLD_S after each key-up: the spectrum shows those rows empty instead of the transmitter,
-        and with tx_mute the decoders get silence.  Key-up is the interlock's READY, which comes after
+        and the decoders get silence.  Key-up is the interlock's READY, which comes after
         the transmitting client's own CW delay (a per-client setting we cannot read)."""
         since = self._tx_since
         if since is not None and t >= since:
@@ -1326,7 +1324,6 @@ class FlexIQReceiver:
                 'packets': self.packets, 'lost': self.lost, 'reconnects': self.reconnects,
                 'last_reconnect': self.last_reconnect, 'station': self.station,
                 'daxiq_channel': self.channel, 'others': list(self.others),
-                'tx_mute': self.tx_mute,
                 'muted_packets': self.muted_packets,
                 'rx': {**{k: self.rx.get(k) for k in RX_KEYS}, 'ant_list': list(self.rx.get('ant_list', [])),
                        'rfgain_range': list(self.rfgain_range) if self.rfgain_range else None}}
@@ -1533,7 +1530,7 @@ class FlexIQReceiver:
             iq_rows /= DAXIQ_FULL_SCALE
             keyed = self.transmitting_at(now)
             self._trace_row("pkt", "%.1f,%d" % (10 * np.log10(float(np.mean(iq_rows * iq_rows)) + 1e-20), keyed), now)
-            if self.tx_mute and keyed:
+            if keyed:
                 iq_rows[:] = 0.0   # our own transmission: silence, so the time base holds
                 self.muted_packets += 1
             callback(0, iq_rows)

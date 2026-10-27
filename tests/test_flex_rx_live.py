@@ -1,13 +1,14 @@
 """Our pan's receive path (antenna, loops, RF gain) read from the radio, changed live, and restored
 from what the radio last reported."""
 
+import struct
 import threading
 
 import pytest
 
 import flex_iq
 from flex_iq import FlexIQReceiver, pan_rx, radio_loops, rfgain_steps
-from tests.flex_fake_radio import FakeConnection, FakeRadio, use_fake_radio
+from tests.flex_fake_radio import FakeConnection, FakeRadio, _Udp, use_fake_radio
 
 Monkey = pytest.MonkeyPatch
 PAN = 0x4000_0000
@@ -200,3 +201,21 @@ def test_after_a_change_the_target_is_what_the_radio_reported(monkeypatch: Monke
     monkeypatch.setattr(radio, "run", run)
     assert rx.set_rx({"rfgain": 24}) == "receive path rfgain=8"
     assert rx.rx["rfgain"] == 8 and rx._target["rfgain"] == 8
+
+
+def test_iq_while_keyed_reaches_the_decoders_as_silence(monkeypatch: Monkey) -> None:
+    _, rx = _live(monkeypatch)
+    monkeypatch.setattr(flex_iq.select, "select", lambda r, *_: ([rx._udp], [], []))
+    head = struct.pack(">BBHI", 0x38, 0x01, 0, rx._stream_id) + bytes(flex_iq.VITA_HEADER_SIZE - 8)
+    packet = head + struct.pack("<4f", 0.5, -0.5, 0.25, 0.25)
+    got = []
+
+    def take(_: int, iq: object) -> None:
+        got.append(iq.copy())  # pyright: ignore[reportAttributeAccessIssue]
+        rx._running = False
+
+    for keyed in (True, False):
+        rx._tx_since, rx._tx_spans, rx._running = (0.0 if keyed else None), [], True
+        _Udp.packets = [packet]
+        rx.receive(take)
+    assert not got[0].any() and got[1].any() and rx.muted_packets == 1
