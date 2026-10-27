@@ -155,7 +155,7 @@ Several copies on one radio (one band each, each on its own
 `flex_daxiq_channel`) share one SparkGap station there: start
 `python3 flex_station.py --config <one of their configs>` before them and stop
 it after the last one. A copy started alone holds the station itself.
-`flex_tx_mute` (default off) silences the decoders while the radio is keyed, until 0.15 s after
+`flex_tx_mute` (default off) silences the decoders while the radio is keyed, until 0.5 s after
 its key-up (which comes after the transmitting client's CW delay), so your own transmissions and
 their key clicks are not decoded.
 

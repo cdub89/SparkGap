@@ -67,7 +67,8 @@ STATION_POLL_S = 10
 LIVE_LOCK_WAIT_S = 2.0      # a live change waits this long for the receiver; a recovery holds it longer
 RETUNE_SETTLE_S = 0.5       # IQ dropped this long after a retune's replies: still the old frequency
 TX_STATES = ('PTT_REQUESTED', 'TRANSMITTING', 'UNKEY_REQUESTED')  # the radio's interlock while keyed
-TX_HOLD_S = 0.15            # after key-up: the DAX-IQ of the transmission arrives after the status line
+TX_HOLD_S = 0.5             # after key-up (READY/RECEIVE): bridges the gaps between words of an over, where
+                            # the radio's IQ flashes back to the noise floor (61 gaps on 10-27: 51 under 0.5 s)
 TX_SPANS_KEPT = 64
 
 
