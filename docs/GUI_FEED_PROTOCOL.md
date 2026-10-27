@@ -176,7 +176,7 @@ Every 2 seconds.
  "recording": {"file": "/srv/sparkgap/rec/40m.wav", "bytes": 2473963564},
  "windows": 72823, "calls": 97, "spots_hour": 41, "bins_peak": 52,
  "decode_khz": [[7000.0, 7070.0]],
- "clients": [{"peer": "192.168.1.31:61718", "name": "shack",
+ "clients": [{"peer": "192.168.1.31:61718", "name": "shack", "via": null,
               "since": 1792018739, "dropped": 12}],
  "problems": {"errors": 8,
               "last": [{"utc": 1792019013, "level": "ERROR",
@@ -219,8 +219,9 @@ The station (absent in file mode except `radio`):
 The feed itself:
 
 - `clients`: each connected console: address, host name from reverse DNS
-  (`null` when it has none), connected since (UTC seconds),
-  spectrum rows dropped because it fell behind.
+  (`null` when it has none), `via` (`"server"` for a browser the SparkGap
+  server passes through, its address taken from the server; else `null`),
+  connected since (UTC seconds), spectrum rows dropped because it fell behind.
 - `problems`: SparkGap's errors since start, with the last five
   (UTC seconds, level, message).
 
@@ -321,8 +322,10 @@ nothing from the old band arrives after the new `hello`. A client should treat a
 - The copy's own join code grants control: anyone who can open the feed with it
   can change the band. A feed on loopback with no join code can be changed by
   any local program. The SparkGap server keeps the copy's code on its machine
-  and opens the feed as `/feed?view` for a browser: a `control` sent on such a
-  connection is refused with `view only: settings change through the server`.
+  and opens the feed as `/feed?view&for=<browser address>` for a browser: a
+  `control` sent on such a connection is refused with `view only: settings
+  change through the server`. The copy takes `for` only on a view-only feed
+  opened from its own machine.
   Browsers change settings through the server's own commands.
 
 ## Keeping the connection

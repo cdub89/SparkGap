@@ -50,6 +50,7 @@ FEED_VERSION = 1
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 PATH = "/feed"
 VIEW_QUERY = "view"  # /feed?view: no control messages (the server's pass-through for browsers)
+FOR_QUERY = "for"  # /feed?view&for=<address>: the browser the server passes through
 # a live change refused while the radio is being recovered: its error starts with this
 RECOVERING = "recovering"
 CODE_PROTOCOL = "sparkgap.code."  # a browser offers its join code as this subprotocol + code
@@ -170,6 +171,18 @@ async def read_frame(reader: asyncio.StreamReader) -> tuple[bool, int, bytes]:
     return bool(b0 & 0x80), opcode, unmask(await reader.readexactly(n), mask)
 
 
+def forwarded(query: str, peer_host: str) -> str | None:
+    """The browser address in a view-only request's for=, trusted only from this machine (the
+    SparkGap server); None otherwise or when it is no address."""
+    params = dict(p.partition("=")[::2] for p in query.split("&"))
+    if VIEW_QUERY not in params or not is_loopback(peer_host):
+        return None
+    try:
+        return str(ipaddress.ip_address(params.get(FOR_QUERY, "")))
+    except ValueError:
+        return None
+
+
 def is_loopback(host: str) -> bool:
     if host == "localhost":
         return True
@@ -184,6 +197,7 @@ class Client:
     writer: asyncio.StreamWriter
     peer: str
     name: str | None = None  # the console's host name, from reverse DNS
+    via: str | None = None  # "server": a browser passed through by the SparkGap server
     text: collections.deque[bytes] = field(default_factory=collections.deque)
     spectrum: collections.deque[bytes] = field(
         default_factory=lambda: collections.deque(maxlen=SPECTRUM_QUEUE_MAX)
@@ -422,7 +436,7 @@ class FeedServer:
             calls=len(self.calls),
             spots_hour=len(self.spot_times),
             bins_peak=self.bins_peak,
-            clients=[{"peer": c.peer, "name": c.name, "since": round(c.since),
+            clients=[{"peer": c.peer, "name": c.name, "via": c.via, "since": round(c.since),
                       "dropped": c.dropped_rows} for c in self.clients],
             problems=self.problems.summary(),
         )
@@ -541,6 +555,7 @@ class FeedServer:
             return self._reject(writer, 405, "Method Not Allowed")
         path, _, query = parts[1].partition("?")
         seen["view"] = VIEW_QUERY in query.split("&")
+        seen["for"] = forwarded(query, str(writer.get_extra_info("peername")[0]))
         if path != PATH:
             if self.web and headers.get("upgrade", "").lower() != "websocket":
                 return self._serve_file(writer, path)
@@ -669,7 +684,10 @@ class FeedServer:
                 log.info("GUI feed: refused %s", peer)
             writer.close()
             return
-        c = Client(writer, peer, view=bool(seen.get("view")))
+        via = "server" if seen.get("for") else None
+        if via:  # the browser behind the server, not the server's own connection
+            host = peer = seen["for"]
+        c = Client(writer, peer, view=bool(seen.get("view")), via=via)
         for msg in (self.hello, self.snapshot()):
             c.text.append(encode_frame(OP_TEXT, json.dumps(msg, separators=(",", ":")).encode()))
         c.ready.set()

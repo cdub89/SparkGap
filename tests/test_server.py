@@ -320,6 +320,10 @@ def test_a_browsers_feed_is_opened_view_only() -> None:
     req = sparkgap_server.feed_request
     assert req("127.0.0.1", 7321, "ABCDEF", view=True).startswith(b"GET /feed?view ")
     assert req("127.0.0.1", 7321, "ABCDEF").startswith(b"GET /feed ")
+    assert req("127.0.0.1", 7321, "ABCDEF", view=True, browser="100.1.2.3").startswith(
+        b"GET /feed?view&for=100.1.2.3 "
+    )
+    assert req("127.0.0.1", 7321, "ABCDEF", browser="100.1.2.3").startswith(b"GET /feed ")
 
 
 def test_feed_control_without_a_feed_is_no_answer() -> None:

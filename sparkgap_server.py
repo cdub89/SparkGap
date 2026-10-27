@@ -42,6 +42,7 @@ from feed_server import (
     CLOSE_LOCKED_OUT,
     CLOSE_WRONG_CODE,
     CODE_PROTOCOL,
+    FOR_QUERY,
     LOCKOUT_S,
     LOCKOUT_TRIES,
     MAX_CLIENT_MESSAGE,
@@ -577,7 +578,8 @@ class Server:
         except (OSError, asyncio.TimeoutError):
             self._refuse(writer, True, f"{name}: no answer on its feed port")
             return
-        up_w.write(feed_request(host, port, code, view=True))
+        browser = str(writer.get_extra_info("peername")[0]).split("%")[0]  # no IPv6 scope
+        up_w.write(feed_request(host, port, code, view=True, browser=browser))
         try:
             reply = await asyncio.wait_for(up_r.readuntil(b"\r\n\r\n"), 5)
         except (asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
@@ -625,12 +627,15 @@ class Server:
         return "127.0.0.1", int(st["feed_port"]), st["feed_code"]
 
 
-def feed_request(host: str, port: int, code: str | None, view: bool = False) -> bytes:
+def feed_request(
+    host: str, port: int, code: str | None, view: bool = False, browser: str | None = None
+) -> bytes:
     """The opening request for a copy's feed on this machine, with the copy's own join code;
-    view only (no control messages) for a browser's feed passed through."""
+    view only (no control messages) for a browser's feed passed through, naming that browser."""
     key = base64.b64encode(secrets.token_bytes(16)).decode()
     req = [
-        f"GET /feed{'?' + VIEW_QUERY if view else ''} HTTP/1.1",
+        f"GET /feed{'?' + VIEW_QUERY if view else ''}"
+        f"{f'&{FOR_QUERY}={browser}' if view and browser else ''} HTTP/1.1",
         f"Host: {host}:{port}",
         "Upgrade: websocket",
         "Connection: Upgrade",

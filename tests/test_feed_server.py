@@ -754,6 +754,31 @@ def test_a_view_only_feed_refuses_control(feed: FeedServer) -> None:
     assert asked == []
 
 
+@pytest.mark.parametrize(
+    "query, peer, want",
+    [
+        ("view&for=100.1.2.3", "127.0.0.1", "100.1.2.3"),
+        ("view&for=fd7a::1", "::1", "fd7a::1"),
+        ("view&for=100.1.2.3", "192.168.1.5", None),  # only the server on this machine names one
+        ("for=100.1.2.3", "127.0.0.1", None),  # a feed that can control names no one else
+        ("view&for=evil.example", "127.0.0.1", None),
+        ("view", "127.0.0.1", None),
+    ],
+)
+def test_a_passed_through_browser_is_named_only_by_this_machine(
+    query: str, peer: str, want: str | None
+) -> None:
+    assert feed_server.forwarded(query, peer) == want
+
+
+def test_a_passed_through_browser_is_listed_by_its_address(feed: FeedServer) -> None:
+    c = WS(feed.port, path="/feed?view&for=100.1.2.3")
+    c.json("snapshot")
+    feed.publish_status({})
+    clients = c.json("status")["clients"]
+    assert [(x["peer"], x["via"]) for x in clients] == [("100.1.2.3", "server")]
+
+
 def test_a_control_without_settings_is_refused(feed: FeedServer) -> None:
     feed.on_control = lambda change, reply: reply(True, "done")
     c = WS(feed.port)

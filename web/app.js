@@ -1136,7 +1136,7 @@ function statusHtml(i, a) {
   i.statTotal = i.total; i.statAt = now();
   const cons = [row("This console", `since ${utcTime(i.since)}${i.reconnects ? `, ${i.reconnects} reconnects` : ""}`, { mono: true, ref: true }),
     row("Rows a second", rate === null ? null : rate.toFixed(0), { mono: true, key: true }),
-    ...(s.clients || []).map(c => row(c.name || c.peer, `${num(c.dropped)} dropped`, { mono: true, sub: `${c.name ? `${c.peer}, ` : ""}since ${utcTime(c.since)}`, key: true, bad: c.dropped > 600 }))];
+    ...(s.clients || []).map(c => row(c.name || c.peer, `${num(c.dropped)} dropped`, { mono: true, sub: `${c.name ? `${c.peer}, ` : ""}${c.via ? `via ${c.via}, ` : ""}since ${utcTime(c.since)}`, key: true, bad: c.dropped > 600 }))];
 
   const p = s.problems || {};
   const probs = [`<div class="srow"><span class="k">Since start</span><span class="v"><span class="mono${p.errors ? " bad" : ""}">${num(p.errors)}</span> errors</span></div>`,
