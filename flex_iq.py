@@ -835,6 +835,7 @@ class FlexIQReceiver:
         self.break_in_s = 0.0     # the radio's CW break-in delay: still keyed this long after key-up
         self.tx_mute = bool(tx_mute)  # flex_tx_mute: IQ that arrives while keyed reaches the decoders as silence
         self.muted_packets = 0
+        self._diag = {'floor': None, 'loud': [], 'span': None, 'last_loud': None, 'peak': 0.0, 'lead': None}
 
     @property
     def rx_path(self):
@@ -1198,6 +1199,43 @@ class FlexIQReceiver:
             self._tx_spans = (self._tx_spans + [(self._tx_since, now)])[-TX_SPANS_KEPT:]
             self._tx_since = None
 
+    def _diag_tail(self, now, iq_rows):
+        """DIAGNOSTIC (not for a PR): per over, how long the IQ stays loud after key-up (READY), and
+        any loud packet up to 0.5 s before key-down; one log line once unkeyed for 1 s."""
+        d = self._diag
+        db = 10 * np.log10(float(np.mean(iq_rows * iq_rows)) + 1e-20)
+        spans, since = self._tx_spans, self._tx_since
+        last = spans[-1] if spans else None
+        loud = d['floor'] is not None and db > d['floor'] + 6.0
+        d['loud'] = [(t, x) for t, x in d['loud'] if now - t <= 0.5] + [(now, db)] if loud else \
+            [(t, x) for t, x in d['loud'] if now - t <= 0.5]
+        if since is not None:   # keyed: note any loud packet before this over's key-down
+            if d['span'] is None or d['span'][0] != since and d['lead'] is None:
+                early = [t for t, _ in d['loud'] if t < since]
+                d['lead'] = since - min(early) if early else 0.0
+            d['span'] = (since, None)
+            return
+        if last is None:
+            if d['floor'] is None:
+                d['floor'] = db
+            d['floor'] += 0.002 * (db - d['floor'])
+            return
+        up = last[1]
+        if d['span'] is None or d['span'][1] != up:   # a new key-up: start its tail
+            d['span'], d['last_loud'], d['peak'] = (d['span'][0] if d['span'] else last[0], up), None, 0.0
+        if now - up <= 2.0 and loud:
+            d['last_loud'] = now
+            d['peak'] = max(d['peak'], db - d['floor'])
+        if now - up > 1.0 and d['span'] is not None and d['span'][1] == up and d.get('logged') != up:
+            d['logged'] = up
+            tail = (d['last_loud'] - up) if d['last_loud'] else 0.0
+            log.info("[Flex] TX tail (diagnostic): loud %.0f ms after key-up (peak +%.0f dB over floor), "
+                     "lead %.0f ms before key-down, hold %.0f ms, %d key-downs kept", tail * 1000, d['peak'],
+                     (d['lead'] or 0.0) * 1000, (self.break_in_s + TX_HOLD_S) * 1000, len(spans))
+            d['lead'] = None
+        if now - up > 2.0:
+            d['floor'] += 0.002 * (db - d['floor'])
+
     def _note_break_in(self, delay_s):
         if delay_s is None or delay_s == self.break_in_s:
             return
@@ -1518,6 +1556,7 @@ class FlexIQReceiver:
             iq_rows = np.frombuffer(data, dtype=f"{endian_char}f4", count=2 * n_samples,
                                     offset=VITA_HEADER_SIZE).astype(np.float64).reshape(-1, 2)
             iq_rows /= DAXIQ_FULL_SCALE
+            self._diag_tail(now, iq_rows)
             if self.tx_mute and self.transmitting_at(now):
                 iq_rows[:] = 0.0   # our own transmission: silence, so the time base holds
                 self.muted_packets += 1
