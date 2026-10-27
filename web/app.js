@@ -47,6 +47,7 @@ const PEAK_FROM_PX = 1;  // from this many pixels a bin, peaks are drawn instead
 const FREQ_MATCH_KHZ = 0.15;
 const SEARCH_MAX = 8;
 const NO_FIT = 999.0;
+const NOTHING = '<span class="nothing">(nothing decoded)</span>';  // a path whose window decoded no text
 const DECODED = ["both", "wide", "narrow", "lowest"];  // which readings of each window the panel shows
 const ZOOM_STEPS = [["Full", 1], ["Half", 2], ["Quarter", 4]];  // the zoom button: name and fraction of the band
 const ZOOM_MATCH = 0.05;  // a view within 5% of a step's span is at that step
@@ -481,8 +482,8 @@ class Instance {
     const last = wins[wins.length - 1] || {};
     const rows = wins.reverse().map(w => ({
       utc: new Date(w.utc * 1000).toISOString().substr(11, 8),
-      html: this.marked(w.text, call), cost: w.cost, rate: w.rate,
-      altHtml: w.alt ? this.marked(w.alt.text, call) : "", altCost: w.alt ? w.alt.cost : null, altRate: w.alt ? w.alt.rate : null,
+      html: this.marked(w.text, call) || NOTHING, cost: w.cost, rate: w.rate,
+      altHtml: w.alt ? this.marked(w.alt.text, call) || NOTHING : "", altCost: w.alt ? w.alt.cost : null, altRate: w.alt ? w.alt.rate : null,
     }));
     // speed and level of the call shown: the spot's own when it was spotted, else the newest window
     // that copied the call (the newest at this frequency may be noise after the station stopped)

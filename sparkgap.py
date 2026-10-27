@@ -3411,7 +3411,9 @@ class _ItilaScanner:
                                         _ct.c_double(f_khz),
                                         _ct.c_double(self.ev_thresh))
             raw = result.decode('ascii', errors='replace').strip() if result else ''
-            if raw:
+            if not raw:
+                decoded.append(('', None, None, None))   # the GUI shows this path decoded nothing
+            else:
                 dsnr = None       # itila2_snr_decoder: this path's own reading
                 if pows is not None:
                     dsnr = sclib.itila_sc_snr_from_power(lib.itila_get_mark_power(h), n0, wide)
@@ -3432,7 +3434,12 @@ class _ItilaScanner:
         now = time.time()
         window_key = next(_window_seq)
 
+        texts = any(r for r, _, _, _ in decoded)
         for raw, cost, wpm_est, dsnr in decoded:
+            if not raw:   # a path with nothing decoded: the GUI's line for it, when the other path has text
+                if _gui_feed and texts:
+                    _gui_feed.publish_window(f_khz, '', None, None, None)
+                continue
             if _snr_decoder:
                 st['snr500'] = dsnr      # reported by the spot; st['snr'] (the scanner's) ranks the copies
             log.info("ITILA raw %.1f kHz cost=%.2f: %r", f_khz, cost, raw[:400])
