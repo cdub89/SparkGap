@@ -13,15 +13,32 @@ const SERVER_PROTOCOL = "sparkgap.server.v1";
 const SERVER_LOG_KEPT = 200;  // server log lines kept for its console
 const VALIDATION = ["off", "permissive", "normal", "aggressive"];
 const CALL_SOURCES = [["scp", "SCP"], ["rbn", "RBN"], ["rbn+skcc", "RBN + SKCC"]];
-const RULE_FLAGS = [
+// Decoder Options: [config key, label, hint, values ([value, label]; none: on/off)]; null is off
+const DECODER_OPTIONS = [
   ["spot_rule_split_runs", "Split runs", "Words sent with no gap are split before the rule reads them: CQCQDE becomes CQ CQ DE (hand-sent CW)."],
   ["spot_rule_contest_words", "Contest words", "CWT, SST or MST right before a call opens a CQ group as CQ does: runners who send CWT K5AX without the CQ."],
   ["spot_rule_cq_repeats", "CQ repeats", "Back-to-back CQs from one call count as separate copies, so a runner is spotted sooner."],
+  ["spot_rule_doubled_calls", "Doubled calls", "A call sent twice in one CQ (CQ K8TLJ K8TLJ) counts as two copies. Used only while call validation is off; validation scores it itself."],
+  ["spot_rule_split_up", "Split up", "TU <call> UP, a station working split, counts as a copy of that call."],
+  ["spot_rule_owner_cell", "Owner cell", "A new owner replaces only the owner within 0.25 kHz: a neighbour 0.5 kHz away keeps its frequency."],
+  ["spot_rule_owned_two_windows", "Owned: two windows", "A call challenging a frequency another call owns needs copies in two windows."],
+  ["spot_rule_owner_listed", "Owner listed", "One copy owns an empty frequency only when its call is on the known call list; a call with a prosign glued on (WB0MQAK) never owns one."],
+  ["spot_rule_la1d", "Noise letters", "A lone E, T, I or S between CQ and the call is skipped, and a sign-off (K AR KN SK BK TU) ends the search: CQ CQ E E HFT ON6FT names ON6FT."],
+  ["spot_rule_gluek", "Glued K", "CALL+K reads as CALL K when the call is also heard on its own (WB0MQA ... WB0MQAK)."],
+  ["spot_rule_norival", "No unlisted rival", "Validation: an unlisted call read on the other path does not count against a listed one."],
+  ["itila2_snr_decoder", "Decoder SNR", "Spot SNR from the decoded window's key-down power, in 500 Hz as CW Skimmer measures it."],
+  ["spot_rule_fragments", "Fragments", "A call that is part of a longer call heard with it is not spotted: even, when the longer one is read as often; any, when it is read at all. Stray: TEST K1V U T is no copy of K1V.",
+    [[null, "off"], ["any", "any"], ["any,stray", "any + stray"], ["even", "even"], ["even,stray", "even + stray"]]],
+  ["spot_rule_takeover_idle_s", "Takeover", "Another call may take an owned frequency once its owner has been quiet this long.",
+    [[null, "off"], [120, "120 s"], [180, "180 s"], [300, "300 s"]]],
+  ["spot_rule_strongest_db", "Strongest copy", "No spot when the same call is read this many dB stronger elsewhere in the band.",
+    [[null, "off"], [3, "3 dB"], [6, "6 dB"], [10, "10 dB"]]],
 ];
 const RX_KEYS = ["antenna", "loop_a", "loop_b", "rf_gain"];  // a Flex copy's receive path: the radio's, changed live
 const SHARED_NOTE = "Loops are shared by every pan on that antenna, and RF gain by every pan on the same receiver (SCU): "
   + "a change here changes them for every copy and program using it.";
 const HINTS = {
+  record: "Saves the raw signal to disk for replay; needs 5 GB free. Restarts the skimmer.",
   afc: "Each signal's decoder follows its keyed tone, which helps weak and slightly off-tune signals (itila2_afc). Applying restarts the skimmer.",
   validation: "A confidence score decides which calls are spotted: permissive spots more, aggressive fewer (docs/ITILA2.md). Off: a set number of copies, 2 to 4 by how common the call's pattern is.",
   call_source: "Calls known from this list score higher in validation: SCP, calls RBN skimmers heard in the last days, or those plus the SKCC roster.",
@@ -47,7 +64,7 @@ const PEAK_FROM_PX = 1;  // from this many pixels a bin, peaks are drawn instead
 const FREQ_MATCH_KHZ = 0.15;
 const SEARCH_MAX = 8;
 const NO_FIT = 999.0;
-const MODES = ["settings", "info", "help"];  // the dialog's header
+const MODES = ["settings", "info"];  // the dialog's header; its ? button shows help
 const NEWS_SHOWN = 4;  // What's new entries shown in the dialog; the guide has them all
 const NOTHING = '<span class="nothing">(nothing decoded)</span>';  // a path whose window decoded no text
 const DECODED = ["both", "wide", "narrow", "lowest"];  // which readings of each window the panel shows
@@ -1361,7 +1378,8 @@ function renderSettings() {
   if ($("modal").hidden) return;
   const tabs = settingsTabs(), info = app.mode === "info", help = app.mode === "help";
   if (!tabs.some(t => t[0] === app.tab)) app.tab = "servers";
-  seg($("modeSeg"), ["Settings", "Info", "Help"], MODES.indexOf(app.mode), n => { app.mode = MODES[n]; if (n < 2) save("mode", app.mode); renderSettings(); });  // Help is not remembered
+  seg($("modeSeg"), ["Settings", "Info"], MODES.indexOf(app.mode), n => { app.mode = MODES[n]; save("mode", app.mode); renderSettings(); });  // help is not remembered
+  $("helpBtn").classList.toggle("on", help);
   $("tabs").hidden = help;
   $("helpBody").hidden = !help;
   if (help) {
@@ -1486,15 +1504,10 @@ function renderConns() {
     row.onclick = () => { if (copies.length) setCurrent(app.instances.indexOf(copies[0])); };
     const card = document.createElement("section");
     card.className = "scard wide";
+    const state = sv.here ? (ok ? "live" : "down") : a ? a.state : "down";
+    card.insertAdjacentHTML("beforeend", `<h3><span>${sv.here ? "THIS SPARKGAP" : "SERVER"}</span>${pillHtml(state.toUpperCase(), ok ? "ok" : state === "connecting" ? "warnlvl" : "warn")}</h3>`);
     card.appendChild(row);
-    if (a && a.state === "live") {
-      const lines = [`Server ${(a.hello && a.hello.host) || sv.address}`];
-      for (const st of (a.seat && a.seat.stations) || []) {
-        const loss = st.last_loss ? `, last ${utcTime(st.last_loss[0])}: ${st.last_loss[1]}` : "";
-        lines.push(`Station ${st.station || st.radio}: ${st.live || st.state}${typeof st.rtt_ms === "number" ? `, ping ${st.rtt_ms} ms` : ""}, losses in the last hour ${Number(st.losses_hour) || 0}${loss}`);
-      }
-      for (const text of lines) { const d = document.createElement("div"); d.className = "small muted"; d.textContent = text; card.appendChild(d); }
-    }
+    if (a && a.state === "live") card.insertAdjacentHTML("beforeend", serverCardHtml(sv, n - here.length));
     box.appendChild(card);
   });
   if (!app.servers.length && !app.here && app.editing === -2) {
@@ -1578,7 +1591,39 @@ function removeConn(n) {
   setCurrent(app.current);
 }
 
-// a copy's tab: its state and actions, its everyday settings, then the spot rule's finer options
+// a status pill, as on the Info cards
+function pillHtml(text, cls) { return `<span class="pill ${cls}">${esc(text)}</span>`; }
+
+// a server's card under Settings: the server, its stations, each copy with its controls, and all of them at once
+function serverCardHtml(sv, k) {
+  const a = sv.link, seat = a.seat || { instances: [], stations: [] }, list = seat.instances || [];
+  const code = String(sv.token || "").replace(/[^0-9A-Za-z]/g, "").toUpperCase();
+  const srow = (key, v, cls = "") => `<div class="srow"><span class="k">${key}</span><span class="v ${cls}">${v}</span></div>`;
+  const rows = [srow("Host", esc(`${(a.hello && a.hello.host) || sv.address}${a.hello && a.hello.build ? ` (${a.hello.build})` : ""}`), "ref mono"),
+    srow("Join code", esc(code ? `${code.slice(0, 3)}-${code.slice(3)}` : "-"), "mono")];
+  for (const st of seat.stations || []) {
+    const good = st.live === "live" || st.state === "live";
+    rows.push(srow(`Station ${esc(st.station || st.radio)}`, `${pillHtml(String(st.live || st.state).toUpperCase(), good ? "ok" : "warn")} `
+      + esc(`${typeof st.rtt_ms === "number" ? `ping ${st.rtt_ms} ms, ` : ""}${Number(st.losses_hour) || 0} losses in the last hour`)));
+  }
+  const at = name => `data-server="${k}" data-name="${esc(name)}"`;
+  const copies = list.map(i => {
+    const run = i.state === "running", busy = i.busy;
+    const shown = !!inst() && inst().server === sv && copyName(inst()) === i.name;
+    const btn = (cmd, label, on) => `<button class="btn small" ${at(i.name)} data-cmd="${cmd}"${on && !busy ? "" : " disabled"}>${label}</button>`;
+    return `<div class="copyrow"><span class="cname">${esc(i.name)}</span><span class="small muted mono">${esc(String(i.band))}</span>`
+      + pillHtml(busy ? `${busy}...` : run ? "running" : "stopped", busy ? "warnlvl" : run ? "ok" : "idle")
+      + `<span class="small muted">${run ? `${Number(i.spots) || 0} spots` : ""}</span><span class="grow"></span>`
+      + `${btn("show", shown ? "Shown" : "Show", run && !shown)}<span class="group">${btn("start", "Start", !run)}${btn("restart", "Restart", run)}${btn("stop", "Stop", run)}</span></div>`;
+  }).join("");
+  const stopped = list.filter(i => i.state !== "running").length, running = list.length - stopped;
+  const all = list.length > 1 ? `<div class="actions allrow"><span class="small muted">All skimmers on this server</span><span class="grow"></span>`
+    + `<button class="btn small" ${at("")} data-cmd="startall"${stopped ? "" : " disabled"}>Start all</button>`
+    + `<button class="btn small" ${at("")} data-cmd="stopall"${running ? "" : " disabled"}>Stop all</button></div>` : "";
+  return `<div class="srows">${rows.join("")}</div><div class="label conhead">SKIMMERS</div><div class="copies">${copies || '<div class="small muted">none set up</div>'}</div>${all}`;
+}
+
+// a copy's tab: its state, actions and Apply; the radio and what it hears; the decoder's options, folded
 function copyCards(k, sv, i) {
   const run = i.state === "running", busy = i.busy, saved = i.settings || {};
   const pend = app.pending[pendKey(sv, i.name)] || {}, st = { ...saved, ...pend }, n = Object.keys(pend).length;
@@ -1590,7 +1635,8 @@ function copyCards(k, sv, i) {
   const choices = (k2, opts, cur, off = false) => `<div class="seg${k2 in pend ? " pend" : ""}${off ? " off" : ""}" ${at} data-key="${k2}"${off ? ' title="not used while call validation is off"' : ""}>${opts.map(([v, l]) =>
     `<span data-value="${esc(JSON.stringify(v))}"${v === cur ? ' class="on"' : ""}>${esc(l)}</span>`).join("")}</div>`;
   const onOff = (k2, cur) => choices(k2, [[false, "off"], [true, "on"]], !!cur);
-  const row = (label, control, hint) => `<span class="label"${hint ? ` title="${esc(hint)}"` : ""}>${label}</span>${control}`;  // hint: on hover
+  // one option: its label over its control; hint on hover; wide ones take a whole row
+  const opt = (label, control, hint, wide) => `<div class="opt${wide ? " wide" : ""}"${hint ? ` title="${esc(hint)}"` : ""}><span class="label">${label}</span>${control}</div>`;
   const known = saved.bands_known && saved.bands_known.length ? saved.bands_known : [];
   const bandOpts = known.includes(saved.band) || saved.band === undefined ? known : [saved.band, ...known];  // a centre in Hz is no band name
   const bandText = b => /^\d+$/.test(String(b)) ? `${(Number(b) / 1000).toFixed(1)} kHz` : String(b);
@@ -1601,7 +1647,7 @@ function copyCards(k, sv, i) {
     : run && i.feed_failed ? '<div class="small err">Its feed did not start (port in use): no waterfall until it restarts.</div>' : "";
   const shown = !!inst() && inst().server === sv && copyName(inst()) === i.name;
   const host = (sv.link.hello && sv.link.hello.host) || sv.address, valid = st.validation || "off";
-  const bar = n ? `<div class="applybar"><span class="small">${n} change${n > 1 ? "s" : ""}</span><span class="grow"></span>`
+  const bar = n ? `<div class="applybar"><span>${n} change${n > 1 ? "s" : ""} not applied</span><span class="grow"></span>`
     + `<button class="btn small primary" ${at} data-cmd="apply"${busy ? " disabled" : ""}>${live ? "Apply (live)" : run ? `Apply (restarts ${esc(i.name)})` : "Save"}</button>`
     + `<button class="btn small" ${at} data-cmd="discard">Discard</button></div>` : "";
   const shown2 = v => v === true ? "on" : v === false ? "off" : String(v);
@@ -1611,20 +1657,28 @@ function copyCards(k, sv, i) {
     (opts.some(([v]) => v === cur) ? opts : [[cur, String(cur)], ...opts]).map(([v, l]) =>
       `<option value="${esc(String(v))}"${v === cur ? " selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
   const gains = rx && rx.range ? Array.from({ length: Math.floor((rx.range[1] - rx.range[0]) / rx.range[2]) + 1 }, (_, g) => rx.range[0] + g * rx.range[2]) : [];
-  const radio = !i.radio ? "" : !rx ? `<section class="scard wide"><h3><span>RADIO</span></h3><div class="small muted">Antenna, loops and RF gain are read from the radio while ${esc(i.name)} runs.</div></section>`
-    : `<section class="scard wide"><h3><span>RADIO</span><span>as the radio reports it; Apply changes it there</span></h3>
-    <div class="grid setgrid">${rxHas(rx, "antenna") ? row("ANTENNA", `<div class="inline">${sel("antenna", rx.ant_list.map(a => [a, a]), rs.antenna)}${starts("antenna")}</div>`) : ""}${
-      rxHas(rx, "loop_a") ? row("LOOP A", `<div class="inline">${onOff("loop_a", rs.loop_a)}${starts("loop_a")}</div>`, SHARED_NOTE) : ""}${
-      rxHas(rx, "loop_b") ? row("LOOP B", `<div class="inline">${onOff("loop_b", rs.loop_b)}${starts("loop_b")}</div>`, SHARED_NOTE) : ""}${
-      rxHas(rx, "rf_gain") ? row("RF GAIN", `<div class="inline">${sel("rf_gain", gains.map(g => [g, `${g} dB`]), rs.rf_gain)}${starts("rf_gain")}</div>`, SHARED_NOTE) : ""}</div>
-    <div class="small muted">${esc(SHARED_NOTE)}</div></section>`;
-  return `<section class="scard wide"><h3><span>${esc(i.name)} · ${esc(bandText(saved.band || i.band || ""))}</span><span>${esc(host)}</span></h3>
-    <div class="actions"><span class="${run ? "good" : "muted"}">${esc(state)}</span><span class="grow"></span>${btn("show", shown ? "Shown" : "Show", run && !shown)}
-      <span class="group">${btn("start", "Start", !run)}${btn("restart", "Restart", run)}${btn("stop", "Stop", run)}</span></div>${err}</section>
-    ${radio}<section class="scard wide"><h3><span>SETTINGS</span><span>${run ? `band changes live, the rest by restarting ${esc(i.name)}` : "used at its next start"}</span></h3>
-    <div class="grid setgrid">${row("BAND", bands)}${row("RECORDING", onOff("record", st.record))}${row("CALL VALIDATION", `<div class="inline">${choices("validation", VALIDATION.map(v => [v, v]), valid)}</div>`, HINTS.validation)}${row("KNOWN CALL LIST", choices("call_source", CALL_SOURCES, st.call_source, valid === "off"), HINTS.call_source)}${row("AFC", onOff("afc", st.afc), HINTS.afc)}</div>
-    <details class="adv"${app.advOpen ? " open" : ""}><summary>ADVANCED: SPOT RULE</summary>
-    <div class="grid setgrid">${RULE_FLAGS.map(([k2, l, hint]) => row(l.toUpperCase(), onOff(k2, st[k2]), hint)).join("")}</div></details>${bar}</section>`;
+  const radioOpts = [opt("BAND", bands, "Changes live while the skimmer runs."), opt("AFC", onOff("afc", st.afc), HINTS.afc), opt("RECORDING", onOff("record", st.record), HINTS.record)];
+  if (rx) {
+    if (rxHas(rx, "antenna")) radioOpts.push(opt("ANTENNA", `<div class="inline">${sel("antenna", rx.ant_list.map(a => [a, a]), rs.antenna)}${starts("antenna")}</div>`));
+    if (rxHas(rx, "rf_gain")) radioOpts.push(opt("RF GAIN", `<div class="inline">${sel("rf_gain", gains.map(g => [g, `${g} dB`]), rs.rf_gain)}${starts("rf_gain")}</div>`, SHARED_NOTE));
+    if (rxHas(rx, "loop_a")) radioOpts.push(opt("LOOP A", `<div class="inline">${onOff("loop_a", rs.loop_a)}${starts("loop_a")}</div>`, SHARED_NOTE));
+    if (rxHas(rx, "loop_b")) radioOpts.push(opt("LOOP B", `<div class="inline">${onOff("loop_b", rs.loop_b)}${starts("loop_b")}</div>`, SHARED_NOTE));
+  }
+  const radioNote = !i.radio ? "" : rx ? SHARED_NOTE : `Antenna, loops and RF gain are read from the radio while ${i.name} runs.`;
+  const radioTag = rx ? pillHtml("FROM THE RADIO", "ok") : i.radio ? pillHtml("FLEX", "idle") : "";
+  const ons = DECODER_OPTIONS.filter(([key, , , values]) => values ? st[key] !== null && st[key] !== undefined : !!st[key]).length;
+  const decPend = Object.keys(pend).some(x => x === "validation" || x === "call_source" || DECODER_OPTIONS.some(o => o[0] === x));
+  const decTag = pillHtml(`${valid === "off" ? "validation off" : `validation ${valid}`} · ${ons} of ${DECODER_OPTIONS.length} on`, decPend ? "warnlvl" : "idle");
+  const decOpts = [opt("CALL VALIDATION", choices("validation", VALIDATION.map(v => [v, v]), valid), HINTS.validation, true),
+    opt("KNOWN CALL LIST", choices("call_source", CALL_SOURCES, st.call_source, valid === "off"), HINTS.call_source, true),
+    ...DECODER_OPTIONS.map(([key, label, hint, values]) => opt(label.toUpperCase(), values ? choices(key, values, st[key] === undefined ? null : st[key]) : onOff(key, st[key]), hint, values && values.length > 4))];
+  return `<section class="scard wide copycard"><h3><span>${esc(i.name)} · ${esc(bandText(saved.band || i.band || ""))}</span>${pillHtml(state.toUpperCase(), busy ? "warnlvl" : run ? "ok" : "idle")}</h3>
+    <div class="actions"><span class="small muted">${esc(host)}${run ? "" : " · settings are used at its next start"}</span><span class="grow"></span>${btn("show", shown ? "Shown" : "Show", run && !shown)}
+      <span class="group">${btn("start", "Start", !run)}${btn("restart", "Restart", run)}${btn("stop", "Stop", run)}</span></div>${err}${bar}</section>
+    <section class="scard wide"><h3><span>RADIO</span>${radioTag}</h3><div class="opts">${radioOpts.join("")}</div>
+    <div class="small muted cardnote">Band${rx ? ", antenna, loops and RF gain" : ""} change live; AFC and recording restart the skimmer.${radioNote ? ` ${esc(radioNote)}` : ""}</div></section>
+    <section class="scard wide"><details class="adv"${app.advOpen ? " open" : ""}><summary><span>DECODER OPTIONS</span>${decTag}</summary>
+    <div class="opts">${decOpts.join("")}</div><div class="small muted cardnote">Changes restart the skimmer. Hover over an option for what it does.</div></details></section>`;
 }
 
 // drop the pending settings of an server's copies that gone(name) says are gone
@@ -1674,7 +1728,7 @@ async function applySettings(link, name) {
   const k = pendKey(link.server, name), settings = app.pending[k] ? { ...app.pending[k] } : null;  // what is sent
   if (!settings) return;
   const i = ((link.seat && link.seat.instances) || []).find(x => x.name === name);
-  const what = Object.entries(settings).map(([key, v]) => `${key.replace(/^spot_rule_/, "").replace(/_/g, " ")} ${v === true ? "on" : v === false ? "off" : v}`).join(", ");
+  const what = Object.entries(settings).map(([key, v]) => `${key.replace(/^spot_rule_/, "").replace(/_/g, " ")} ${v === true || v === false ? (v ? "on" : "off") : v === null ? "off" : v}`).join(", ");
   const others = Object.keys(settings).filter(x => !RX_KEYS.includes(x));
   const live = !others.length || (others.length === 1 && others[0] === "band");  // no restart unless the copy cannot
   if (i && i.state === "running" && !live && !confirm(`${name}: ${what}. This restarts ${name}. Go ahead?`)) return;
@@ -1722,6 +1776,29 @@ async function loadNews() {
   } catch (e) { app.news = null; }
   if (!$("modal").hidden && app.mode === "help") renderHelp();
 }
+// a click in a copy's tab or a server's card: a command, or a setting picked
+async function seatClick(e) {
+  const t = e.target.closest("[data-cmd], [data-value]");
+  if (!t || t.disabled || t.closest(".seg.off")) return;  // the known call list while validation is off
+  const [link, name, holder] = seatTarget(t);
+  if (!link) return;
+  e.stopPropagation();
+  const cmd = t.dataset.cmd;
+  if (cmd === "show") {
+    const n = app.instances.findIndex(x => x.server === link.server && copyName(x) === name);
+    if (n >= 0) { setCurrent(n); closeSettings(); }
+  } else if (cmd === "apply") applySettings(link, name);
+  else if (cmd === "discard") { delete app.pending[pendKey(link.server, name)]; renderSettings(); }
+  else if (cmd === "startall" || cmd === "stopall") {
+    const stop = cmd === "stopall", list = ((link.seat && link.seat.instances) || []).filter(x => (x.state === "running") === stop && !x.busy);
+    if (!list.length || (stop && !confirm(`Stop ${list.map(x => x.name).join(", ")}?`))) return;
+    for (const x of list) await seatRequest(link, stop ? "stop" : "start", x.name);
+  } else if (cmd) {
+    if (cmd !== "start" && !confirm(`${cmd === "stop" ? "Stop" : "Restart"} ${name}?`)) return;
+    seatRequest(link, cmd, name);
+  } else if (!t.classList.contains("on")) pickSetting(link, name, holder.dataset.key, JSON.parse(t.dataset.value));
+}
+
 function closeSettings() { $("modal").hidden = true; app.editing = -2; app.form = null; $("fSave").disabled = false; }
 
 // ---- input ----
@@ -1732,26 +1809,13 @@ function bindInput() {
     if (app.mode === "help") app.mode = load("mode", "info");  // the gear opens Settings or Info, as last left
     openSettings();
   };
-  $("helpBtn").onclick = () => { app.mode = "help"; openSettings(); };
+  $("helpBtn").onclick = () => { app.mode = app.mode === "help" ? load("mode", "info") : "help"; renderSettings(); };
   $("tabs").onclick = e => {
     const t = e.target.closest("[data-tab]");
     if (t) { app.tab = t.dataset.tab; app.editing = -2; renderSettings(); }
   };
-  $("tabCopy").onclick = e => {
-    const t = e.target.closest("[data-cmd], [data-value]");
-    if (!t || t.disabled || t.closest(".seg.off")) return;  // the known call list while validation is off
-    const [link, name, holder] = seatTarget(t);
-    if (!link) return;
-    if (t.dataset.cmd === "show") {
-      const n = app.instances.findIndex(x => x.server === link.server && copyName(x) === name);
-      if (n >= 0) { setCurrent(n); closeSettings(); }
-    } else if (t.dataset.cmd === "apply") applySettings(link, name);
-    else if (t.dataset.cmd === "discard") { delete app.pending[pendKey(link.server, name)]; renderSettings(); }
-    else if (t.dataset.cmd) {
-      if (t.dataset.cmd !== "start" && !confirm(`${t.dataset.cmd === "stop" ? "Stop" : "Restart"} ${name}?`)) return;
-      seatRequest(link, t.dataset.cmd, name);
-    } else if (!t.classList.contains("on")) pickSetting(link, name, holder.dataset.key, JSON.parse(t.dataset.value));
-  };
+  $("tabCopy").onclick = seatClick;
+  $("conns").addEventListener("click", seatClick);
   $("tabCopy").addEventListener("toggle", e => { if (e.target.classList.contains("adv")) app.advOpen = e.target.open; }, true);
   $("tabCopy").onchange = e => {
     const [link, name, holder] = seatTarget(e.target);

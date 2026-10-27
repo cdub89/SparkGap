@@ -99,10 +99,16 @@ new line as it is logged: connections, requests and their results.
 - `set` writes the settings to the instance's config and restarts it if it is
   running. Only these, each checked: `band` (a band the instance's SparkGap
   knows), `validation` (`off`, `permissive`, `normal`, `aggressive`),
-  `call_source` (`scp`, `rbn`, `rbn+skcc`), `spot_rule_split_runs`,
-  `spot_rule_contest_words`, `spot_rule_cq_repeats` and `record` (true or
-  false; recording on needs 5 GB free in `rec/`). Anything else is refused and
-  nothing is written.
+  `call_source` (`scp`, `rbn`, `rbn+skcc`), `afc` (true or false, written as
+  `itila2_afc`), `record` (true or false; recording on needs 5 GB free in
+  `rec/`), the on/off decoder options `spot_rule_split_runs`,
+  `spot_rule_contest_words`, `spot_rule_cq_repeats`, `spot_rule_doubled_calls`,
+  `spot_rule_split_up`, `spot_rule_owner_cell`, `spot_rule_owned_two_windows`,
+  `spot_rule_owner_listed`, `spot_rule_la1d`, `spot_rule_gluek`,
+  `spot_rule_norival` and `itila2_snr_decoder`, and `spot_rule_fragments`
+  (`any`, `any,stray`, `even`, `even,stray`), `spot_rule_takeover_idle_s`
+  (120, 180, 300) and `spot_rule_strongest_db` (3, 6, 10), where null is off
+  and removes the key. Anything else is refused and nothing is written.
 - A running copy given the band alone is changed live: the server writes the
   band to the config (the startup band), then asks the copy over its feed (a
   `control` message, `GUI_FEED_PROTOCOL.md`, waiting up to 20 s) to change band

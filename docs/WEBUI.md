@@ -52,17 +52,21 @@ minutes.
   skimmer opens at the zoom you last left it at, in this browser.
 - **Bottom bar**: how hard the computer is working, how many calls the skimmer
   has spotted, and how long it has been running.
-- **?**: this guide and what's new.
+- **?** (inside the ⚙ dialog): this guide and what's new.
 
 ## Running a skimmer
 
 Click **⚙**, then the skimmer's tab (its name, such as `shack40`).
 
-- **Start**, **Stop** and **Restart** do what they say. **Show** puts that
-  skimmer on the main screen.
-- To change a setting, pick the new value and click **Apply**, which stays at
-  the bottom of the window. You can change several at once; they take effect
-  together. **Discard** forgets them.
+- The top card shows whether it runs. **Start**, **Stop** and **Restart** do
+  what they say. **Show** puts that skimmer on the main screen.
+- To change a setting, pick the new value and click **Apply**, which appears
+  in the top card. You can change several at once; they take effect together.
+  **Discard** forgets them.
+- **Radio**: band, AFC and recording, and on a FlexRadio the antenna, RF gain
+  and loops as the radio reports them.
+- **Decoder Options** (click to open): call validation, the known call list
+  and the spot rule's options. The line beside it sums them up.
 - **Band**: changes straight away while the skimmer runs, in about a second,
   and the waterfall starts over on the new band. Other settings restart the
   skimmer, which takes about half a minute. A skimmer set up to listen at an
@@ -84,8 +88,9 @@ Settings, in plain terms:
 - **Known call list**: calls on this list count as more likely to be right.
   SCP is the contest call list; RBN adds calls other RBN skimmers heard in the
   past week; RBN + SKCC adds the SKCC roster, good for hand-keyed CW.
-- **Advanced**: three options that spot more calls, each with some risk of a
-  wrong one. All off unless you need them.
+- **Spot rule options**, under Decoder Options: each changes which calls are
+  spotted. All are off unless set. Some spot more calls with some risk of a
+  wrong one:
   - **Split runs**: reads `CQCQDE` as `CQ CQ DE`, for fists that run words
     together.
   - **Contest words**: treats CWT, SST or MST before a call like CQ, for
@@ -93,7 +98,15 @@ Settings, in plain terms:
   - **CQ repeats**: spots a station sooner when it sends CQ several times in a
     row.
 
-Hover over a setting's name for a one-line reminder.
+  Others keep wrong calls out, such as **Owner listed**, **Fragments** and
+  **Strongest copy**. **Decoder SNR** measures a spot's signal the way CW
+  Skimmer does.
+
+Hover over a setting for a one-line reminder.
+
+The **Servers** tab under Settings lists each server's skimmers, with
+**Start**, **Stop** and **Restart** for each, and **Start all** and **Stop
+all**.
 
 ## When something looks wrong
 
@@ -139,8 +152,10 @@ Under **⚙**, **Settings**, **Servers**:
 - **2026-10-27.** The surer of the two readings is in bold, and a reading that
   copied nothing says so. AFC can be switched per skimmer. Each skimmer keeps
   the signal you last picked on it. Ctrl+F finds text inside the ⚙ dialog.
-  Apply stays in view. A band change clears the old signal. Help and this
-  list have their own **?** button.
+  A band change clears the old signal. The ⚙ dialog has its own **?** for
+  help and this list. A skimmer's settings are in three cards (the skimmer
+  with Apply, Radio, Decoder Options) with more of the decoder's options, and
+  the Servers tab starts and stops skimmers.
 - **2026-10-26.** Spots, not consoles, in the bottom bar; a band change
   counts spots and calls from zero.
 

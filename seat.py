@@ -40,7 +40,26 @@ RADIO_RE = re.compile(
 )  # it goes into file names: a host name or address only
 VALIDATION = ("off", "permissive", "normal", "aggressive")
 CALL_SOURCES = ("scp", "rbn", "rbn+skcc")
-RULE_FLAGS = ("spot_rule_split_runs", "spot_rule_contest_words", "spot_rule_cq_repeats")
+# decoder options by config key: on/off ones, and ones with a few values (None: off, key removed)
+OPTION_FLAGS = (
+    "spot_rule_split_runs",
+    "spot_rule_contest_words",
+    "spot_rule_cq_repeats",
+    "spot_rule_doubled_calls",
+    "spot_rule_split_up",
+    "spot_rule_owner_cell",
+    "spot_rule_owned_two_windows",
+    "spot_rule_owner_listed",
+    "spot_rule_la1d",
+    "spot_rule_gluek",
+    "spot_rule_norival",
+    "itila2_snr_decoder",
+)
+OPTION_CHOICES: dict[str, tuple[Any, ...]] = {
+    "spot_rule_fragments": (None, "any", "any,stray", "even", "even,stray"),
+    "spot_rule_takeover_idle_s": (None, 120, 180, 300),
+    "spot_rule_strongest_db": (None, 3, 6, 10),
+}
 # a Flex copy's receive path: setting -> (the copy's live key, its config key).  The radio's
 # state is the truth: a running copy changes it live first, then its config
 RX_SETTINGS = {
@@ -470,7 +489,8 @@ class Seat:
             "validation": cfg.get("spot_validation", "normal") or "off",
             "call_source": cfg.get("spot_validation_calls") or "scp",
             "afc": bool(cfg.get("itila2_afc", False)),
-            **{k: bool(cfg.get(k, False)) for k in RULE_FLAGS},
+            **{k: bool(cfg.get(k, False)) for k in OPTION_FLAGS},
+            **{k: cfg.get(k) for k in OPTION_CHOICES},
             "record": bool(cfg.get("record_wav")),
             # a Flex copy's receive path as its config sets it at start (None: the radio's own)
             **{k: cfg.get(c) for k, (_, c) in RX_SETTINGS.items()},
@@ -515,9 +535,14 @@ class Seat:
                 if value not in CALL_SOURCES:
                     raise SeatError(f"call source must be one of: {', '.join(CALL_SOURCES)}")
                 changes["spot_validation_calls"] = value
-            elif key in RULE_FLAGS:
+            elif key in OPTION_FLAGS:
                 if not isinstance(value, bool):
                     raise SeatError(f"{key} must be true or false")
+                changes[key] = value
+            elif key in OPTION_CHOICES:
+                if isinstance(value, bool) or value not in OPTION_CHOICES[key]:
+                    shown = ", ".join("off" if v is None else str(v) for v in OPTION_CHOICES[key])
+                    raise SeatError(f"{key} must be one of: {shown}")
                 changes[key] = value
             elif key == "afc":
                 if not isinstance(value, bool):

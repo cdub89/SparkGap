@@ -20,6 +20,10 @@ Pre-1.0 alpha. No versioned releases yet — entries are dated.
 - **Settings change only through the server.** A browser's feed passed through
   the server is view only, and a copy's own join code, which stays on its
   machine, is the only one that can send a `control` message.
+- **The server's `set` takes the decoder options**: `afc`, the spot rule's
+  on/off options, `itila2_snr_decoder`, and `spot_rule_fragments`,
+  `spot_rule_takeover_idle_s` and `spot_rule_strongest_db` from a short list
+  each (`docs/SERVER_PROTOCOL.md`).
 
 ## 2026-06-18
 

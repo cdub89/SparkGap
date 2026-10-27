@@ -101,6 +101,16 @@ def test_afc_is_written_to_the_config(seat: Seat) -> None:
     assert seat.config(i)["itila2_afc"] is True and seat.settings(i)["afc"] is True
 
 
+def test_decoder_options_are_written_and_off_removes_the_key(seat: Seat) -> None:
+    i = seat.instance("dallas1")
+    seat.change("dallas1", {"spot_rule_owner_listed": True, "spot_rule_strongest_db": 6})
+    assert seat.config(i)["spot_rule_owner_listed"] is True
+    assert seat.settings(i)["spot_rule_strongest_db"] == 6
+    seat.change("dallas1", {"spot_rule_strongest_db": None})
+    assert "spot_rule_strongest_db" not in seat.config(i)
+    assert seat.settings(i)["spot_rule_strongest_db"] is None
+
+
 def test_a_stopped_copy_is_only_written(seat: Seat) -> None:
     assert seat.change("dallas1", {"band": "20m"}) == "dallas1: band 20m"
     assert seat.pid("dallas1") is None and seat.band(seat.instance("dallas1")) == "20m"
@@ -115,6 +125,8 @@ def test_a_stopped_copy_is_only_written(seat: Seat) -> None:
         ({"validation": "loose"}, "validation must be one of"),
         ({"spot_rule_split_runs": "yes"}, "true or false"),
         ({"afc": "on"}, "afc must be true or false"),
+        ({"spot_rule_takeover_idle_s": 90}, "takeover_idle_s must be one of: off, 120"),
+        ({"spot_rule_strongest_db": True}, "strongest_db must be one of"),
         ({}, "nothing to change"),
     ],
 )
