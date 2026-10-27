@@ -145,7 +145,25 @@ def test_write_config_keeps_indentation(tmp_path: Path) -> None:
     path = tmp_path / "c.json"
     path.write_text('{\n    "a": 1,\n    "b": 2\n}\n')
     write_config(path, {"a": None, "c": [1]})
-    assert path.read_text() == '{\n    "b": 2,\n    "c": [\n        1\n    ]\n}\n'
+    assert path.read_text() == '{\n    "b": 2,\n    "c": [1]\n}\n'
+
+
+def test_write_config_keeps_the_files_own_layout(tmp_path: Path) -> None:
+    path = tmp_path / "c.json"
+    feed = '  "gui_feed": {"bind": "127.0.0.1",\n               "port": "auto"}'
+    text = '{\n  "bands": ["40m"],\n' + feed + ',\n  "rec": null\n}\n'
+    path.write_text(text)
+    write_config(path, {"bands": ["20m"], "rec": None})
+    assert path.read_text() == '{\n  "bands": ["20m"],\n' + feed + "\n}\n"
+    write_config(path, {"gui_feed": {"port": 7321}})  # over several lines: written whole
+    assert json.loads(path.read_text()) == {"bands": ["20m"], "gui_feed": {"port": 7321}}
+
+
+def test_a_config_read_follows_its_file(seat: Seat) -> None:
+    i = seat.instance("dallas1")
+    assert seat.band(i) == "17m"
+    write_config(i.config, {"bands": ["20m"]})
+    assert seat.band(i) == "20m"
 
 
 def test_a_reused_pid_is_never_signalled(seat: Seat) -> None:

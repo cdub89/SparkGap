@@ -101,6 +101,7 @@ main { flex: 1; display: flex; gap: 12px; min-height: 0; }
 .win .t { color: var(--faint); flex: none; }
 .win .x { flex: 1; min-width: 0; word-break: break-all; display: flex; flex-direction: column; gap: 3px; }
 .win .alt { color: var(--muted); opacity: .75; }
+.win .best { font-weight: 600; }
 .win .c { color: var(--faint); font-size: 10px; }
 .win b { color: var(--accent); }
 .zoom { padding: 10px; display: flex; justify-content: center; }

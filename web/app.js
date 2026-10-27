@@ -22,6 +22,7 @@ const RX_KEYS = ["antenna", "loop_a", "loop_b", "rf_gain"];  // a Flex copy's re
 const SHARED_NOTE = "Loops are shared by every pan on that antenna, and RF gain by every pan on the same receiver (SCU): "
   + "a change here changes them for every copy and program using it.";
 const HINTS = {
+  afc: "Each signal's decoder follows its keyed tone (itila2_afc). Shown only: set in the skimmer's config.",
   validation: "A confidence score decides which calls are spotted: permissive spots more, aggressive fewer (docs/ITILA2.md). Off: a set number of copies, 2 to 4 by how common the call's pattern is.",
   call_source: "Calls known from this list score higher in validation: SCP, calls RBN skimmers heard in the last days, or those plus the SKCC roster.",
 };
@@ -884,12 +885,18 @@ function changed(i, what) {
 }
 
 function setCurrent(n) {
+  // a copy that covers the picked frequency keeps it and the view, to compare copies on one signal
+  const khz = app.selectedKhz, lo = wf.lo, hi = wf.hi;
   app.current = Math.max(0, Math.min(n, app.instances.length - 1));
   const i = inst();
   if (i && i.hello.run) { app.want = i.name; save("current", i.name); }
   app.selectedKhz = -1;
   wf.sel = -1;
-  wf.setInstance(inst());
+  const keep = khz > 0 && i && (!i.nBins || (i.lowKhz <= khz && khz <= i.highKhz));
+  if (keep && !i.nBins) i.goKhz = khz;  // not drawn yet: centre on it once it is
+  wf.setInstance(i);
+  if (keep && i.nBins && i.lowKhz <= lo && hi <= i.highKhz) wf.setView(lo, hi);
+  if (keep) pick(khz);
   renderAll();
 }
 
@@ -1278,8 +1285,11 @@ function renderDetail() {
   $("dCopy").hidden = !(d && d.windows.length);
   $("dWins").innerHTML = (d ? d.windows : []).map(r => {
     const rs = readings(r, app.decoded);
+    // with both shown, the lower timing cost is bold (a tie or no fit marks neither)
+    const k = c => (c === null || c === undefined || c >= NO_FIT ? Infinity : c);
+    const best = rs.length > 1 && k(rs[0].cost) !== k(rs[1].cost) ? (k(rs[0].cost) < k(rs[1].cost) ? 0 : 1) : -1;
     return `<div class="win"><span class="t">${r.utc}</span><div class="x">`
-      + rs.map((x, n) => `<span${n ? ' class="alt"' : ""}>${x.html}</span>`).join("")
+      + rs.map((x, n) => `<span class="${[n ? "alt" : "", n === best ? "best" : ""].join(" ").trim()}">${x.html}</span>`).join("")
       + `<span class="c">${rs.length > 1 || r.altHtml ? rs.map(x => `${rateName(x.rate)} ${costText(x.cost)}`).join("  ·  ") : "cost " + costText(r.cost)}</span>`
       + "</div></div>";
   }).join("");
@@ -1594,7 +1604,7 @@ function copyCards(k, sv, i) {
     <div class="actions"><span class="${run ? "good" : "muted"}">${esc(state)}</span><span class="grow"></span>${btn("show", shown ? "Shown" : "Show", run && !shown)}
       <span class="group">${btn("start", "Start", !run)}${btn("restart", "Restart", run)}${btn("stop", "Stop", run)}</span></div>${err}</section>
     ${radio}<section class="scard wide"><h3><span>SETTINGS</span><span>${run ? `band changes live, the rest by restarting ${esc(i.name)}` : "used at its next start"}</span></h3>
-    <div class="grid setgrid">${row("BAND", bands)}${row("RECORDING", onOff("record", st.record))}${row("CALL VALIDATION", `<div class="inline">${choices("validation", VALIDATION.map(v => [v, v]), valid)}</div>`, HINTS.validation)}${row("KNOWN CALL LIST", choices("call_source", CALL_SOURCES, st.call_source, valid === "off"), HINTS.call_source)}</div>
+    <div class="grid setgrid">${row("BAND", bands)}${row("RECORDING", onOff("record", st.record))}${row("CALL VALIDATION", `<div class="inline">${choices("validation", VALIDATION.map(v => [v, v]), valid)}</div>`, HINTS.validation)}${row("KNOWN CALL LIST", choices("call_source", CALL_SOURCES, st.call_source, valid === "off"), HINTS.call_source)}${row("AFC", `<span class="mono">${saved.afc ? "on" : "off"}</span>`, HINTS.afc)}</div>
     <details class="adv"${app.advOpen ? " open" : ""}><summary>ADVANCED: SPOT RULE</summary>
     <div class="grid setgrid">${RULE_FLAGS.map(([k2, l, hint]) => row(l.toUpperCase(), onOff(k2, st[k2]), hint)).join("")}</div></details>${bar}</section>`;
 }
@@ -1733,7 +1743,8 @@ function bindInput() {
     if (m) { e.preventDefault(); goTo(app.matches[Number(m.dataset.n)]); }
   };
   document.addEventListener("keydown", e => {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") { e.preventDefault(); search.focus(); search.select(); }
+    // Ctrl-F finds a call on the main page; with Settings | Info open it is the browser's own find
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f" && $("modal").hidden) { e.preventDefault(); search.focus(); search.select(); }
     else if (e.key === "Escape" && !$("modal").hidden) closeSettings();
   });
 

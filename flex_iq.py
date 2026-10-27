@@ -21,6 +21,7 @@ Protocol refs:
   - SmartSDR TCP/IP API wiki
 """
 
+import contextlib
 import logging
 import os
 import re
@@ -63,6 +64,7 @@ STREAM_GRACE_S = 10         # after a stall, time for our stream to resume by it
 STATION_WAIT_S = 600        # a copy whose own station left waits this long for it before stopping
 STATION_TAKEOVER_S = 10     # times the DAX-IQ channel: a copy waits this long for a lost station, then holds it
 STATION_POLL_S = 10
+LIVE_LOCK_WAIT_S = 2.0      # a live change waits this long for the receiver; a recovery holds it longer
 RETUNE_SETTLE_S = 0.5       # IQ dropped this long after a retune's replies: still the old frequency
 TX_STATES = ('PTT_REQUESTED', 'TRANSMITTING', 'UNKEY_REQUESTED')  # the radio's interlock while keyed
 TX_HOLD_S = 0.15            # after key-up: the DAX-IQ of the transmission arrives after the status line
@@ -290,6 +292,10 @@ def rfgain_steps(reply):
 def rx_args(vals):
     """' rxant=ANT1 loopa=1 ...' for a radio command."""
     return ''.join(f' {k}={int(v) if isinstance(v, bool) else v}' for k, v in vals.items() if v is not None)
+
+
+class Recovering(RuntimeError):
+    """A live change refused at once: a recovery from a radio outage holds the receiver."""
 
 
 class StationExists(RuntimeError):
@@ -1099,12 +1105,23 @@ class FlexIQReceiver:
         self.rx = rx
         self._target.update({k: rx[k] for k in RX_KEYS if k in rx})
 
+    @contextlib.contextmanager
+    def _live_lock(self):
+        """The receiver's lock for a live change, or Recovering after LIVE_LOCK_WAIT_S: an outage
+        holds it for minutes, and the change must not hold up the caller that long."""
+        if not self._lock.acquire(timeout=LIVE_LOCK_WAIT_S):
+            raise Recovering("recovering from a radio outage: try again once it is back")
+        try:
+            yield
+        finally:
+            self._lock.release()
+
     def set_rx(self, change):
         """Change our pan's receive path in place: any of rxant (one the pan offers), loopa, loopb
         (true or false), rfgain (in the radio's steps).  What the radio then reports is what we run
         with; a refusal puts back what it reported before.  Returns a line for the GUI; raises
         ValueError for a value the radio does not offer, RuntimeError when the radio refuses."""
-        with self._lock:
+        with self._live_lock():
             conn, pan, sl = self.conn, self._pan_id, self._slice_id
             if self.state != "live" or not conn or pan is None or sl is None:
                 raise RuntimeError("[Flex] Not live: nothing to change")
@@ -1270,7 +1287,7 @@ class FlexIQReceiver:
         IQ is dropped until RETUNE_SETTLE_S after the move.  A refusal raises once our pan and slice are
         confirmed back where they were; when that cannot be confirmed, SparkGap halts (decoding a frequency
         we do not know is worse than stopping) and it raises."""
-        with self._lock:
+        with self._live_lock():
             conn, sl = self.conn, self._slice_id
             if self.state != "live" or not conn or self._pan_id is None or sl is None:
                 raise RuntimeError("[Flex] Not live: nothing to retune")

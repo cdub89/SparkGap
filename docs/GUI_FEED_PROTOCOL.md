@@ -79,7 +79,7 @@ Who this SparkGap is and the settings it runs with.
 ```json
 {"type": "hello", "v": 1, "host": "shack-pc", "build": "06e710d",
  "call": "W1AW", "decoder": "itila2",
- "config": {"callsign": "W1AW", "cw_decoder": "itila2",
+ "config": {"callsign": "W1AW", "cw_decoder": "itila2", "itila2_afc": false,
             "sample_rate": 96000, "flex_daxiq_channel": 2,
             "telnet_port": 7300, "enable_ft8": false,
             "spot_rule": "repeat", "spot_rule_cq_groups": true,
@@ -295,7 +295,9 @@ Loops are shared by every pan on that antenna and RF gain by every pan on the
 same SCU, so either can also change under the copy; `status` shows what the
 radio reports. One change runs at a time: another sent
 meanwhile is answered `busy: a change is under way`. A copy already on that
-band answers ok with `already on 40m`.
+band answers ok with `already on 40m`. While the copy is recovering from a radio
+outage, a change is refused within about 2 seconds with an error starting
+`recovering`, rather than waiting out the outage.
 
 On success the radio's pan and slice move first. If the radio refuses, nothing
 changes and its error is returned; if the old frequency cannot be confirmed
@@ -313,9 +315,12 @@ nothing from the old band arrives after the new `hello`. A client should treat a
   frequency; with `gate_harmonic_filter` on (default off), a call spotted on the
   old band can hold back a spot of the same call at a harmonic frequency on the
   new band for the gate's window.
-- The join code also grants control: anyone who can open the feed can change the
-  band. A feed on loopback with no join code can be changed by any local
-  program.
+- The copy's own join code grants control: anyone who can open the feed with it
+  can change the band. A feed on loopback with no join code can be changed by
+  any local program. The SparkGap server keeps the copy's code on its machine
+  and opens the feed as `/feed?view` for a browser: a `control` sent on such a
+  connection is refused with `view only: settings change through the server`.
+  Browsers change settings through the server's own commands.
 
 ## Keeping the connection
 

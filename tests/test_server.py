@@ -304,6 +304,24 @@ def test_a_copy_that_cannot_change_band_live_is_restarted_on_it(server: Server, 
         feed.stop()
 
 
+def test_a_recovering_copy_is_neither_moved_nor_restarted(server: Server, seat: Seat) -> None:  # noqa: F811
+    feed = _copy_on_feed(seat, (False, "recovering from a radio outage: try again once it is back"))
+    try:
+        seat.start("dallas2")
+        pid = seat.pid("dallas2")
+        r = _set_band(server, "20m")
+        assert not r["ok"] and "recovering" in r["error"] and "nothing changed" in r["error"]
+        assert seat.pid("dallas2") == pid and seat.band(seat.instance("dallas2")) == "40m"
+    finally:
+        feed.stop()
+
+
+def test_a_browsers_feed_is_opened_view_only() -> None:
+    req = sparkgap_server.feed_request
+    assert req("127.0.0.1", 7321, "ABCDEF", view=True).startswith(b"GET /feed?view ")
+    assert req("127.0.0.1", 7321, "ABCDEF").startswith(b"GET /feed ")
+
+
 def test_feed_control_without_a_feed_is_no_answer() -> None:
     s = socket.socket()
     s.bind(("127.0.0.1", 0))

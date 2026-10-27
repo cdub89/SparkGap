@@ -11,7 +11,8 @@ A join code is required whenever bind is not a loopback address: 6 characters, c
 dashes ignored. A fresh one: python3 feed_server.py --new-code
 "web": true also serves the browser console (web/) at http://<bind>:<port>/.
 "port": "auto" (the default) takes the first free port of AUTO_PORTS, 7321 to 7339: 7320 is the
-machine's SparkGap server (sparkgap_server.py), which passes each copy's feed through to SparkGap Web.
+machine's SparkGap server (sparkgap_server.py), which passes each copy's feed through to
+SparkGap Web.
 """
 
 from __future__ import annotations
@@ -48,6 +49,9 @@ PROTOCOL = "sparkgap.v1"
 FEED_VERSION = 1
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 PATH = "/feed"
+VIEW_QUERY = "view"  # /feed?view: no control messages (the server's pass-through for browsers)
+# a live change refused while the radio is being recovered: its error starts with this
+RECOVERING = "recovering"
 CODE_PROTOCOL = "sparkgap.code."  # a browser offers its join code as this subprotocol + code
 # browser clients learn of a refused code from these close codes (they cannot read the HTTP status)
 CLOSE_WRONG_CODE, CLOSE_LOCKED_OUT, CLOSE_FULL = 4401, 4429, 4503
@@ -191,6 +195,7 @@ class Client:
     since: float = field(default_factory=time.time)
     dropped_rows: int = 0
     closed: bool = False
+    view: bool = False  # view only: control messages refused
 
 
 def build_id() -> str | None:
@@ -504,9 +509,10 @@ class FeedServer:
         return False
 
     async def _handshake(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, seen: dict[str, Any]
     ) -> bool | None:
-        """True: a client to serve. False: refused. None: a page served, or https turned away."""
+        """True: a client to serve. False: refused. None: a page served, or https turned away.
+        seen["view"] is set for a view-only request (/feed?view)."""
 
         async def request() -> bytes | None:
             first = await reader.readexactly(1)
@@ -533,7 +539,8 @@ class FeedServer:
                 headers[k.strip().lower()] = v.strip()
         if len(parts) != 3 or parts[0] != "GET":
             return self._reject(writer, 405, "Method Not Allowed")
-        path = parts[1].split("?")[0]
+        path, _, query = parts[1].partition("?")
+        seen["view"] = VIEW_QUERY in query.split("&")
         if path != PATH:
             if self.web and headers.get("upgrade", "").lower() != "websocket":
                 return self._serve_file(writer, path)
@@ -652,8 +659,9 @@ class FeedServer:
             writer.close()
             return
         self.pending += 1
+        seen: dict[str, Any] = {}
         try:
-            accepted = await self._handshake(reader, writer)
+            accepted = await self._handshake(reader, writer, seen)
         finally:
             self.pending -= 1
         if not accepted:
@@ -661,7 +669,7 @@ class FeedServer:
                 log.info("GUI feed: refused %s", peer)
             writer.close()
             return
-        c = Client(writer, peer)
+        c = Client(writer, peer, view=bool(seen.get("view")))
         for msg in (self.hello, self.snapshot()):
             c.text.append(encode_frame(OP_TEXT, json.dumps(msg, separators=(",", ":")).encode()))
         c.ready.set()
@@ -747,6 +755,8 @@ class FeedServer:
             result = {"type": "control_result", "id": rid, "ok": ok, ("message" if ok else "error"): text}
             self._call(self._queue, c, encode_frame(OP_TEXT, json.dumps(result).encode()))
 
+        if c.view:
+            return reply(False, "view only: settings change through the server")
         if not isinstance(change, dict) or not change:
             return reply(False, "set must be an object")
         if self.on_control is None:

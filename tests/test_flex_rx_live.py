@@ -1,8 +1,11 @@
 """Our pan's receive path (antenna, loops, RF gain) read from the radio, changed live, and restored
 from what the radio last reported."""
 
+import threading
+
 import pytest
 
+import flex_iq
 from flex_iq import FlexIQReceiver, pan_rx, rfgain_steps
 from tests.flex_fake_radio import FakeConnection, FakeRadio, use_fake_radio
 
@@ -134,6 +137,31 @@ def test_not_live_changes_nothing(monkeypatch: Monkey) -> None:
     with pytest.raises(RuntimeError, match="Not live"):
         rx.set_rx({"loopa": True})
     assert radio.log == []
+
+
+def test_a_live_change_during_a_recovery_is_refused_at_once(monkeypatch: Monkey) -> None:
+    radio, rx = _live(monkeypatch)
+    monkeypatch.setattr(flex_iq, "LIVE_LOCK_WAIT_S", 0.05)
+    held, done = threading.Event(), threading.Event()
+
+    def recovery() -> None:  # an outage holds the receiver's lock
+        with rx._lock:
+            held.set()
+            done.wait(5)
+
+    t = threading.Thread(target=recovery)
+    t.start()
+    try:
+        held.wait(2)
+        n = len(radio.log)
+        with pytest.raises(flex_iq.Recovering, match="^recovering"):
+            rx.set_rx({"rfgain": 8})
+        with pytest.raises(flex_iq.Recovering):
+            rx.retune(7_040_000)
+        assert [c for c in _sent(radio, n) if c != "ping"] == []  # the heartbeat goes on
+    finally:
+        done.set()
+        t.join()
 
 
 def test_after_a_change_the_target_is_what_the_radio_reported(monkeypatch: Monkey) -> None:

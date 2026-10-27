@@ -71,6 +71,7 @@ def _gui_settings(cfg, sample_rate):
     eff = {
         'callsign': cfg.get('callsign', ''),
         'cw_decoder': cfg.get('cw_decoder', 'itila2'),
+        'itila2_afc': bool(cfg.get('itila2_afc', False)) if cfg.get('cw_decoder', 'itila2') == 'itila2' else None,
         'sample_rate': sample_rate,
         'flex_daxiq_channel': cfg.get('flex_daxiq_channel', 1) if cfg.get('sdr_type') == 'flex' else None,
         'telnet_port': cfg.get('telnet_port', 7300),

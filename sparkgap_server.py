@@ -50,7 +50,9 @@ from feed_server import (
     OP_PING,
     OP_PONG,
     OP_TEXT,
+    RECOVERING,
     SERVER_PORT,
+    VIEW_QUERY,
     FeedServer,
     ProtocolError,
     accept_key,
@@ -78,6 +80,7 @@ HELP_PATH = "/help"
 STATE_EVERY_S = 2.0
 PING_EVERY_S = 20.0
 MAX_CLIENTS = 16
+MAX_PROXIED = 32  # browser feeds passed through to copies, all copies together
 MAX_QUEUED_OPS = 8
 MAX_PENDING = 32  # connections still sending their request: more are closed at once
 LOG_KEPT = 200  # server log lines kept for the web console
@@ -174,6 +177,7 @@ class Server:
         self.ops: concurrent.futures.ThreadPoolExecutor = concurrent.futures.ThreadPoolExecutor(1)
         self.queued = 0
         self.pending = 0
+        self.proxied = 0
         self.conns: set[asyncio.StreamWriter] = set()  # every open connection, closed at shutdown
         self.listener: asyncio.Server | None = None
         self.local_listener: asyncio.Server | None = None  # loopback, for a network bind
@@ -236,8 +240,11 @@ class Server:
         last_ping = time.monotonic()
         while True:
             try:
-                self.state = await asyncio.to_thread(self._snapshot)
-                self._broadcast(self.state)
+                if self.clients:
+                    self.state = await asyncio.to_thread(self._snapshot)
+                    self._broadcast(self.state)
+                else:
+                    self.state = {}  # nobody watching: no reads, nothing stale for the next one
             except Exception:
                 log.exception("Server: state")
             if time.monotonic() - last_ping > PING_EVERY_S:
@@ -297,6 +304,7 @@ class Server:
         except (
             asyncio.TimeoutError,
             asyncio.IncompleteReadError,
+            asyncio.LimitOverrunError,
             ConnectionError,
             ProtocolError,
             OSError,
@@ -346,6 +354,8 @@ class Server:
     def _code_ok(self, host: str, given: str) -> bool | None:
         """True for the right code, False for a wrong one, None while host is locked out."""
         now = time.monotonic()
+        for h in [h for h, m in self.misses.items() if not m or now - m[-1] > LOCKOUT_S]:
+            del self.misses[h]
         misses = self.misses.get(host, collections.deque())
         while misses and now - misses[0] > LOCKOUT_S:
             misses.popleft()
@@ -491,7 +501,8 @@ class Server:
         return self.seat.change(name, settings, live=self._live_band, live_rx=self._live_rx)
 
     def _live_band(self, name: str, band: str) -> str | None:
-        """Ask the running copy to move to band in place; its answer, or None to restart it."""
+        """Ask the running copy to move to band in place; its answer, None to restart it, or
+        SeatError while it recovers from a radio outage."""
         target = self._feed_target(name)
         if target is None:
             return None
@@ -500,6 +511,8 @@ class Server:
             log.warning("Server: %s gave no answer to a live band change: restarting it", name)
             return None
         ok, text = answer
+        if not ok and text.startswith(RECOVERING):
+            raise SeatError(f"{name}: {text}; nothing changed")  # a restart would wait the same way
         if not ok:
             log.info("Server: %s did not change band live (%s): restarting it", name, text)
             return None
@@ -544,11 +557,15 @@ class Server:
         name: str,
     ) -> None:
         """The browser's feed for copy `name`: the server opens the copy's feed on this machine
-        with the copy's own join code, then passes frames through unchanged both ways."""
+        with the copy's own join code, view only, then passes frames through unchanged both ways.
+        Settings change only through the server's own commands (its lock and the config write)."""
         protocol = FEED_PROTOCOL if FEED_PROTOCOL in offered else None
         self._accept(writer, headers, protocol)
         if not ok:
             self._refuse(writer, ok)
+            return
+        if self.proxied >= MAX_PROXIED:
+            self._refuse(writer, True, "too many connections")
             return
         target = await asyncio.to_thread(self._feed_target, name)
         if target is None:
@@ -560,7 +577,7 @@ class Server:
         except (OSError, asyncio.TimeoutError):
             self._refuse(writer, True, f"{name}: no answer on its feed port")
             return
-        up_w.write(feed_request(host, port, code))
+        up_w.write(feed_request(host, port, code, view=True))
         try:
             reply = await asyncio.wait_for(up_r.readuntil(b"\r\n\r\n"), 5)
         except (asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
@@ -577,6 +594,7 @@ class Server:
                     await dst.drain()
 
         # either side ending ends both: a half-open copy must not hold the browser's connection
+        self.proxied += 1
         tasks = [
             asyncio.ensure_future(pipe(reader, up_w)),
             asyncio.ensure_future(pipe(up_r, writer)),
@@ -584,6 +602,7 @@ class Server:
         try:
             await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         finally:
+            self.proxied -= 1
             for t in tasks:
                 t.cancel()
             up_w.close()
@@ -606,11 +625,12 @@ class Server:
         return "127.0.0.1", int(st["feed_port"]), st["feed_code"]
 
 
-def feed_request(host: str, port: int, code: str | None) -> bytes:
-    """The opening request for a copy's feed on this machine, with the copy's own join code."""
+def feed_request(host: str, port: int, code: str | None, view: bool = False) -> bytes:
+    """The opening request for a copy's feed on this machine, with the copy's own join code;
+    view only (no control messages) for a browser's feed passed through."""
     key = base64.b64encode(secrets.token_bytes(16)).decode()
     req = [
-        "GET /feed HTTP/1.1",
+        f"GET /feed{'?' + VIEW_QUERY if view else ''} HTTP/1.1",
         f"Host: {host}:{port}",
         "Upgrade: websocket",
         "Connection: Upgrade",

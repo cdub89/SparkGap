@@ -744,6 +744,16 @@ def test_a_control_without_a_usable_id_gets_no_answer(feed: FeedServer, rid: obj
     assert c.json("control_result")["id"] == "r2"
 
 
+def test_a_view_only_feed_refuses_control(feed: FeedServer) -> None:
+    asked: list[dict] = []
+    feed.on_control = lambda change, reply: (asked.append(change), reply(True, "done"))
+    c = WS(feed.port, path="/feed?view")
+    c.json("snapshot")
+    _control(c, {"band": "20m"})
+    assert c.json("control_result")["error"] == "view only: settings change through the server"
+    assert asked == []
+
+
 def test_a_control_without_settings_is_refused(feed: FeedServer) -> None:
     feed.on_control = lambda change, reply: reply(True, "done")
     c = WS(feed.port)

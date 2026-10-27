@@ -2,6 +2,25 @@
 
 Pre-1.0 alpha. No versioned releases yet — entries are dated.
 
+## 2026-10-27
+
+### Changed (SparkGap server and SparkGap Web, #94)
+
+- **`gui_feed.port` defaults to `"auto"`**: the first free port from 7321 to
+  7339, since the server takes 7320. A `gui_feed` block without a port moves off
+  7320, so a `http://host:7320/` bookmark for a copy's own page stops answering.
+  Set `"port": 7320` to keep it, without the server running on that machine.
+- **SparkGap Web connects to servers only**: saved direct connections to a
+  copy's feed are dropped the first time the new page loads. Add the server
+  instead (Settings, Servers).
+- **`docs/CONSOLE.md` is replaced by `docs/WEBUI.md`.**
+- **A copy's feed sends `hello` again mid-connection** after a live band change,
+  with the new bands. A console client should treat each `hello` as a fresh
+  start for that copy (`docs/GUI_FEED_PROTOCOL.md`).
+- **Settings change only through the server.** A browser's feed passed through
+  the server is view only, and a copy's own join code, which stays on its
+  machine, is the only one that can send a `control` message.
+
 ## 2026-06-18
 
 ### Changed (spot-quality — op report "happens constantly")

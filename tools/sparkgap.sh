@@ -89,7 +89,11 @@ procinfo() {  # uptime as the console shows it, CPU % of one core over CPU_SAMPL
   t0=$(ticks "$1") && sleep "$CPU_SAMPLE_S" && t1=$(ticks "$1") || { echo "up $up, $BOLD$CYAN$((kb / 1024)) MB$OFF"; return 0; }
   echo "up $up, $BOLD${CYAN}cpu $((100 * (t1 - t0) / CPU_SAMPLE_S / $(getconf CLK_TCK)))%$OFF, $BOLD$CYAN$((kb / 1024)) MB$OFF"
 }
-bandlabel() { local b; b=$(band "$1"); echo "${BOLD}Band: ${b^^}$OFF"; }
+bandlabel() {  # the band, and AFC when the config turns it on
+  local b a; b=$(band "$1")
+  a=$(python3 -c "import json,sys; print(' AFC' if json.load(open(sys.argv[1])).get('itila2_afc') else '')" "$(cfg "$1")")
+  echo "${BOLD}Band: ${b^^}$a$OFF"
+}
 newest_log() { ls -t "$R"/logs/"$1"_*.log 2>/dev/null | head -1; }
 # a log's ERROR lines and the exception that ends a traceback
 errors_in() { grep -E '^[0-9:]+ ERROR |^[A-Za-z_.]*(Error|Exception): ' "$1"; }
