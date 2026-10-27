@@ -209,8 +209,10 @@ The station (absent in file mode except `radio`):
   whether keyed IQ reaches the decoders as silence (`tx_mute`) and how many
   packets it has silenced (`muted_packets`), and
   `rx`: our pan's receive path as the radio reports it (`rxant`, `loopa`,
-  `loopb`, `rfgain`, `null` when the radio reports none), the antennas the pan
-  offers (`ant_list`) and its RF gain `[low, high, step]` (`rfgain_range`).
+  `loopb`, `rfgain`, `null` when the radio reports none; a loop only on a
+  model with its jacks: Loop A on the FLEX-6500, 6700 and 6700R, Loop B on the
+  6700 and 6700R), the antennas the pan offers (`ant_list`) and its RF gain
+  `[low, high, step]` (`rfgain_range`).
   The HPSDR C receiver adds `packets`, `lost` and `pkt_per_s`; file mode adds
   `position_s`.
 - `telnet`: the spot port and how many telnet clients are connected.
@@ -275,7 +277,7 @@ Changes the running SparkGap, live.
 - `set`: a non-empty object, else the answer is the error `set must be an
   object`. Either `band` (a band name such as `40m`) or `rx`, our pan's
   receive path: any of `rxant` (one of the pan's `ant_list`), `loopa` and
-  `loopb` (true or false, only when the radio reports them for our pan) and
+  `loopb` (true or false, only on a model that has that loop) and
   `rfgain` (in the radio's `rfgain_range` steps), as in
   `{"rx": {"rxant": "ANT2", "rfgain": 16}}`.
 

@@ -69,7 +69,8 @@ class FakeRadio:
     unanswered: dict[str, int] = field(default_factory=dict)  # prefix -> times it goes unanswered
     slices_locked: bool = False  # new slices come up locked (the radio keeps a band's lock)
     ant_list: str = "ANT1,ANT2,RX_A,XVTA"  # what a pan offers (FLEX-6400M)
-    loops: bool = False  # receive loops in pan status (a FLEX-6700 has them; a 6400M does not)
+    loops: bool = False  # loopa/loopb in pan status (all models report them; some have the jacks)
+    model: str = "FLEX-6400M"
     rfgain_info: str = "-8,32,8"  # low,high,step
     conns: list["FakeConnection"] = field(default_factory=list)
     log: list[tuple[int, str]] = field(default_factory=list)  # (client handle, command)
@@ -172,7 +173,7 @@ class FakeRadio:
         words = cmd.split()
         kv = dict(w.split("=", 1) for w in words if "=" in w)
         if cmd == "info":
-            return "0", f'model="FLEX-6400M",name="{self.nickname}",callsign="N0CALL"', []
+            return "0", f'model="{self.model}",name="{self.nickname}",callsign="N0CALL"', []
         if cmd.startswith("sub "):
             return "0", "", self.status(words[1])
         if cmd.startswith("client program"):

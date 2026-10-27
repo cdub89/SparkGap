@@ -250,11 +250,23 @@ def pan_slices(lines, pan_id):
 
 
 RX_KEYS = ('rxant', 'loopa', 'loopb', 'rfgain')   # our pan's receive path, as the radio reports it
+# receive loops by model (FLEX-6000 Hardware Reference Manual 7.17-7.20: RX ANT-A in/out, RX ANT-B on
+# the 6700/6700R only).  Other models report loopa=0 loopb=0 with no jacks behind them (6400M, 6600).
+LOOPS_BY_MODEL = {'FLEX-6500': ('loopa',), 'FLEX-6700': ('loopa', 'loopb'), 'FLEX-6700R': ('loopa', 'loopb')}
 
 
-def pan_rx(lines, pan_id, out=None):
-    """Our pan's receive path from its status lines, folded into out: rxant, loopa, loopb, rfgain
-    and the antennas the pan offers (ant_list).  A loop is shared by every pan on its antenna and
+def radio_loops(lines):
+    """The receive loops the radio has, from its reply to "info" (model="FLEX-6700")."""
+    for line in lines:
+        m = re.match(r'R\d+\|0\|.*?\bmodel="([^"]*)"', line)
+        if m:
+            return LOOPS_BY_MODEL.get(m.group(1).strip(), ())
+    return ()
+
+
+def pan_rx(lines, pan_id, out=None, loops=('loopa', 'loopb')):
+    """Our pan's receive path from its status lines, folded into out: rxant, the loops the radio
+    has (loops), rfgain and the antennas the pan offers (ant_list).  A loop is shared by every pan on its antenna and
     RF gain by every pan on the same SCU, so another station can change them under us."""
     out = dict(out or {})
     tag = re.compile(r'\|display pan 0x0*%x( .*|$)' % pan_id, re.I)
@@ -265,7 +277,7 @@ def pan_rx(lines, pan_id, out=None):
         kv = dict(p.split('=', 1) for p in m.group(1).split() if '=' in p)
         if 'rxant' in kv:
             out['rxant'] = kv['rxant']
-        for k in ('loopa', 'loopb'):
+        for k in loops:
             if k in kv:
                 out[k] = kv[k] == '1'
         if 'rfgain' in kv:
@@ -781,6 +793,7 @@ class FlexIQReceiver:
                         'loopb': None if loopb is None else bool(loopb),
                         'rfgain': None if rfgain is None else int(rfgain)}
         self.rx = {}                  # our pan's receive path as the radio last reported it (pan_rx)
+        self.loops = ()               # the receive loops this radio has (radio_loops), set on connect
         self.rfgain_range = None      # (low, high, step) from display pan rfgain_info
         self.station = station or STATION_NAME
         self.udp_port = udp_port
@@ -824,7 +837,7 @@ class FlexIQReceiver:
     @property
     def rx_path(self):
         """' rxant=.. loopa=.. loopb=..' for our pan and slice, from the target."""
-        return rx_args({k: self._target[k] for k in ('rxant', 'loopa', 'loopb')})
+        return rx_args({k: self._target[k] for k in ('rxant', *self.loops)})
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -863,6 +876,7 @@ class FlexIQReceiver:
             self._own_station = None
         conn = self.conn = FlexConnection(self.ip, self.control_port)
         conn.open()
+        self.loops = radio_loops(conn.cmd("info"))
         self.station = station_name(conn, self._station_cfg)
         register_program(conn)
         self._clients = conn.cmd("sub client all", settle=0.5)
@@ -996,7 +1010,7 @@ class FlexIQReceiver:
         # locked, a click on its VFO (SmartSDR, Maestro, front panel) cannot move it or our pan (FlexLib Slice.Lock)
         conn.ok(f"slice {self._slice_id} locked", conn.cmd(f"slice lock {self._slice_id}"))
         # what the radio now reports for our pan's receive path, and the RF gain steps it offers
-        self.rx = pan_rx(conn.cmd("sub pan all", settle=0.3), self._pan_id)
+        self.rx = pan_rx(conn.cmd("sub pan all", settle=0.3), self._pan_id, loops=self.loops)
         self.rfgain_range = rfgain_steps(conn.reply(conn.cmd(f"display pan rfgain_info 0x{self._pan_id:08x}")))
         log.info("[Flex] Receive path:%s (antennas %s; RF gain %s)", rx_args({k: self.rx.get(k) for k in RX_KEYS}),
                  ','.join(self.rx.get('ant_list', [])) or "not reported",
@@ -1098,7 +1112,7 @@ class FlexIQReceiver:
             if m and int(m.group(1), 16) == self._station_handle:
                 self._station_lost = True
         if self._pan_id is not None:
-            self._note_rx(pan_rx(lines, self._pan_id, self.rx))
+            self._note_rx(pan_rx(lines, self._pan_id, self.rx, self.loops))
         if ptt_ours(lines) and not self._ptt_warned:
             self._ptt_warned = True
             log.warning("[Flex] The radio's key and PTT jacks now follow the SparkGap station, "
@@ -1140,8 +1154,8 @@ class FlexIQReceiver:
                     if v not in ants:
                         raise ValueError(f"antenna {v!r} is not one this pan offers ({', '.join(ants) or 'none reported'})")
                 elif k in ('loopa', 'loopb'):
-                    if k not in self.rx:   # only what the radio reports for our pan (a loop: the 6700's)
-                        raise ValueError(f"the radio reports no {k} for our pan")
+                    if k not in self.rx:   # only a loop this model has, as reported for our pan
+                        raise ValueError(f"this radio has no {k}")
                     if not isinstance(v, bool):
                         raise ValueError(f"{k} must be true or false")
                 elif k == 'rfgain':
@@ -1165,7 +1179,7 @@ class FlexIQReceiver:
                     more = conn.cmd(f"slice set {sl}{rx_args(path)}", settle=0.3)
                     ok = conn.ok(f"slice {sl}{rx_args(path)}", more)
                     lines += more
-                self._note_rx(pan_rx(lines, pan, self.rx))
+                self._note_rx(pan_rx(lines, pan, self.rx, self.loops))
                 return ok
 
             if send(want):

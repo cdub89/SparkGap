@@ -6,7 +6,7 @@ import threading
 import pytest
 
 import flex_iq
-from flex_iq import FlexIQReceiver, pan_rx, rfgain_steps
+from flex_iq import FlexIQReceiver, pan_rx, radio_loops, rfgain_steps
 from tests.flex_fake_radio import FakeConnection, FakeRadio, use_fake_radio
 
 Monkey = pytest.MonkeyPatch
@@ -16,7 +16,7 @@ PAN = 0x4000_0000
 def _live(
     monkeypatch: Monkey, loops: bool = True, **kw: object
 ) -> tuple[FakeRadio, FlexIQReceiver]:
-    radio = use_fake_radio(monkeypatch, loops=loops)
+    radio = use_fake_radio(monkeypatch, loops=loops, model="FLEX-6700" if loops else "FLEX-6400M")
     rx = FlexIQReceiver("192.0.2.1", freq_hz=14_044_000, sample_rate=48_000, daxiq_channel=4, **kw)  # pyright: ignore[reportArgumentType]
     rx.start()
     assert rx.state == "live"
@@ -122,11 +122,32 @@ def test_a_change_on_the_radio_is_what_a_reconnect_restores(monkeypatch: Monkey)
     assert rx.rx_path == " rxant=RX_A loopa=0 loopb=1"
 
 
+def test_loops_follow_the_model() -> None:
+    assert radio_loops(['R1|0|model="FLEX-6700",name="Shack"']) == ("loopa", "loopb")
+    assert radio_loops(['R1|0|model="FLEX-6500",name="Shack"']) == ("loopa",)
+    assert radio_loops(['R1|0|model="FLEX-6600",name="Shack"']) == ()
+    assert radio_loops([]) == ()
+
+
+def test_a_model_without_loops_offers_none_though_its_status_lists_them(
+    monkeypatch: Monkey,
+) -> None:
+    radio = use_fake_radio(monkeypatch, loops=True, model="FLEX-6600")
+    rx = FlexIQReceiver(
+        "192.0.2.1", freq_hz=14_044_000, sample_rate=48_000, daxiq_channel=4, loopa=True
+    )
+    rx.start()
+    assert "loopa" not in rx.rx and rx.health()["rx"]["loopb"] is None
+    assert not any("loopa" in c for _, c in radio.log)  # the config's loop is never sent
+    with pytest.raises(ValueError, match="has no loopa"):
+        rx.set_rx({"loopa": True})
+
+
 def test_a_loop_the_radio_does_not_report_is_not_offered(monkeypatch: Monkey) -> None:
     radio, rx = _live(monkeypatch, loops=False)  # a 6400M: no loops in its pan status
     assert "loopa" not in rx.rx and rx.health()["rx"]["loopa"] is None
     n = len(radio.log)
-    with pytest.raises(ValueError, match="reports no loopa"):
+    with pytest.raises(ValueError, match="has no loopa"):
         rx.set_rx({"loopa": True})
     assert _sent(radio, n) == []
 

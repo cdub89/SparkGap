@@ -10,7 +10,7 @@ Monkey = pytest.MonkeyPatch
 
 def _start(monkeypatch: Monkey, refused: str = "", **kw: object) -> tuple[FakeRadio, list[str]]:
     """Start a lone copy on 20m against a fake radio; a command starting with `refused` is refused."""
-    radio = use_fake_radio(monkeypatch)
+    radio = use_fake_radio(monkeypatch, model="FLEX-6700")  # a radio with both loops
     if refused:
         radio.refuse[refused] = "50000016"
     rx = FlexIQReceiver("192.0.2.1", freq_hz=14_246_000, sample_rate=192_000, daxiq_channel=3, **kw)  # pyright: ignore[reportArgumentType]
