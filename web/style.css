@@ -102,6 +102,9 @@ main { flex: 1; display: flex; gap: 12px; min-height: 0; }
 .win .x { flex: 1; min-width: 0; word-break: break-all; display: flex; flex-direction: column; gap: 3px; }
 .win .alt { color: var(--muted); opacity: .75; }
 .win .best { font-weight: 600; }
+.win .worse { opacity: .75; }
+.helpbody { display: flex; flex-direction: column; gap: 10px; }
+.newslist { margin: 4px 0 0; padding-left: 18px; line-height: 1.5; }
 .win .nothing { color: var(--faint); font-style: italic; }
 .win .c { color: var(--faint); font-size: 10px; }
 .win b { color: var(--accent); }

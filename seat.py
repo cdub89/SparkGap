@@ -469,7 +469,7 @@ class Seat:
             "bands_known": self.bands_known(i),
             "validation": cfg.get("spot_validation", "normal") or "off",
             "call_source": cfg.get("spot_validation_calls") or "scp",
-            "afc": bool(cfg.get("itila2_afc", False)),  # shown only: set in its config
+            "afc": bool(cfg.get("itila2_afc", False)),
             **{k: bool(cfg.get(k, False)) for k in RULE_FLAGS},
             "record": bool(cfg.get("record_wav")),
             # a Flex copy's receive path as its config sets it at start (None: the radio's own)
@@ -519,6 +519,10 @@ class Seat:
                 if not isinstance(value, bool):
                     raise SeatError(f"{key} must be true or false")
                 changes[key] = value
+            elif key == "afc":
+                if not isinstance(value, bool):
+                    raise SeatError("afc must be true or false")
+                changes["itila2_afc"] = value
             elif key == "record":
                 if not isinstance(value, bool):
                     raise SeatError("record must be true or false")

@@ -22,7 +22,7 @@ const RX_KEYS = ["antenna", "loop_a", "loop_b", "rf_gain"];  // a Flex copy's re
 const SHARED_NOTE = "Loops are shared by every pan on that antenna, and RF gain by every pan on the same receiver (SCU): "
   + "a change here changes them for every copy and program using it.";
 const HINTS = {
-  afc: "Each signal's decoder follows its keyed tone (itila2_afc). Shown only: set in the skimmer's config.",
+  afc: "Each signal's decoder follows its keyed tone, which helps weak and slightly off-tune signals (itila2_afc). Applying restarts the skimmer.",
   validation: "A confidence score decides which calls are spotted: permissive spots more, aggressive fewer (docs/ITILA2.md). Off: a set number of copies, 2 to 4 by how common the call's pattern is.",
   call_source: "Calls known from this list score higher in validation: SCP, calls RBN skimmers heard in the last days, or those plus the SKCC roster.",
 };
@@ -47,6 +47,8 @@ const PEAK_FROM_PX = 1;  // from this many pixels a bin, peaks are drawn instead
 const FREQ_MATCH_KHZ = 0.15;
 const SEARCH_MAX = 8;
 const NO_FIT = 999.0;
+const MODES = ["settings", "info", "help"];  // the dialog's header
+const NEWS_SHOWN = 4;  // What's new entries shown in the dialog; the guide has them all
 const NOTHING = '<span class="nothing">(nothing decoded)</span>';  // a path whose window decoded no text
 const DECODED = ["both", "wide", "narrow", "lowest"];  // which readings of each window the panel shows
 const ZOOM_STEPS = [["Full", 1], ["Half", 2], ["Quarter", 4]];  // the zoom button: name and fraction of the band
@@ -1295,11 +1297,12 @@ function renderDetail() {
   $("dCopy").hidden = !(d && d.windows.length);
   $("dWins").innerHTML = (d ? d.windows : []).map(r => {
     const rs = readings(r, app.decoded);
-    // with both shown, the lower timing cost is bold (a tie or no fit marks neither)
+    // with both shown, the lower timing cost is marked (a tie or no fit marks neither)
     const k = c => (c === null || c === undefined || c >= NO_FIT ? Infinity : c);
     const best = rs.length > 1 && k(rs[0].cost) !== k(rs[1].cost) ? (k(rs[0].cost) < k(rs[1].cost) ? 0 : 1) : -1;
     return `<div class="win"><span class="t">${r.utc}</span><div class="x">`
-      + rs.map((x, n) => `<span class="${[n ? "alt" : "", n === best ? "best" : ""].join(" ").trim()}">${x.html}</span>`).join("")
+      // the lower cost bright and bold, the higher at 75%, in either place; on a tie the second is dimmed
+      + rs.map((x, n) => `<span class="${best < 0 ? (n ? "alt" : "") : n === best ? "best" : "worse"}">${x.html}</span>`).join("")
       + `<span class="c">${rs.length > 1 || r.altHtml ? rs.map(x => `${rateName(x.rate)} ${costText(x.cost)}`).join("  ·  ") : "cost " + costText(r.cost)}</span>`
       + "</div></div>";
   }).join("");
@@ -1356,11 +1359,16 @@ function currentTab() {
 
 function renderSettings() {
   if ($("modal").hidden) return;
-  // a page from a SparkGap server opens the guide it ships with; one from a copy or a file, GitHub's
-  $("help").href = /^https?:$/.test(location.protocol) && !app.here ? "/help" : HELP_URL;
-  const tabs = settingsTabs(), info = app.mode === "info";
+  const tabs = settingsTabs(), info = app.mode === "info", help = app.mode === "help";
   if (!tabs.some(t => t[0] === app.tab)) app.tab = "servers";
-  seg($("modeSeg"), ["Settings", "Info"], info ? 1 : 0, n => { app.mode = n ? "info" : "settings"; save("mode", app.mode); renderSettings(); });
+  seg($("modeSeg"), ["Settings", "Info", "Help"], MODES.indexOf(app.mode), n => { app.mode = MODES[n]; if (n < 2) save("mode", app.mode); renderSettings(); });  // Help is not remembered
+  $("tabs").hidden = help;
+  $("helpBody").hidden = !help;
+  if (help) {
+    $("tabServers").hidden = $("tabCopy").hidden = $("infoBody").hidden = true;
+    renderHelp();
+    return;
+  }
   $("tabs").innerHTML = tabs.map(([key, label]) => `<button class="tab${key === app.tab ? " on" : ""}" data-tab="${esc(key)}">${esc(label)}</button>`).join("");
   $("tabServers").hidden = info || app.tab !== "servers";
   $("tabCopy").hidden = info || app.tab === "servers";
@@ -1614,7 +1622,7 @@ function copyCards(k, sv, i) {
     <div class="actions"><span class="${run ? "good" : "muted"}">${esc(state)}</span><span class="grow"></span>${btn("show", shown ? "Shown" : "Show", run && !shown)}
       <span class="group">${btn("start", "Start", !run)}${btn("restart", "Restart", run)}${btn("stop", "Stop", run)}</span></div>${err}</section>
     ${radio}<section class="scard wide"><h3><span>SETTINGS</span><span>${run ? `band changes live, the rest by restarting ${esc(i.name)}` : "used at its next start"}</span></h3>
-    <div class="grid setgrid">${row("BAND", bands)}${row("RECORDING", onOff("record", st.record))}${row("CALL VALIDATION", `<div class="inline">${choices("validation", VALIDATION.map(v => [v, v]), valid)}</div>`, HINTS.validation)}${row("KNOWN CALL LIST", choices("call_source", CALL_SOURCES, st.call_source, valid === "off"), HINTS.call_source)}${row("AFC", `<span class="mono">${saved.afc ? "on" : "off"}</span>`, HINTS.afc)}</div>
+    <div class="grid setgrid">${row("BAND", bands)}${row("RECORDING", onOff("record", st.record))}${row("CALL VALIDATION", `<div class="inline">${choices("validation", VALIDATION.map(v => [v, v]), valid)}</div>`, HINTS.validation)}${row("KNOWN CALL LIST", choices("call_source", CALL_SOURCES, st.call_source, valid === "off"), HINTS.call_source)}${row("AFC", onOff("afc", st.afc), HINTS.afc)}</div>
     <details class="adv"${app.advOpen ? " open" : ""}><summary>ADVANCED: SPOT RULE</summary>
     <div class="grid setgrid">${RULE_FLAGS.map(([k2, l, hint]) => row(l.toUpperCase(), onOff(k2, st[k2]), hint)).join("")}</div></details>${bar}</section>`;
 }
@@ -1686,12 +1694,45 @@ function seatTarget(t) {
 }
 
 function openSettings() { app.tab = currentTab(); $("modal").hidden = false; renderSettings(); }
+
+// the guide this page ships with: a SparkGap server's own, else GitHub's
+function guideUrl() { return /^https?:$/.test(location.protocol) && !app.here ? "/help" : HELP_URL; }
+
+function renderHelp() {
+  const news = app.news === undefined ? '<div class="small muted">Loading...</div>'
+    : app.news || `<div class="small muted">See the guide's What's new.</div>`;
+  $("helpBody").innerHTML = `<section class="scard wide"><h3><span>HELP</span></h3>
+    <div class="grid setgrid"><span class="label">GUIDE</span><a href="${esc(guideUrl())}" target="_blank" rel="noopener">SparkGap Web guide</a>
+    <span class="label">KEYS</span><span>Ctrl-F finds a call or kHz on the main screen; with this dialog open it is the browser's own find. Esc closes it.</span></div></section>
+    <section class="scard wide news"><h3><span>WHAT'S NEW</span></h3>${news}</section>`;
+  if (app.news === undefined) loadNews();
+}
+
+// What's new: the newest entries of the guide's own section, as the server renders it
+async function loadNews() {
+  app.news = null;
+  try {
+    if (guideUrl() !== "/help") throw new Error("no server");
+    const doc = new DOMParser().parseFromString(await (await fetch("/help")).text(), "text/html");
+    const head = [...doc.querySelectorAll("h2")].find(h => /what.s new/i.test(h.textContent));
+    const parts = [];
+    for (let n = head && head.nextElementSibling; n && n.tagName !== "H2"; n = n.nextElementSibling) parts.push(n);
+    const items = parts.flatMap(n => n.tagName === "UL" ? [...n.children].slice(0, NEWS_SHOWN) : []);
+    app.news = items.length ? `<ul class="newslist">${items.map(li => `<li>${li.innerHTML}</li>`).join("")}</ul>` : null;
+  } catch (e) { app.news = null; }
+  if (!$("modal").hidden && app.mode === "help") renderHelp();
+}
 function closeSettings() { $("modal").hidden = true; app.editing = -2; app.form = null; $("fSave").disabled = false; }
 
 // ---- input ----
 
 function bindInput() {
-  $("gear").onclick = () => ($("modal").hidden ? openSettings() : closeSettings());
+  $("gear").onclick = () => {
+    if (!$("modal").hidden) return closeSettings();
+    if (app.mode === "help") app.mode = load("mode", "info");  // the gear opens Settings or Info, as last left
+    openSettings();
+  };
+  $("helpBtn").onclick = () => { app.mode = "help"; openSettings(); };
   $("tabs").onclick = e => {
     const t = e.target.closest("[data-tab]");
     if (t) { app.tab = t.dataset.tab; app.editing = -2; renderSettings(); }

@@ -95,6 +95,12 @@ def test_a_setting_is_written_and_a_running_copy_restarted(seat: Seat) -> None:
     assert "live" in out and seat.pid("dallas2") not in (None, before)
 
 
+def test_afc_is_written_to_the_config(seat: Seat) -> None:
+    i = seat.instance("dallas1")
+    assert seat.change("dallas1", {"afc": True}) == "dallas1: afc True"
+    assert seat.config(i)["itila2_afc"] is True and seat.settings(i)["afc"] is True
+
+
 def test_a_stopped_copy_is_only_written(seat: Seat) -> None:
     assert seat.change("dallas1", {"band": "20m"}) == "dallas1: band 20m"
     assert seat.pid("dallas1") is None and seat.band(seat.instance("dallas1")) == "20m"
@@ -108,6 +114,7 @@ def test_a_stopped_copy_is_only_written(seat: Seat) -> None:
         ({"band": "6m"}, "band must be one of: 40m 20m 17m"),
         ({"validation": "loose"}, "validation must be one of"),
         ({"spot_rule_split_runs": "yes"}, "true or false"),
+        ({"afc": "on"}, "afc must be true or false"),
         ({}, "nothing to change"),
     ],
 )

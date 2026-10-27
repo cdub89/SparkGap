@@ -38,14 +38,21 @@ minutes.
   call yet show only their frequency.
 - **Decoded text**, on the right: click a trace or a call to see what SparkGap
   copied from that station, newest first, with its frequency, speed and signal
-  strength. You can select the text, or **Copy** all of it.
+  strength. You can select the text, or **Copy** all of it. With both readings
+  shown, the one SparkGap is surer of (the lower timing cost) is in bold; a
+  reading that copied nothing shows as *(nothing decoded)*.
+- **Switching skimmers**: each skimmer comes back on the signal you last
+  picked on it. Two skimmers that hear the same frequency (two antennas or
+  radios on one band) keep the same signal, so you can compare their copy
+  back and forth.
 - **Search** (Ctrl+F): type a call, some text or a frequency in kHz to jump to
-  it.
+  it. With the ⚙ dialog open, Ctrl+F is the browser's own find instead.
 - **Zoom**: drag to move along the band; Ctrl+scroll or pinch to zoom. The
   **Zoom** button steps through the whole band, half and a quarter. Each
   skimmer opens at the zoom you last left it at, in this browser.
-- **Bottom bar**: how hard the computer is working, how many browsers are
-  watching, and how long the skimmer has been running.
+- **Bottom bar**: how hard the computer is working, how many calls the skimmer
+  has spotted, and how long it has been running.
+- **?**: this guide and what's new.
 
 ## Running a skimmer
 
@@ -53,8 +60,9 @@ Click **⚙**, then the skimmer's tab (its name, such as `shack40`).
 
 - **Start**, **Stop** and **Restart** do what they say. **Show** puts that
   skimmer on the main screen.
-- To change a setting, pick the new value and click **Apply**. You can change
-  several at once; they take effect together. **Discard** forgets them.
+- To change a setting, pick the new value and click **Apply**, which stays at
+  the bottom of the window. You can change several at once; they take effect
+  together. **Discard** forgets them.
 - **Band**: changes straight away while the skimmer runs, in about a second,
   and the waterfall starts over on the new band. Other settings restart the
   skimmer, which takes about half a minute. A skimmer set up to listen at an
@@ -71,6 +79,8 @@ Settings, in plain terms:
   surer ones. Normal suits most stations. Off uses no score: a call is spotted
   once it is copied a set number of times (2, 3 or 4, by how common its
   pattern is), and the known call list is not used.
+- **AFC**: each signal's decoder follows the signal's own tone, which helps
+  weak signals and ones slightly off tune. Changing it restarts the skimmer.
 - **Known call list**: calls on this list count as more likely to be right.
   SCP is the contest call list; RBN adds calls other RBN skimmers heard in the
   past week; RBN + SKCC adds the SKCC roster, good for hand-keyed CW.
@@ -123,6 +133,16 @@ Under **⚙**, **Settings**, **Servers**:
 - **Decoded text**: SparkGap reads each signal twice, through a wide and a
   narrow filter. **Lowest cost** (the default) shows whichever it is surer of;
   you can show both, or only one.
+
+## What's new
+
+- **2026-10-27.** The surer of the two readings is in bold, and a reading that
+  copied nothing says so. AFC can be switched per skimmer. Each skimmer keeps
+  the signal you last picked on it. Ctrl+F finds text inside the ⚙ dialog.
+  Apply stays in view. A band change clears the old signal. Help and this
+  list have their own **?** button.
+- **2026-10-26.** Spots, not consoles, in the bottom bar; a band change
+  counts spots and calls from zero.
 
 ## Setting it up
 
