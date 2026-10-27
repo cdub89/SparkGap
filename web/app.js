@@ -185,6 +185,9 @@ class Instance {
 
   message(m) {
     if (m.type === "hello") {
+      // a hello mid-connection with other bands: a live band change, so the picked signal is gone
+      this.moved = !!this.hello.type && JSON.stringify(this.hello.bands) !== JSON.stringify(m.bands);
+      if (this.moved) { this.selKhz = null; this.selCall = null; }
       this.hello = m;
       if (!this.bands[this.band]) this.band = 0;
       this.windows = []; this.spots.clear(); this.signals.clear(); this.recent.clear();
@@ -879,6 +882,7 @@ function changed(i, what) {
   if (what === "hello" && i === inst() && !app.want) { app.want = i.name; save("current", i.name); }
   if (what === "state") { renderConns(); if (i === inst()) renderState(); return; }
   if (i !== inst()) { if (what === "hello") { renderConns(); renderBands(); } return; }
+  if (what === "hello" && i.moved) { i.moved = false; app.selectedKhz = -1; wf.sel = -1; }
   if (what === "hello") { wf.fit(); renderBands(); renderState(); renderStation(); renderSettings(); renderConns(); renderLadder(); }
   else if (what === "status") { renderStatus(); if (app.mode === "info") renderSettings(); }
   else if (what === "ladder") renderLadder();
@@ -1256,7 +1260,7 @@ function renderView() {
   renderLadder();
 }
 
-function costText(v) { return v === null || v === undefined ? "-" : v >= NO_FIT ? "no fit" : v.toFixed(2); }
+function costText(v) { return v === null || v === undefined ? "--" : v >= NO_FIT ? "no fit" : v.toFixed(2); }
 function rateName(r) { return r === 100 ? "narrow" : r === 200 ? "wide" : "cost"; }
 
 // the readings of a window to show: both, one filter width, or the lower timing cost (a tie or no fit keeps wide)

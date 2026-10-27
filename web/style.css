@@ -256,7 +256,7 @@ details.adv[open] summary { margin-bottom: 10px; }
 .btn.primary { background: var(--accent); color: var(--bg, #000); border-color: var(--accent); }
 #tabCopy { gap: 16px; }
 details.adv { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--edge); }
-.applybar { margin-top: 18px; }
+.applybar { margin-top: 18px; position: sticky; bottom: -18px; z-index: 2; background: var(--sunken); padding-bottom: 14px; }  /* Apply in view without scrolling */
 .conhead { margin-top: 14px; margin-bottom: 6px; }
 .console { height: 260px; overflow-y: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 12px; line-height: 1.5; user-select: text; }
 .console .cl { white-space: pre-wrap; overflow-wrap: anywhere; }
