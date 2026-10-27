@@ -818,6 +818,7 @@ class FlexIQReceiver:
         self._tx_spans = []       # (key-down, key-up) arrival times, newest last
         self.tx_mute = bool(tx_mute)  # flex_tx_mute: IQ that arrives while keyed reaches the decoders as silence
         self.muted_packets = 0
+        self._trace = None   # DIAGNOSTIC: (file, end time, rows)
 
     @property
     def rx_path(self):
@@ -1089,6 +1090,7 @@ class FlexIQReceiver:
             return None
         for state in tx_states(lines):
             self._note_tx(state, time.time())
+            self._trace_row("ilk", state)
         for line in clients_gone(lines):
             log.info("[Flex] Radio reports: %s", line.strip()[:200])
             m = re.search(r'\|client (0x[0-9A-F]+) disconnected', line, re.I)
@@ -1180,6 +1182,26 @@ class FlexIQReceiver:
         elif self._tx_since is not None:
             self._tx_spans = (self._tx_spans + [(self._tx_since, now)])[-TX_SPANS_KEPT:]
             self._tx_since = None
+
+    def _trace_row(self, kind, value, now=None):
+        """DIAGNOSTIC, not for a PR: arrival time of every IQ packet (level dB, keyed) and interlock
+        state, to /tmp/sparkgap_tx_trace_ch<channel>.csv for 20 min after start."""
+        now = time.time() if now is None else now
+        if self._trace is None:
+            path = f"/tmp/sparkgap_tx_trace_ch{self.channel}.csv"
+            self._trace = [open(path, "w", buffering=1 << 16), now + 1200, 0]
+            self._trace[0].write("t,kind,value\n")
+            log.info("[Flex] TX trace (diagnostic) to %s for 20 min", path)
+        f, end, n = self._trace
+        if f is None:
+            return
+        if now > end or n > 400_000:
+            f.close()
+            self._trace[0] = None
+            log.info("[Flex] TX trace (diagnostic) done, %d rows", n)
+            return
+        f.write("%.4f,%s,%s\n" % (now, kind, value))
+        self._trace[2] = n + 1
 
     def transmitting_at(self, t):
         """Whether the radio was keyed at time t (seconds since the epoch, as the IQ arrived), with
@@ -1494,7 +1516,9 @@ class FlexIQReceiver:
             iq_rows = np.frombuffer(data, dtype=f"{endian_char}f4", count=2 * n_samples,
                                     offset=VITA_HEADER_SIZE).astype(np.float64).reshape(-1, 2)
             iq_rows /= DAXIQ_FULL_SCALE
-            if self.tx_mute and self.transmitting_at(now):
+            keyed = self.transmitting_at(now)
+            self._trace_row("pkt", "%.1f,%d" % (10 * np.log10(float(np.mean(iq_rows * iq_rows)) + 1e-20), keyed), now)
+            if self.tx_mute and keyed:
                 iq_rows[:] = 0.0   # our own transmission: silence, so the time base holds
                 self.muted_packets += 1
             callback(0, iq_rows)
