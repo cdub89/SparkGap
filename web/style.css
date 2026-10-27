@@ -123,6 +123,8 @@ main { flex: 1; display: flex; gap: 12px; min-height: 0; }
 .legend { height: 6px; border-radius: 3px; background: linear-gradient(90deg, var(--wf-1), var(--wf-2) 20%, var(--wf-3) 40%, var(--wf-4) 60%, var(--wf-5) 80%, var(--wf-6)); }
 .legendText { display: flex; justify-content: space-between; font-size: 10px; color: var(--faint); }
 footer { display: flex; gap: 22px; font-size: 12px; white-space: nowrap; overflow: hidden; }
+#statusbar { display: contents; }  /* its items take the footer's gaps */
+footer .state { color: var(--fg); }
 footer .k { color: var(--muted); margin-right: 5px; }
 footer .v { font-family: "IBM Plex Mono", ui-monospace, monospace; font-feature-settings: "zero" 1; }
 

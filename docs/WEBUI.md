@@ -50,7 +50,8 @@ minutes.
 - **Zoom**: drag to move along the band; Ctrl+scroll or pinch to zoom. The
   **Zoom** button steps through the whole band, half and a quarter. Each
   skimmer opens at the zoom you last left it at, in this browser.
-- **Bottom bar**: how hard the computer is working, how many calls the skimmer
+- **Bottom bar**: the connection (a green dot and Live when all is well),
+  how hard the computer is working, how many calls the skimmer
   has spotted, and how long it has been running.
 - **?** (inside the ⚙ dialog): this guide and what's new.
 
