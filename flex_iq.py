@@ -492,10 +492,17 @@ def station_name(conn, configured=None):
     return name
 
 
-def find_station(lines, station):
-    """(handle, client_id) of the SparkGap GUI client named `station` in client status, or None."""
+def station_client_id(ip, station):
+    """One GUI client ID per radio and station, the same on every start, as FlexLib keeps its own."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"sparkgap://{ip}/{station}")).upper()
+
+
+def find_station(lines, station, ip=None):
+    """(handle, client_id) of the SparkGap GUI client named `station` in client status, or None.
+    With `ip`, also one still registering: listed by its client ID before it has its name."""
+    cid = station_client_id(ip, station) if ip else None
     return next(((g[0], g[1]) for g in gui_stations(lines)
-                 if g[2] == STATION_NAME and g[3] == station), None)
+                 if (g[2] == STATION_NAME and g[3] == station) or g[1] == cid), None)
 
 
 def nap(seconds, stopping):
@@ -581,11 +588,10 @@ class FlexStation:
                 conn = FlexConnection(self.ip, self.control_port)
                 conn.open()
             self.station = station_name(conn, self._station_cfg)
-            # one GUI client ID per radio and station, the same on every start, as FlexLib keeps its own
-            self.client_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"sparkgap://{self.ip}/{self.station}")).upper()
+            self.client_id = station_client_id(self.ip, self.station)
             register_program(conn)
             clients = conn.cmd("sub client all", settle=0.5)
-            found = find_station(clients, self.station)
+            found = find_station(clients, self.station, self.ip)
             # after a loss, a station under another handle is a copy that took our place: leave it to that copy
             if found and not (again and self.conn_handle and int(found[0], 16) == int(self.conn_handle, 16)):
                 raise StationExists(f"[Flex] The radio already has station {self.station}")
@@ -850,7 +856,7 @@ class FlexIQReceiver:
         self.station = station_name(conn, self._station_cfg)
         register_program(conn)
         self._clients = conn.cmd("sub client all", settle=0.5)
-        found = find_station(self._clients, self.station)
+        found = find_station(self._clients, self.station, self.ip)
         if not found and not first:
             found = self._wait_for_station()
         if not found and not self._own_station:
@@ -863,7 +869,7 @@ class FlexIQReceiver:
             except StationExists:       # another copy got there first: bind to its station
                 log.info("[Flex] Station %s appeared meanwhile: attaching to it", self.station)
             self._clients = conn.cmd("sub client all", settle=0.5)
-            found = find_station(self._clients, self.station)
+            found = find_station(self._clients, self.station, self.ip)
         if not found:
             raise RuntimeError(f"[Flex] Station {self.station} is not on the radio")
         handle, client_id = found
@@ -880,7 +886,7 @@ class FlexIQReceiver:
         log.info("[Flex] Waiting up to %d s for station %s", wait, self.station)
         while time.time() < end and not self._stopping and not self.conn.lost:
             self._clients = self.conn.cmd("sub client all", settle=0.5)
-            found = find_station(self._clients, self.station)
+            found = find_station(self._clients, self.station, self.ip)
             if found:
                 return found
             nap(STATION_POLL_S, lambda: self._stopping)
@@ -1188,7 +1194,7 @@ class FlexIQReceiver:
                         self._halt("the radio did not come back within %d min" % (OUTAGE_MAX_S // 60), alive=False)
                         return
                     settled = True
-                    station = find_station(conn.cmd("sub client all", settle=0.5), self.station)
+                    station = find_station(conn.cmd("sub client all", settle=0.5), self.station, self.ip)
                     if conn is not self.conn:  # our connection did not last the outage
                         conn.close("ready")
                         kind = 'link'

@@ -677,3 +677,15 @@ def test_a_copy_whose_station_was_evicted_takes_over_again_later(radio: FakeRadi
     assert a._own_station is not None and a.state == b.state == "live"
     b.stop()
     a.stop()
+
+
+def test_a_station_still_registering_is_bound_to_not_registered_over(radio: FakeRadio) -> None:
+    """Dallas 2026-10-27 02:37Z: a station is listed by its client ID about 6 s before its name."""
+    conn = radio.connect()
+    conn.open()
+    conn.cmd("client program SparkGap")
+    conn.cmd("client gui " + flex_iq.station_client_id("192.0.2.1", "SparkGap-Dallas"))
+    a = _channel(MHZ_17M, 1)
+    assert a._own_station is None and a.state == "live" and len(_gui_commands(radio)) == 1
+    assert a._station_handle == int(conn.handle, 16)
+    a.stop()
