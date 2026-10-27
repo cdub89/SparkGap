@@ -860,12 +860,12 @@ class FlexIQReceiver:
         if not found and not first:
             found = self._wait_for_station()
         if not found and not self._own_station:
-            log.info("[Flex] No station %s on the radio: this copy holds it", self.station)
             station = FlexStation(self.ip, self.control_port, self._station_cfg)
             try:
                 station.start()
                 station.start_thread()
                 self._own_station = station
+                log.info("[Flex] No station %s was on the radio: this copy holds it", self.station)
             except StationExists:       # another copy got there first: bind to its station
                 log.info("[Flex] Station %s appeared meanwhile: attaching to it", self.station)
             self._clients = conn.cmd("sub client all", settle=0.5)
@@ -884,12 +884,12 @@ class FlexIQReceiver:
         wait = STATION_WAIT_S if self._own_station else STATION_TAKEOVER_S * max(1, self.channel)
         end = time.time() + wait
         log.info("[Flex] Waiting up to %d s for station %s", wait, self.station)
-        while time.time() < end and not self._stopping and not self.conn.lost:
+        while not self._stopping and not self.conn.lost:
             self._clients = self.conn.cmd("sub client all", settle=0.5)
             found = find_station(self._clients, self.station, self.ip)
-            if found:
+            if found or time.time() >= end:     # the last look is at the deadline, not a poll before it
                 return found
-            nap(STATION_POLL_S, lambda: self._stopping)
+            nap(min(STATION_POLL_S, end - time.time()), lambda: self._stopping)
         return None
 
     def _build(self):

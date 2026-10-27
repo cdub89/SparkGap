@@ -311,6 +311,7 @@ def test_after_a_station_crash_one_copy_holds_it_and_the_other_binds(
     with caplog.at_level(logging.INFO, logger="sparkgap.flex"):
         b._recover("Station left the radio", "station")
     assert "Waiting up to 20 s for station" in caplog.text
+    assert caplog.text.count("this copy holds it") == 1  # a's; b only attached
     assert a.state == b.state == "live" and a._own_station is not None and b._own_station is None
     assert len(_gui_commands(radio)) == 2
     assert _pan_of(radio, a) == MHZ_17M and _pan_of(radio, b) == MHZ_20M
