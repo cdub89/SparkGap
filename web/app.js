@@ -187,7 +187,7 @@ class Instance {
     if (m.type === "hello") {
       // a hello mid-connection with other bands: a live band change, so the picked signal is gone
       this.moved = !!this.hello.type && JSON.stringify(this.hello.bands) !== JSON.stringify(m.bands);
-      if (this.moved) { this.selKhz = null; this.selCall = null; }
+      if (this.moved) { this.selKhz = null; this.selCall = null; this.lastPick = null; }
       this.hello = m;
       if (!this.bands[this.band]) this.band = 0;
       this.windows = []; this.spots.clear(); this.signals.clear(); this.recent.clear();
@@ -890,14 +890,19 @@ function changed(i, what) {
 }
 
 function setCurrent(n) {
-  // a copy that covers the picked frequency keeps it and the view, to compare copies on one signal
-  const khz = app.selectedKhz, lo = wf.lo, hi = wf.hi;
+  // a copy that covers the picked frequency keeps it and the view, to compare copies on one signal;
+  // otherwise each copy comes back on the signal last picked on it
+  const prev = inst();
+  if (prev) prev.lastPick = app.selectedKhz > 0 ? { khz: app.selectedKhz, lo: wf.lo, hi: wf.hi } : null;
+  let khz = app.selectedKhz, lo = wf.lo, hi = wf.hi;
   app.current = Math.max(0, Math.min(n, app.instances.length - 1));
   const i = inst();
+  const covers = k => k > 0 && i && (!i.nBins || (i.lowKhz <= k && k <= i.highKhz));
+  if (!covers(khz) && i && i.lastPick && covers(i.lastPick.khz)) ({ khz, lo, hi } = i.lastPick);
   if (i && i.hello.run) { app.want = i.name; save("current", i.name); }
   app.selectedKhz = -1;
   wf.sel = -1;
-  const keep = khz > 0 && i && (!i.nBins || (i.lowKhz <= khz && khz <= i.highKhz));
+  const keep = covers(khz);
   if (keep && !i.nBins) i.goKhz = khz;  // not drawn yet: centre on it once it is
   wf.setInstance(i);
   if (keep && i.nBins && i.lowKhz <= lo && hi <= i.highKhz) wf.setView(lo, hi);
