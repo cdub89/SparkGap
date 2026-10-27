@@ -60,8 +60,8 @@ minutes.
 Click **⚙**, then the skimmer's tab (its name, such as `shack40`).
 
 - The top card shows whether it runs. **Run** on starts it and off stops it;
-  off then on restarts it. **Show** puts that skimmer on the main screen.
-  **Recording** is there too.
+  off then on restarts it. **Recording** is there too. **Show** on the
+  **Servers** tab puts a skimmer on the main screen.
 - To change a setting, pick the new value and click **Apply**, which appears
   in the top card. You can change several at once; they take effect together.
   **Discard** forgets them.

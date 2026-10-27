@@ -1654,7 +1654,6 @@ function copyCards(k, sv, i) {
   const state = busy ? `${busy}...` : run ? "running" : "stopped";
   const err = !run && i.last_error ? `<div class="small err">${esc(i.last_error)}</div>`
     : run && i.feed_failed ? '<div class="small err">Its feed did not start (port in use): no waterfall until it restarts.</div>' : "";
-  const shown = !!inst() && inst().server === sv && copyName(inst()) === i.name;
   const host = (sv.link.hello && sv.link.hello.host) || sv.address, valid = st.validation || "off";
   const bar = n ? `<div class="applybar"><span>${n} change${n > 1 ? "s" : ""} not applied</span><span class="grow"></span>`
     + `<button class="btn small primary" ${at} data-cmd="apply"${busy ? " disabled" : ""}>${live ? "Apply (live)" : run ? `Apply (restarts ${esc(i.name)})` : "Save"}</button>`
@@ -1684,9 +1683,9 @@ function copyCards(k, sv, i) {
     opt("KNOWN CALL LIST", choices("call_source", CALL_SOURCES, st.call_source, valid === "off"), HINTS.call_source, true),
     ...DECODER_OPTIONS.map(([key, label, hint, values]) => opt(label.toUpperCase(), values ? choices(key, values, st[key] === undefined ? null : st[key]) : onOff(key, st[key]), hint, values && values.length > 4))];
   return `<section class="scard wide copycard"><h3><span>${esc(i.name)} · ${esc(bandText(saved.band || i.band || ""))}</span>${pillHtml(state.toUpperCase(), busy ? "warnlvl" : run ? "ok" : "idle")}</h3>
-    <div class="actions"><span class="small muted">${esc(host)}${run ? "" : " · settings are used at its next start"}</span><span class="grow"></span>${btn("show", shown ? "Shown" : "Show", run && !shown)}</div>
+    <div class="actions"><span class="small muted">${esc(host)}${run ? "" : " · settings are used at its next start"}</span></div>
     <div class="opts instopts">${opt("RUN", runToggle(at, run, busy), "Off stops the skimmer, on starts it.")}${opt("RECORDING", onOff("record", st.record), HINTS.record)}</div>${err}${bar}</section>
-    <section class="scard wide"><h3><span>RADIO</span>${radioTag}</h3><div class="opts">${radioOpts.join("")}</div>
+    <section class="scard wide"><h3><span>RADIO</span>${radioTag}</h3><div class="opts radioopts">${radioOpts.join("")}</div>
     <div class="small muted cardnote">Band${rx ? ", antenna, loops and RF gain" : ""} change live; AFC restarts the skimmer.${radioNote ? ` ${esc(radioNote)}` : ""}</div></section>
     <section class="scard wide"><details class="adv"${app.advOpen ? " open" : ""}><summary><span>DECODER OPTIONS</span>${decTag}</summary>
     <div class="opts">${decOpts.join("")}</div><div class="small muted cardnote">Changes restart the skimmer. Hover over an option for what it does.</div></details></section>`;
