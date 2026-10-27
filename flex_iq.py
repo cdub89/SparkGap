@@ -234,22 +234,6 @@ def tx_states(lines):
     return [m.group(1) for l in lines for m in [re.search(r'\|interlock .*\bstate=([A-Z_]+)', l)] if m]
 
 
-def break_in_delay(lines):
-    """The CW break-in delay in seconds from transmit status lines (break_in=1 break_in_delay=<ms>),
-    0.0 with break-in off, None when no line gives it; the newest line wins."""
-    found = None
-    for l in lines:
-        if '|transmit ' not in l:
-            continue
-        on = re.search(r'\bbreak_in=(\d)', l)
-        ms = re.search(r'\bbreak_in_delay=(\d+)', l)
-        if on and on.group(1) == '0':
-            found = 0.0
-        elif ms:
-            found = int(ms.group(1)) / 1000.0
-    return found
-
-
 def ptt_ours(lines):
     """Status lines in which the radio gives a SparkGap station the key and PTT jacks."""
     return [l for l in lines if f'program={STATION_NAME} ' in l
@@ -832,10 +816,8 @@ class FlexIQReceiver:
         self.others = []          # other stations on the radio at the last connect
         self._tx_since = None     # arrival time of the key-down in progress
         self._tx_spans = []       # (key-down, key-up) arrival times, newest last
-        self.break_in_s = 0.0     # the radio's CW break-in delay: still keyed this long after key-up
         self.tx_mute = bool(tx_mute)  # flex_tx_mute: IQ that arrives while keyed reaches the decoders as silence
         self.muted_packets = 0
-        self._diag = {'floor': None, 'loud': [], 'span': None, 'last_loud': None, 'peak': 0.0, 'lead': None}
 
     @property
     def rx_path(self):
@@ -930,9 +912,10 @@ class FlexIQReceiver:
         self.others = [f"{g[3]} ({g[2]})" for g in gui_stations(self._clients) if num(g[0]) != self._station_handle]
         status = (conn.cmd("sub pan all", settle=0.5) + conn.cmd("sub slice all", settle=0.5)
                   + conn.cmd("sub daxiq all", settle=0.5))
-        tx = conn.cmd("sub tx all", settle=0.3)  # key-down: an empty spectrum, and a muted decoder
-        conn.ok("transmit state for the GUI", tx)
-        self._note_break_in(break_in_delay(tx))
+        conn.ok("transmit state for the GUI", conn.cmd("sub tx all", settle=0.3))  # key-down: an empty spectrum
+        if self.tx_mute:
+            log.info("[Flex] Decoding muted while the radio is keyed, until %d ms after its key-up",
+                     round(TX_HOLD_S * 1000))
         # A DAX-IQ channel another station's pan holds (Maestro, SmartSDR, DAX) is not ours to take,
         # nor one another client streams (another copy set to the same channel included).
         stations = gui_stations(self._clients)
@@ -1106,7 +1089,6 @@ class FlexIQReceiver:
             return None
         for state in tx_states(lines):
             self._note_tx(state, time.time())
-        self._note_break_in(break_in_delay(lines))
         for line in clients_gone(lines):
             log.info("[Flex] Radio reports: %s", line.strip()[:200])
             m = re.search(r'\|client (0x[0-9A-F]+) disconnected', line, re.I)
@@ -1199,59 +1181,15 @@ class FlexIQReceiver:
             self._tx_spans = (self._tx_spans + [(self._tx_since, now)])[-TX_SPANS_KEPT:]
             self._tx_since = None
 
-    def _diag_tail(self, now, iq_rows):
-        """DIAGNOSTIC (not for a PR): per over, how long the IQ stays loud after key-up (READY), and
-        any loud packet up to 0.5 s before key-down; one log line once unkeyed for 1 s."""
-        d = self._diag
-        db = 10 * np.log10(float(np.mean(iq_rows * iq_rows)) + 1e-20)
-        spans, since = self._tx_spans, self._tx_since
-        last = spans[-1] if spans else None
-        loud = d['floor'] is not None and db > d['floor'] + 6.0
-        d['loud'] = [(t, x) for t, x in d['loud'] if now - t <= 0.5] + [(now, db)] if loud else \
-            [(t, x) for t, x in d['loud'] if now - t <= 0.5]
-        if since is not None:   # keyed: note any loud packet before this over's key-down
-            if d['span'] is None or d['span'][0] != since and d['lead'] is None:
-                early = [t for t, _ in d['loud'] if t < since]
-                d['lead'] = since - min(early) if early else 0.0
-            d['span'] = (since, None)
-            return
-        if last is None:
-            if d['floor'] is None:
-                d['floor'] = db
-            d['floor'] += 0.002 * (db - d['floor'])
-            return
-        up = last[1]
-        if d['span'] is None or d['span'][1] != up:   # a new key-up: start its tail
-            d['span'], d['last_loud'], d['peak'] = (d['span'][0] if d['span'] else last[0], up), None, 0.0
-        if now - up <= 2.0 and loud:
-            d['last_loud'] = now
-            d['peak'] = max(d['peak'], db - d['floor'])
-        if now - up > 1.0 and d['span'] is not None and d['span'][1] == up and d.get('logged') != up:
-            d['logged'] = up
-            tail = (d['last_loud'] - up) if d['last_loud'] else 0.0
-            log.info("[Flex] TX tail (diagnostic): loud %.0f ms after key-up (peak +%.0f dB over floor), "
-                     "lead %.0f ms before key-down, hold %.0f ms, %d key-downs kept", tail * 1000, d['peak'],
-                     (d['lead'] or 0.0) * 1000, (self.break_in_s + TX_HOLD_S) * 1000, len(spans))
-            d['lead'] = None
-        if now - up > 2.0:
-            d['floor'] += 0.002 * (db - d['floor'])
-
-    def _note_break_in(self, delay_s):
-        if delay_s is None or delay_s == self.break_in_s:
-            return
-        self.break_in_s = delay_s
-        log.info("[Flex] CW break-in delay %d ms: keyed until %d ms after each key-up%s",
-                 round(delay_s * 1000), round((delay_s + TX_HOLD_S) * 1000),
-                 ", decoding muted while keyed" if self.tx_mute else "")
-
     def transmitting_at(self, t):
         """Whether the radio was keyed at time t (seconds since the epoch, as the IQ arrived), with
-        the radio's break-in delay plus TX_HOLD_S after each key-up: the spectrum shows those rows
-        empty instead of the transmitter, and with tx_mute the decoders get silence."""
+        TX_HOLD_S after each key-up: the spectrum shows those rows empty instead of the transmitter,
+        and with tx_mute the decoders get silence.  Key-up is the interlock's READY, which comes after
+        the transmitting client's own CW delay (a per-client setting we cannot read)."""
         since = self._tx_since
         if since is not None and t >= since:
             return True
-        hold, spans = self.break_in_s + TX_HOLD_S, self._tx_spans
+        hold, spans = TX_HOLD_S, self._tx_spans
         if not spans or t > spans[-1][1] + hold:   # after the newest key-up: every packet not keyed
             return False
         return any(a <= t <= b + hold for a, b in reversed(spans))
@@ -1351,7 +1289,7 @@ class FlexIQReceiver:
                 'packets': self.packets, 'lost': self.lost, 'reconnects': self.reconnects,
                 'last_reconnect': self.last_reconnect, 'station': self.station,
                 'daxiq_channel': self.channel, 'others': list(self.others),
-                'break_in_ms': round(self.break_in_s * 1000), 'tx_mute': self.tx_mute,
+                'tx_mute': self.tx_mute,
                 'muted_packets': self.muted_packets,
                 'rx': {**{k: self.rx.get(k) for k in RX_KEYS}, 'ant_list': list(self.rx.get('ant_list', [])),
                        'rfgain_range': list(self.rfgain_range) if self.rfgain_range else None}}
@@ -1556,7 +1494,6 @@ class FlexIQReceiver:
             iq_rows = np.frombuffer(data, dtype=f"{endian_char}f4", count=2 * n_samples,
                                     offset=VITA_HEADER_SIZE).astype(np.float64).reshape(-1, 2)
             iq_rows /= DAXIQ_FULL_SCALE
-            self._diag_tail(now, iq_rows)
             if self.tx_mute and self.transmitting_at(now):
                 iq_rows[:] = 0.0   # our own transmission: silence, so the time base holds
                 self.muted_packets += 1
