@@ -111,6 +111,15 @@ def test_decoder_options_are_written_and_off_removes_the_key(seat: Seat) -> None
     assert seat.settings(i)["spot_rule_strongest_db"] is None
 
 
+def test_the_decode_window_reads_its_default_and_takes_listed_lengths(seat: Seat) -> None:
+    i = seat.instance("dallas1")
+    assert seat.settings(i)["itila_window_sec"] == seat.config(i).get("itila_window_sec", 60)
+    seat.change("dallas1", {"itila_window_sec": 7.5})
+    assert seat.config(i)["itila_window_sec"] == 7.5
+    with pytest.raises(SeatError, match="itila_window_sec must be one of: 60, 30, 15, 7.5"):
+        seat.change("dallas1", {"itila_window_sec": 10})
+
+
 def test_a_stopped_copy_is_only_written(seat: Seat) -> None:
     assert seat.change("dallas1", {"band": "20m"}) == "dallas1: band 20m"
     assert seat.pid("dallas1") is None and seat.band(seat.instance("dallas1")) == "20m"

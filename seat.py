@@ -59,7 +59,9 @@ OPTION_CHOICES: dict[str, tuple[Any, ...]] = {
     "spot_rule_fragments": (None, "any", "any,stray", "even", "even,stray"),
     "spot_rule_takeover_idle_s": (None, 120, 180, 300),
     "spot_rule_strongest_db": (None, 3, 6, 10),
+    "itila_window_sec": (60, 30, 15, 7.5),
 }
+OPTION_DEFAULTS: dict[str, Any] = {"itila_window_sec": 60}  # where the key is read
 # a Flex copy's receive path: setting -> (the copy's live key, its config key).  The radio's
 # state is the truth: a running copy changes it live first, then its config
 RX_SETTINGS = {
@@ -490,7 +492,7 @@ class Seat:
             "call_source": cfg.get("spot_validation_calls") or "scp",
             "afc": bool(cfg.get("itila2_afc", False)),
             **{k: bool(cfg.get(k, False)) for k in OPTION_FLAGS},
-            **{k: cfg.get(k) for k in OPTION_CHOICES},
+            **{k: cfg.get(k, OPTION_DEFAULTS.get(k)) for k in OPTION_CHOICES},
             "record": bool(cfg.get("record_wav")),
             # a Flex copy's receive path as its config sets it at start (None: the radio's own)
             **{k: cfg.get(c) for k, (_, c) in RX_SETTINGS.items()},

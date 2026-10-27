@@ -38,6 +38,7 @@ const RX_KEYS = ["antenna", "loop_a", "loop_b", "rf_gain"];  // a Flex copy's re
 const SHARED_NOTE = "Loops are shared by every pan on that antenna, and RF gain by every pan on the same receiver (SCU): "
   + "a change here changes them for every copy and program using it.";
 const HINTS = {
+  window: "How much signal each decoded window holds (itila_window_sec). Shorter windows show text sooner but fit each signal's timing on less of it and cost more CPU; 15 and 7.5 s are untried. Applying restarts the skimmer.",
   record: "Saves the raw signal to disk for replay; needs 5 GB free. Restarts the skimmer.",
   afc: "Each signal's decoder follows its keyed tone, which helps weak and slightly off-tune signals (itila2_afc). Applying restarts the skimmer.",
   validation: "A confidence score decides which calls are spotted: permissive spots more, aggressive fewer (docs/ITILA2.md). Off: a set number of copies, 2 to 4 by how common the call's pattern is.",
@@ -64,6 +65,8 @@ const PEAK_FROM_PX = 1;  // from this many pixels a bin, peaks are drawn instead
 const FREQ_MATCH_KHZ = 0.15;
 const SEARCH_MAX = 8;
 const NO_FIT = 999.0;
+// the decode window: 30 s is what the test seats run; 15 and 7.5 s are untried
+const WINDOWS = [[60, "60 s"], [30, "30 s"], [15, "15 s"], [7.5, "7.5 s"]];
 const MODES = ["settings", "info"];  // the dialog's header; its ? button shows help
 const NEWS_SHOWN = 4;  // What's new entries shown in the dialog; the guide has them all
 const NOTHING = '<span class="nothing">(nothing decoded)</span>';  // a path whose window decoded no text
@@ -1657,7 +1660,7 @@ function copyCards(k, sv, i) {
     (opts.some(([v]) => v === cur) ? opts : [[cur, String(cur)], ...opts]).map(([v, l]) =>
       `<option value="${esc(String(v))}"${v === cur ? " selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
   const gains = rx && rx.range ? Array.from({ length: Math.floor((rx.range[1] - rx.range[0]) / rx.range[2]) + 1 }, (_, g) => rx.range[0] + g * rx.range[2]) : [];
-  const radioOpts = [opt("BAND", bands, "Changes live while the skimmer runs."), opt("AFC", onOff("afc", st.afc), HINTS.afc), opt("RECORDING", onOff("record", st.record), HINTS.record)];
+  const radioOpts = [opt("BAND", bands, "Changes live while the skimmer runs."), opt("AFC", onOff("afc", st.afc), HINTS.afc)];
   if (rx) {
     if (rxHas(rx, "antenna")) radioOpts.push(opt("ANTENNA", `<div class="inline">${sel("antenna", rx.ant_list.map(a => [a, a]), rs.antenna)}${starts("antenna")}</div>`));
     if (rxHas(rx, "rf_gain")) radioOpts.push(opt("RF GAIN", `<div class="inline">${sel("rf_gain", gains.map(g => [g, `${g} dB`]), rs.rf_gain)}${starts("rf_gain")}</div>`, SHARED_NOTE));
@@ -1667,16 +1670,19 @@ function copyCards(k, sv, i) {
   const radioNote = !i.radio ? "" : rx ? SHARED_NOTE : `Antenna, loops and RF gain are read from the radio while ${i.name} runs.`;
   const radioTag = rx ? pillHtml("FROM THE RADIO", "ok") : i.radio ? pillHtml("FLEX", "idle") : "";
   const ons = DECODER_OPTIONS.filter(([key, , , values]) => values ? st[key] !== null && st[key] !== undefined : !!st[key]).length;
-  const decPend = Object.keys(pend).some(x => x === "validation" || x === "call_source" || DECODER_OPTIONS.some(o => o[0] === x));
-  const decTag = pillHtml(`${valid === "off" ? "validation off" : `validation ${valid}`} · ${ons} of ${DECODER_OPTIONS.length} on`, decPend ? "warnlvl" : "idle");
-  const decOpts = [opt("CALL VALIDATION", choices("validation", VALIDATION.map(v => [v, v]), valid), HINTS.validation, true),
+  const decPend = Object.keys(pend).some(x => ["validation", "call_source", "itila_window_sec"].includes(x) || DECODER_OPTIONS.some(o => o[0] === x));
+  const win = st.itila_window_sec === undefined || st.itila_window_sec === null ? 60 : st.itila_window_sec;
+  const decTag = pillHtml(`${win} s windows · ${valid === "off" ? "validation off" : `validation ${valid}`} · ${ons} of ${DECODER_OPTIONS.length} on`, decPend ? "warnlvl" : "idle");
+  const decOpts = [opt("WINDOW", choices("itila_window_sec", WINDOWS, win), HINTS.window, true),
+    opt("CALL VALIDATION", choices("validation", VALIDATION.map(v => [v, v]), valid), HINTS.validation, true),
     opt("KNOWN CALL LIST", choices("call_source", CALL_SOURCES, st.call_source, valid === "off"), HINTS.call_source, true),
     ...DECODER_OPTIONS.map(([key, label, hint, values]) => opt(label.toUpperCase(), values ? choices(key, values, st[key] === undefined ? null : st[key]) : onOff(key, st[key]), hint, values && values.length > 4))];
   return `<section class="scard wide copycard"><h3><span>${esc(i.name)} · ${esc(bandText(saved.band || i.band || ""))}</span>${pillHtml(state.toUpperCase(), busy ? "warnlvl" : run ? "ok" : "idle")}</h3>
     <div class="actions"><span class="small muted">${esc(host)}${run ? "" : " · settings are used at its next start"}</span><span class="grow"></span>${btn("show", shown ? "Shown" : "Show", run && !shown)}
-      <span class="group">${btn("start", "Start", !run)}${btn("restart", "Restart", run)}${btn("stop", "Stop", run)}</span></div>${err}${bar}</section>
+      <span class="group">${btn("start", "Start", !run)}${btn("restart", "Restart", run)}${btn("stop", "Stop", run)}</span></div>
+    <div class="opts instopts">${opt("RECORDING", onOff("record", st.record), HINTS.record)}</div>${err}${bar}</section>
     <section class="scard wide"><h3><span>RADIO</span>${radioTag}</h3><div class="opts">${radioOpts.join("")}</div>
-    <div class="small muted cardnote">Band${rx ? ", antenna, loops and RF gain" : ""} change live; AFC and recording restart the skimmer.${radioNote ? ` ${esc(radioNote)}` : ""}</div></section>
+    <div class="small muted cardnote">Band${rx ? ", antenna, loops and RF gain" : ""} change live; AFC restarts the skimmer.${radioNote ? ` ${esc(radioNote)}` : ""}</div></section>
     <section class="scard wide"><details class="adv"${app.advOpen ? " open" : ""}><summary><span>DECODER OPTIONS</span>${decTag}</summary>
     <div class="opts">${decOpts.join("")}</div><div class="small muted cardnote">Changes restart the skimmer. Hover over an option for what it does.</div></details></section>`;
 }

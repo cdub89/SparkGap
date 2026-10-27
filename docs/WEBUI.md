@@ -60,14 +60,19 @@ minutes.
 Click **⚙**, then the skimmer's tab (its name, such as `shack40`).
 
 - The top card shows whether it runs. **Start**, **Stop** and **Restart** do
-  what they say. **Show** puts that skimmer on the main screen.
+  what they say. **Show** puts that skimmer on the main screen. **Recording**
+  is there too.
 - To change a setting, pick the new value and click **Apply**, which appears
   in the top card. You can change several at once; they take effect together.
   **Discard** forgets them.
-- **Radio**: band, AFC and recording, and on a FlexRadio the antenna, RF gain
-  and loops as the radio reports them.
-- **Decoder Options** (click to open): call validation, the known call list
-  and the spot rule's options. The line beside it sums them up.
+- **Radio**: band and AFC, and on a FlexRadio the antenna, RF gain and loops
+  as the radio reports them.
+- **Decoder Options** (click to open): the decode window, call validation,
+  the known call list and the spot rule's options. The line beside it sums
+  them up.
+- **Window**: how much signal each decoded window holds. Shorter windows show
+  text sooner but give the decoder less signal to work from and use more
+  CPU; 15 and 7.5 s are untried.
 - **Band**: changes straight away while the skimmer runs, in about a second,
   and the waterfall starts over on the new band. Other settings restart the
   skimmer, which takes about half a minute. A skimmer set up to listen at an

@@ -22,8 +22,8 @@ Pre-1.0 alpha. No versioned releases yet — entries are dated.
   machine, is the only one that can send a `control` message.
 - **The server's `set` takes the decoder options**: `afc`, the spot rule's
   on/off options, `itila2_snr_decoder`, and `spot_rule_fragments`,
-  `spot_rule_takeover_idle_s` and `spot_rule_strongest_db` from a short list
-  each (`docs/SERVER_PROTOCOL.md`).
+  `spot_rule_takeover_idle_s`, `spot_rule_strongest_db` and `itila_window_sec`
+  from a short list each (`docs/SERVER_PROTOCOL.md`).
 
 ## 2026-06-18
 
