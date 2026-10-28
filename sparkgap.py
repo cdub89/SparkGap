@@ -1937,6 +1937,17 @@ def _select_snr_decoder(on):
         log.info("Spot SNR: the decoder's window")
     return _snr_decoder
 
+_afc = False   # config itila2_afc: each bin re-centres on the keyed tone
+
+def _select_afc(on):
+    """Config key itila2_afc (default off): the itila2 scanner re-centres each bin's two envelope paths
+    on the keyed tone (itila_sc_set_afc), up to 50 Hz from the bin's frequency."""
+    global _afc
+    _afc = bool(on)
+    if _afc:
+        log.info("ITILA scanner: bins follow the keyed tone (itila2_afc)")
+    return _afc
+
 _SPOT_RULES = ('off', 'repeat')
 _spot_rule_on = False
 _window_seq = itertools.count(1)   # window keys for spot_rule; never reused, unlike id(bin state)
@@ -2881,6 +2892,13 @@ def _get_itila_scanner(sample_rate, center_hz, max_bins, min_snr,
             lib.itila_sc_snr_from_power.argtypes = [_ct.c_double, _ct.c_double, _ct.c_int]
             if not lib.itila_sc_set_snr_marks(_ct.c_void_p(h), 1):
                 log.warning("ITILA scanner: no memory for the decoder SNR; spot SNR from the scanner")
+        if _afc:
+            if hasattr(lib, 'itila_sc_set_afc'):
+                lib.itila_sc_set_afc.restype = _ct.c_int
+                lib.itila_sc_set_afc.argtypes = [_ct.c_void_p, _ct.c_int]
+                lib.itila_sc_set_afc(_ct.c_void_p(h), 1)
+            else:
+                log.warning("itila2_afc: %s has no itila_sc_set_afc; off", _scanner_lib_path)
         return _ItilaSc(lib, _ct.c_void_p(h))
     except OSError:
         log.warning("%s not found", _scanner_lib_path)
@@ -7477,6 +7495,7 @@ class SparkGap:
                                    recent_band_config=self.cfg.get('recent_band_floor'))
         _select_decode_threads(self.cfg.get('itila_decode_threads', 1))
         _select_snr_decoder(self.cfg.get('itila2_snr_decoder', False))
+        _select_afc(self.cfg.get('itila2_afc', False))
         if _select_spot_rule(_spot_rule_name(self.cfg)):
             self.tracker.spot_rule = _make_spot_rule(self.cfg, self.tracker)
             log.info("Spot rule: lock-on, CQ groups, CQ qualifiers%s",
@@ -8967,6 +8986,7 @@ def run_file_mode(args, config):
                           gate_config=gate_config)
     _select_decode_threads(config.get('itila_decode_threads', 1))
     _select_snr_decoder(config.get('itila2_snr_decoder', False))
+    _select_afc(config.get('itila2_afc', False))
     if _select_spot_rule(_spot_rule_name(config)):
         _trk = tracker
         _trk.spot_rule = _make_spot_rule(config, tracker)
