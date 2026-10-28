@@ -20,6 +20,11 @@ join code (for example `KTR-49X`).
 3. The waterfall starts. If the computer runs more than one skimmer, pick one
    from the band list at the top.
 
+**⚙**, **Settings**, **Servers** lists each server you added, with the
+skimmers it runs:
+
+![Servers under Settings](web-settings.png)
+
 The page remembers the server, so next time it opens straight to the
 waterfall. A wrong code five times in a row locks your browser out for ten
 minutes.
@@ -33,25 +38,46 @@ minutes.
   call yet show only their frequency.
 - **Decoded text**, on the right: click a trace or a call to see what SparkGap
   copied from that station, newest first, with its frequency, speed and signal
-  strength. You can select the text, or **Copy** all of it.
+  strength. You can select the text, or **Copy** all of it. With both readings
+  shown, the one SparkGap is surer of (the lower timing cost) is in bold; a
+  reading that copied nothing shows as *(nothing decoded)*.
+- **Switching skimmers**: each skimmer comes back on the signal you last
+  picked on it. Two skimmers that hear the same frequency (two antennas or
+  radios on one band) keep the same signal, so you can compare their copy
+  back and forth.
 - **Search** (Ctrl+F): type a call, some text or a frequency in kHz to jump to
-  it.
+  it. With the ⚙ dialog open, Ctrl+F is the browser's own find instead.
 - **Zoom**: drag to move along the band; Ctrl+scroll or pinch to zoom. The
-  **Zoom** button steps through the whole band, half and a quarter.
-- **Bottom bar**: how hard the computer is working, how many browsers are
-  watching, and how long the skimmer has been running.
+  **Zoom** button steps through the whole band, half and a quarter. Each
+  skimmer opens at the zoom you last left it at, in this browser.
+- **Bottom bar**: the connection (a green dot and Live when all is well),
+  how hard the computer is working, how many calls the skimmer
+  has spotted, and how long it has been running.
+- **?** (inside the ⚙ dialog): this guide and what's new.
 
 ## Running a skimmer
 
 Click **⚙**, then the skimmer's tab (its name, such as `shack40`).
 
-- **Start**, **Stop** and **Restart** do what they say. **Show** puts that
-  skimmer on the main screen.
-- To change a setting, pick the new value and click **Apply**. You can change
-  several at once; they take effect together. **Discard** forgets them.
+- The top card shows whether it runs. **Run** on starts it and off stops it;
+  off then on restarts it. **Recording** is there too. **Show** on the
+  **Servers** tab puts a skimmer on the main screen.
+- To change a setting, pick the new value and click **Apply**, which appears
+  in the top card. You can change several at once; they take effect together.
+  **Discard** forgets them.
+- **Radio**: band and AFC, and on a FlexRadio the antenna, RF gain and loops
+  as the radio reports them.
+- **Decoder Options** (click to open): the decode window, call validation,
+  the known call list and the spot rule's options. The line beside it sums
+  them up.
+- **Window**: how much signal each decoded window holds. Shorter windows show
+  text sooner but give the decoder less signal to work from and use more
+  CPU; 15 and 7.5 s are untried.
 - **Band**: changes straight away while the skimmer runs, in about a second,
   and the waterfall starts over on the new band. Other settings restart the
-  skimmer, which takes about half a minute.
+  skimmer, which takes about half a minute. A skimmer set up to listen at an
+  exact frequency rather than a band shows that frequency first in the list,
+  for example `7038.0 kHz`; picking a band name moves it to that band.
 
 Settings, in plain terms:
 
@@ -60,12 +86,17 @@ Settings, in plain terms:
   were asked to record.
 - **Call validation**: how sure SparkGap must be before it spots a call.
   Permissive spots more calls but gets more wrong; aggressive spots fewer but
-  surer ones. Normal suits most stations.
+  surer ones. Normal suits most stations. Off uses no score: a call is spotted
+  once it is copied a set number of times (2, 3 or 4, by how common its
+  pattern is), and the known call list is not used.
+- **AFC**: each signal's decoder follows the signal's own tone, which helps
+  weak signals and ones slightly off tune. Changing it restarts the skimmer.
 - **Known call list**: calls on this list count as more likely to be right.
   SCP is the contest call list; RBN adds calls other RBN skimmers heard in the
   past week; RBN + SKCC adds the SKCC roster, good for hand-keyed CW.
-- **Advanced**: three options that spot more calls, each with some risk of a
-  wrong one. All off unless you need them.
+- **Spot rule options**, under Decoder Options: each changes which calls are
+  spotted. All are off unless set. Some spot more calls with some risk of a
+  wrong one:
   - **Split runs**: reads `CQCQDE` as `CQ CQ DE`, for fists that run words
     together.
   - **Contest words**: treats CWT, SST or MST before a call like CQ, for
@@ -73,7 +104,14 @@ Settings, in plain terms:
   - **CQ repeats**: spots a station sooner when it sends CQ several times in a
     row.
 
-Hover over a setting's name for a one-line reminder.
+  Others keep wrong calls out, such as **Owner listed**, **Fragments** and
+  **Strongest copy**. **Decoder SNR** measures a spot's signal the way CW
+  Skimmer does.
+
+Hover over a setting for a one-line reminder.
+
+The **Servers** tab under Settings lists each server's skimmers, each with
+its run switch, and **Start all** and **Stop all**.
 
 ## When something looks wrong
 
@@ -88,12 +126,22 @@ wrong, worst first. Common ones:
   programs, or run fewer skimmers.
 - **Clock not NTP synchronised**: the computer's clock is not set from the
   internet. Spot times will be off; turn on automatic time.
-- **A stopped skimmer**: its tab shows why. Try **Start**; if it stops again,
+- **A stopped skimmer**: its tab shows why. Turn **Run** on; if it stops again,
   send the message to whoever set it up.
 
-The **Servers** tab under Info shows the server's log: every start, stop and
-setting change, with its result. It is the first thing to look at, and the
-thing to send along when asking for help.
+The **Servers** tab under Info shows each server's join code, its skimmers,
+and the server's log: every start, stop and setting change, with its result.
+The log is the first thing to look at, and the thing to send along when
+asking for help.
+
+Under each running skimmer, **running with** lists every setting it is using
+right now, as the skimmer itself reports it. That can differ from what
+Settings shows if a setting was changed but the skimmer has not restarted
+yet. Settings in full colour were set for this skimmer; dimmer ones are built
+into the spot rule; the dimmest are left at SparkGap's default. Hover over one
+to see which.
+
+![Servers under Info](web-info.png)
 
 ## This browser
 
@@ -103,6 +151,18 @@ Under **⚙**, **Settings**, **Servers**:
 - **Decoded text**: SparkGap reads each signal twice, through a wide and a
   narrow filter. **Lowest cost** (the default) shows whichever it is surer of;
   you can show both, or only one.
+
+## What's new
+
+- **2026-10-27.** The surer of the two readings is in bold, and a reading that
+  copied nothing says so. AFC can be switched per skimmer. Each skimmer keeps
+  the signal you last picked on it. Ctrl+F finds text inside the ⚙ dialog.
+  A band change clears the old signal. The ⚙ dialog has its own **?** for
+  help and this list. A skimmer's settings are in three cards (the skimmer
+  with Apply, Radio, Decoder Options) with more of the decoder's options, and
+  the Servers tab starts and stops skimmers.
+- **2026-10-26.** Spots, not consoles, in the bottom bar; a band change
+  counts spots and calls from zero.
 
 ## Setting it up
 

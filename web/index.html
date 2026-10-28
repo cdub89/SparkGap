@@ -19,7 +19,6 @@
     </div>
     <div class="grow"></div>
     <div id="station" class="station mono"></div>
-    <div class="state"><span id="stateDot" class="sdot"></span><span id="stateText">No feed</span></div>
     <div id="rec" class="rec" hidden><span class="rdot"></span>REC</div>
     <button id="gear" class="icon" title="Settings and info">⚙</button>
   </header>
@@ -75,14 +74,15 @@
     </aside>
   </main>
 
-  <footer id="statusbar"></footer>
+  <footer><div class="state"><span id="stateDot" class="sdot"></span><span id="stateText">No feed</span></div><div id="statusbar"></div></footer>
 </div>
 
 <div id="modal" class="modal" hidden>
   <div class="dialog settings" role="dialog" aria-label="Settings">
-    <div class="shead"><div id="modeSeg" class="seg"></div><div id="setNote" class="small muted"></div></div>
+    <div class="shead"><div id="modeSeg" class="seg"></div><div id="setNote" class="small muted"></div><button id="helpBtn" class="icon" title="Help and what's new">?</button></div>
     <div id="tabs" class="tabs"></div>
     <div id="infoBody" class="status" hidden></div>
+    <div id="helpBody" class="helpbody" hidden></div>
     <div id="tabServers">
       <div id="conns" class="scards"></div>
       <div id="connForm" class="form" hidden>
@@ -101,7 +101,7 @@
       </section>
     </div>
     <div id="tabCopy" class="scards" hidden></div>
-    <div class="row foot"><span class="small faint"><a id="help" target="_blank" rel="noopener">Help</a></span><button id="close" class="btn">Close</button></div>
+    <div class="row foot"><span></span><button id="close" class="btn">Close</button></div>
   </div>
 </div>
 </body>
