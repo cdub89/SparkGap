@@ -746,6 +746,41 @@ def test_a_control_without_a_usable_id_gets_no_answer(feed: FeedServer, rid: obj
     assert c.json("control_result")["id"] == "r2"
 
 
+def test_a_view_only_feed_refuses_control(feed: FeedServer) -> None:
+    asked: list[dict] = []
+    feed.on_control = lambda change, reply: (asked.append(change), reply(True, "done"))
+    c = WS(feed.port, path="/feed?view")
+    c.json("snapshot")
+    _control(c, {"band": "20m"})
+    assert c.json("control_result")["error"] == "view only: settings change through the server"
+    assert asked == []
+
+
+@pytest.mark.parametrize(
+    "query, peer, want",
+    [
+        ("view&for=100.1.2.3", "127.0.0.1", "100.1.2.3"),
+        ("view&for=fd7a::1", "::1", "fd7a::1"),
+        ("view&for=100.1.2.3", "192.168.1.5", None),  # only the server on this machine names one
+        ("for=100.1.2.3", "127.0.0.1", None),  # a feed that can control names no one else
+        ("view&for=evil.example", "127.0.0.1", None),
+        ("view", "127.0.0.1", None),
+    ],
+)
+def test_a_passed_through_browser_is_named_only_by_this_machine(
+    query: str, peer: str, want: str | None
+) -> None:
+    assert feed_server.forwarded(query, peer) == want
+
+
+def test_a_passed_through_browser_is_listed_by_its_address(feed: FeedServer) -> None:
+    c = WS(feed.port, path="/feed?view&for=100.1.2.3")
+    c.json("snapshot")
+    feed.publish_status({})
+    clients = c.json("status")["clients"]
+    assert [(x["peer"], x["via"]) for x in clients] == [("100.1.2.3", "server")]
+
+
 def test_a_control_without_settings_is_refused(feed: FeedServer) -> None:
     feed.on_control = lambda change, reply: reply(True, "done")
     c = WS(feed.port)
@@ -767,3 +802,15 @@ def test_new_bands_leave_nothing_of_the_old_ones(feed: FeedServer) -> None:
     assert snap["windows"] == [] and snap["spots"] == [] and snap["signals"] == [] and snap["status"] is None
     late = WS(feed.port)
     assert late.json("hello")["bands"][0]["name"] == "20m" and late.json("snapshot")["windows"] == []
+
+
+def test_new_bands_count_windows_calls_and_spots_from_zero(feed: FeedServer) -> None:
+    feed.publish_window(7021.2, "CQ DE AF4PX AF4PX K", 22, 18.0, 0.4)
+    feed.publish_spot(7021.2, "AF4PX", 18, 22)
+    feed.publish_status({"bins": 9})
+    wait_for(lambda: feed.status is not None and feed.status["calls"] == 1)
+    feed.set_bands([{"name": "20m", "center_khz": 14038.4, "span_khz": 96.0}])
+    feed.publish_status({"bins": 2})
+    wait_for(lambda: feed.status is not None and feed.status.get("bins") == 2)
+    s = feed.status
+    assert (s["windows"], s["calls"], s["spots_hour"], s["bins_peak"]) == (0, 0, 0, 2)

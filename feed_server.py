@@ -11,7 +11,8 @@ A join code is required whenever bind is not a loopback address: 6 characters, c
 dashes ignored. A fresh one: python3 feed_server.py --new-code
 "web": true also serves the browser console (web/) at http://<bind>:<port>/.
 "port": "auto" (the default) takes the first free port of AUTO_PORTS, 7321 to 7339: 7320 is the
-machine's SparkGap server (sparkgap_server.py), which passes each copy's feed through to SparkGap Web.
+machine's SparkGap server (sparkgap_server.py), which passes each copy's feed through to
+SparkGap Web.
 """
 
 from __future__ import annotations
@@ -48,6 +49,10 @@ PROTOCOL = "sparkgap.v1"
 FEED_VERSION = 1
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 PATH = "/feed"
+VIEW_QUERY = "view"  # /feed?view: no control messages (the server's pass-through for browsers)
+FOR_QUERY = "for"  # /feed?view&for=<address>: the browser the server passes through
+# a live change refused while the radio is being recovered: its error starts with this
+RECOVERING = "recovering"
 CODE_PROTOCOL = "sparkgap.code."  # a browser offers its join code as this subprotocol + code
 # browser clients learn of a refused code from these close codes (they cannot read the HTTP status)
 CLOSE_WRONG_CODE, CLOSE_LOCKED_OUT, CLOSE_FULL = 4401, 4429, 4503
@@ -166,6 +171,18 @@ async def read_frame(reader: asyncio.StreamReader) -> tuple[bool, int, bytes]:
     return bool(b0 & 0x80), opcode, unmask(await reader.readexactly(n), mask)
 
 
+def forwarded(query: str, peer_host: str) -> str | None:
+    """The browser address in a view-only request's for=, trusted only from this machine (the
+    SparkGap server); None otherwise or when it is no address."""
+    params = dict(p.partition("=")[::2] for p in query.split("&"))
+    if VIEW_QUERY not in params or not is_loopback(peer_host):
+        return None
+    try:
+        return str(ipaddress.ip_address(params.get(FOR_QUERY, "")))
+    except ValueError:
+        return None
+
+
 def is_loopback(host: str) -> bool:
     if host == "localhost":
         return True
@@ -180,6 +197,7 @@ class Client:
     writer: asyncio.StreamWriter
     peer: str
     name: str | None = None  # the console's host name, from reverse DNS
+    via: str | None = None  # "server": a browser passed through by the SparkGap server
     text: collections.deque[bytes] = field(default_factory=collections.deque)
     spectrum: collections.deque[bytes] = field(
         default_factory=lambda: collections.deque(maxlen=SPECTRUM_QUEUE_MAX)
@@ -191,6 +209,7 @@ class Client:
     since: float = field(default_factory=time.time)
     dropped_rows: int = 0
     closed: bool = False
+    view: bool = False  # view only: control messages refused
 
 
 def build_id() -> str | None:
@@ -417,7 +436,7 @@ class FeedServer:
             calls=len(self.calls),
             spots_hour=len(self.spot_times),
             bins_peak=self.bins_peak,
-            clients=[{"peer": c.peer, "name": c.name, "since": round(c.since),
+            clients=[{"peer": c.peer, "name": c.name, "via": c.via, "since": round(c.since),
                       "dropped": c.dropped_rows} for c in self.clients],
             problems=self.problems.summary(),
         )
@@ -429,6 +448,10 @@ class FeedServer:
         self.windows.clear()
         self.signals.clear()
         self.spots.clear()
+        self.n_windows = 0                     # a new band counts from zero, as a restart would
+        self.calls.clear()
+        self.spot_times.clear()
+        self.bins_peak = 0
         self.status = None
         frames = [encode_frame(OP_TEXT, json.dumps(m, separators=(",", ":")).encode())
                   for m in (self.hello, self.snapshot())]
@@ -500,9 +523,10 @@ class FeedServer:
         return False
 
     async def _handshake(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, seen: dict[str, Any]
     ) -> bool | None:
-        """True: a client to serve. False: refused. None: a page served, or https turned away."""
+        """True: a client to serve. False: refused. None: a page served, or https turned away.
+        seen["view"] is set for a view-only request (/feed?view)."""
 
         async def request() -> bytes | None:
             first = await reader.readexactly(1)
@@ -529,7 +553,9 @@ class FeedServer:
                 headers[k.strip().lower()] = v.strip()
         if len(parts) != 3 or parts[0] != "GET":
             return self._reject(writer, 405, "Method Not Allowed")
-        path = parts[1].split("?")[0]
+        path, _, query = parts[1].partition("?")
+        seen["view"] = VIEW_QUERY in query.split("&")
+        seen["for"] = forwarded(query, str(writer.get_extra_info("peername")[0]))
         if path != PATH:
             if self.web and headers.get("upgrade", "").lower() != "websocket":
                 return self._serve_file(writer, path)
@@ -648,8 +674,9 @@ class FeedServer:
             writer.close()
             return
         self.pending += 1
+        seen: dict[str, Any] = {}
         try:
-            accepted = await self._handshake(reader, writer)
+            accepted = await self._handshake(reader, writer, seen)
         finally:
             self.pending -= 1
         if not accepted:
@@ -657,7 +684,10 @@ class FeedServer:
                 log.info("GUI feed: refused %s", peer)
             writer.close()
             return
-        c = Client(writer, peer)
+        via = "server" if seen.get("for") else None
+        if via:  # the browser behind the server, not the server's own connection
+            host = peer = seen["for"]
+        c = Client(writer, peer, view=bool(seen.get("view")), via=via)
         for msg in (self.hello, self.snapshot()):
             c.text.append(encode_frame(OP_TEXT, json.dumps(msg, separators=(",", ":")).encode()))
         c.ready.set()
@@ -743,6 +773,8 @@ class FeedServer:
             result = {"type": "control_result", "id": rid, "ok": ok, ("message" if ok else "error"): text}
             self._call(self._queue, c, encode_frame(OP_TEXT, json.dumps(result).encode()))
 
+        if c.view:
+            return reply(False, "view only: settings change through the server")
         if not isinstance(change, dict) or not change:
             return reply(False, "set must be an object")
         if self.on_control is None:

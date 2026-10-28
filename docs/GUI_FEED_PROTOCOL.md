@@ -79,12 +79,17 @@ Who this SparkGap is and the settings it runs with.
 ```json
 {"type": "hello", "v": 1, "host": "shack-pc", "build": "06e710d",
  "call": "W1AW", "decoder": "itila2",
- "config": {"callsign": "W1AW", "cw_decoder": "itila2",
+ "config": {"callsign": "W1AW", "cw_decoder": "itila2", "itila2_afc": false,
             "sample_rate": 96000, "flex_daxiq_channel": 2,
             "telnet_port": 7300, "enable_ft8": false,
             "spot_rule": "repeat", "spot_rule_cq_groups": true,
             "spot_rule_lockon": true, "spot_rule_cq_qualifiers": true,
-            "spot_rule_split_runs": true, "spot_validation": "normal",
+            "spot_rule_split_runs": true, "spot_rule_contest_words": false,
+            "spot_rule_cq_repeats": false, "spot_rule_doubled_calls": false,
+            "spot_rule_split_up": false, "spot_rule_fragments": "off",
+            "spot_rule_owner_cell": false, "spot_rule_owned_two_windows": false,
+            "itila_window_sec": 30.0, "itila_max_bins": 400,
+            "itila_decode_threads": 1, "spot_validation": "normal",
             "spot_validation_calls": "rbn+skcc", "rbn_known_days": 7},
  "config_defaults": ["rbn_known_days"],
  "config_built_in": ["spot_rule_cq_groups", "spot_rule_lockon",
@@ -162,17 +167,20 @@ Every 2 seconds.
  "radio": {"type": "flex", "address": "192.168.1.20", "state": "live",
            "packets": 5023532, "lost": 0, "reconnects": 1,
            "last_reconnect": 1792019016, "station": "SparkGap-2",
-            "daxiq_channel": 2, "others": ["Shack (SmartSDR-Win)"],
-            "muted_packets": 0},
+           "daxiq_channel": 2, "others": ["Shack (SmartSDR-Win)"],
+           "muted_packets": 0,
+           "rx": {"rxant": "ANT1", "loopa": false, "loopb": false, "rfgain": 8,
+                  "ant_list": ["ANT1", "ANT2", "RX_A", "XVTA"],
+                  "rfgain_range": [-8, 32, 8]}},
  "telnet": {"port": 7300, "clients": 1}, "iq_trimmed_s": 0.0,
  "recording": {"file": "/srv/sparkgap/rec/40m.wav", "bytes": 2473963564},
  "windows": 72823, "calls": 97, "spots_hour": 41, "bins_peak": 52,
  "decode_khz": [[7000.0, 7070.0]],
- "clients": [{"peer": "192.168.1.31:61718", "name": "shack",
+ "clients": [{"peer": "192.168.1.31:61718", "name": "shack", "via": null,
               "since": 1792018739, "dropped": 12}],
  "problems": {"errors": 8,
               "last": [{"utc": 1792019013, "level": "ERROR",
-                        "msg": "hpsdr_create failed"}]}}
+                        "msg": "[Flex] The radio closed the control connection"}]}}
 ```
 
 Process and decoding:
@@ -197,8 +205,14 @@ The station (absent in file mode except `radio`):
   or the file being replayed) and `state` (`connecting`, `live`, `reconnecting`,
   `waiting` or `replaying`). A Flex adds `packets`, `lost`, `reconnects`,
   `last_reconnect` (UTC seconds or `null`), its `station` name, its
-  `daxiq_channel`, the `others` stations on the radio at the last connect, and
-  how many packets it has silenced while the radio was keyed (`muted_packets`).
+  `daxiq_channel`, the `others` stations on the radio at the last connect,
+  how many packets it has silenced while the radio was keyed
+  (`muted_packets`), and
+  `rx`: our pan's receive path as the radio reports it (`rxant`, `loopa`,
+  `loopb`, `rfgain`, `null` when the radio reports none; a loop only on a
+  model with its jacks: Loop A on the FLEX-6500, 6700 and 6700R, Loop B on the
+  6700 and 6700R), the antennas the pan offers (`ant_list`) and its RF gain
+  `[low, high, step]` (`rfgain_range`).
   The HPSDR C receiver adds `packets`, `lost` and `pkt_per_s`; file mode adds
   `position_s`.
 - `telnet`: the spot port and how many telnet clients are connected.
@@ -207,8 +221,9 @@ The station (absent in file mode except `radio`):
 The feed itself:
 
 - `clients`: each connected console: address, host name from reverse DNS
-  (`null` when it has none), connected since (UTC seconds),
-  spectrum rows dropped because it fell behind.
+  (`null` when it has none), `via` (`"server"` for a browser the SparkGap
+  server passes through, its address taken from the server; else `null`),
+  connected since (UTC seconds), spectrum rows dropped because it fell behind.
 - `problems`: SparkGap's errors since start, with the last five
   (UTC seconds, level, message).
 
@@ -260,7 +275,11 @@ Changes the running SparkGap, live.
 - `id`: a string or an integer, up to 64 characters. A message with no usable
   `id` gets no answer.
 - `set`: a non-empty object, else the answer is the error `set must be an
-  object`. Only `band` can change live (a band name such as `40m`).
+  object`. Either `band` (a band name such as `40m`) or `rx`, our pan's
+  receive path: any of `rxant` (one of the pan's `ant_list`), `loopa` and
+  `loopb` (true or false, only on a model that has that loop) and
+  `rfgain` (in the radio's `rfgain_range` steps), as in
+  `{"rx": {"rxant": "ANT2", "rfgain": 16}}`.
 
 The answer goes only to the client that asked:
 
@@ -275,9 +294,16 @@ recording (`record_wav`), and without per-band settings (`per_band_min_snr`,
 `pfb_scanner_bands`). Otherwise the error says why: `not supported` (HPSDR,
 file replay), `only the band can be changed live`, `not supported with more
 than one band`, `not supported while recording`, `unknown band '6m'`, or `not
-supported with per-band settings`. One change runs at a time: another sent
+supported with per-band settings`. An `rx` change works for a FlexRadio copy
+running live; a value the radio does not offer is refused before anything is
+sent, and a change the radio refuses is put back to what it reported before.
+Loops are shared by every pan on that antenna and RF gain by every pan on the
+same SCU, so either can also change under the copy; `status` shows what the
+radio reports. One change runs at a time: another sent
 meanwhile is answered `busy: a change is under way`. A copy already on that
-band answers ok with `already on 40m`.
+band answers ok with `already on 40m`. While the copy is recovering from a radio
+outage, a change is refused within about 2 seconds with an error starting
+`recovering`, rather than waiting out the outage.
 
 On success the radio's pan and slice move first. If the radio refuses, nothing
 changes and its error is returned; if the old frequency cannot be confirmed
@@ -295,9 +321,14 @@ nothing from the old band arrives after the new `hello`. A client should treat a
   frequency; with `gate_harmonic_filter` on (default off), a call spotted on the
   old band can hold back a spot of the same call at a harmonic frequency on the
   new band for the gate's window.
-- The join code also grants control: anyone who can open the feed can change the
-  band. A feed on loopback with no join code can be changed by any local
-  program.
+- The copy's own join code grants control: anyone who can open the feed with it
+  can change the band. A feed on loopback with no join code can be changed by
+  any local program. The SparkGap server keeps the copy's code on its machine
+  and opens the feed as `/feed?view&for=<browser address>` for a browser: a
+  `control` sent on such a connection is refused with `view only: settings
+  change through the server`. The copy takes `for` only on a view-only feed
+  opened from its own machine.
+  Browsers change settings through the server's own commands.
 
 ## Keeping the connection
 
