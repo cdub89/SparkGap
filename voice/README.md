@@ -8,8 +8,57 @@ folder holds it as it lands, piece by piece:
 | --- | --- | --- |
 | Spot rules: transcripts in, spots out | `voice_spot.py` | here |
 | Active US calls from the FCC database | `fcc_calls.py` | here |
-| Voice detector: IQ in, one audio track per voice | | next |
-| Live runner: detector, Whisper and the rules on a running radio, spots on telnet | | after that |
+| Voice detector: IQ in, one audio track per voice | `voice_detect.py` | here |
+| Live runner: detector, Whisper and the rules on a running radio, spots on telnet | | next |
+
+## How voices are found
+
+`voice_detect.py` looks at the band every 2 s (25 Hz bins, 40 ms frames) for the shape an SSB voice leaves:
+
+- **Shape:** for each candidate carrier (50 Hz steps), the 2.3 kHz voice window on one side (300 to
+  2600 Hz from the carrier) averages at least 6 dB over the noise floor and 4 dB over the carrier side,
+  which a transmitter's filter leaves quiet. LSB below 10 MHz, USB above and on 60 m.
+- **Spread:** at least 30% of the window's bins are 6 dB over the noise floor. A CW carrier or a birdie
+  fills one bin.
+- **Rhythm:** the window's loudness, frame by frame over the 2 s, varies by at least 3 dB (standard
+  deviation): syllables and pauses. Carriers, RTTY, FT8 and noise stay flat.
+- **No carrier:** a peak 10 dB over the window at the carrier itself is AM or a carrier, not SSB.
+- **One voice per 2.2 kHz** of a sideband in each window, the strongest.
+- **Tracks:** a hit within 400 Hz of a live track extends it, and a track ends after 120 s without one.
+  It is kept with 3 hits or more, or with 2 within 10 s: a sporadic voice counts (YO7WC on 15 m in CQ WW
+  came only from 3 hits minutes apart). Each track's audio is cut at 16 kHz on its sideband, in bounded
+  memory (one FFT per minute of IQ, every block the same length so the audio has no step at the joins),
+  for the transcriber.
+
+```
+python3 voice/voice_detect.py IQ.cf32 CENTRE_KHZ LO_KHZ HI_KHZ OUTDIR [--start S] [--dur S] [--tracks-only]
+```
+
+IQ is 192 kHz: `.cf32` (interleaved float32 I, Q) as measured on FlexRadio DAX-IQ, or a stereo 16- or
+24-bit WAV as `record_wav` and `iq_recorder.py` write them (read, but not yet measured on voice; a Red
+Pitaya recording may need Q negated, as `hpsdr_proxy.py --negate-q` does). OUTDIR gets `tracks.json`
+(the span, every hit and track) and `clips/ssb_<carrier kHz>@<start s>.wav`. Thresholds: `VD_SHAPE_DB`,
+`VD_LEVEL_DB`, `VD_SPREAD`, `VD_RHYTHM_DB`, `VD_END_S`. `VD_TMP`: where the cutter keeps its temp files
+(default OUTDIR, since /tmp can be RAM; removed even on an error). `VD_REUSE=1`: cut from an existing `tracks.json` of the same
+span instead of detecting again. Tests: `tests/test_voice_detect.py` (synthetic voices, a CW carrier, a
+data signal, the track rules, the cutter's audio and its phase across block joins at an awkward carrier,
+tracks at the ends of a file, cleanup when a step fails, and 16- and 24-bit WAV).
+
+Known limits, from the CQ WW recordings:
+
+- **The carrier estimate sits 0 to 300 Hz on the voice's quiet side** (the live runner moves its spots
+  100 Hz back), and it can jump half a kHz or more when a station changes operators or voice. A
+  voice then makes two or three tracks a kHz or two apart: 24 to 42% of track time on busy bands is
+  such a second track, transcribed again. The spot rules spot each call once within 3 kHz, so it
+  costs transcription time, not spots. Three fixes were measured and dropped:
+  - joining within 1.1 kHz saved 13 to 26% of transcription but merged real neighbours 1 to 2 kHz
+    apart and lost 14 confirmed calls;
+  - letting a second voice closer than 2.2 kHz through when its own slice has speech that doesn't
+    follow the stronger voice gained no calls and cost 45% more transcription;
+  - comparing the cut audio of overlapping tracks can't tell the cases apart: tracks a kHz apart
+    share most of their window, so their loudness follows whichever voice is loudest.
+- **A very strong voice can leave a weak hit about 2.5 kHz to its quiet side** (spectral leakage);
+  rare on contest recordings (0 to 1.5% of track time).
 
 ## What the rules do
 
@@ -53,8 +102,8 @@ python3 voice/voice_spot.py DUMPDIR large-v3-turbo --strict --fcc fcc_active_cal
 
 `DUMPDIR` holds one Whisper transcript per voice track,
 `ssb_<carrier kHz>@<start s>.<model>.json`, each a list of
-`[start, end, text, avg_logprob, [[word, probability], ...]]`. The detector that writes those comes
-in the next pull request. `--debug` prints why each heard call was or wasn't spotted.
+`[start, end, text, avg_logprob, [[word, probability], ...]]`. The clips come from `voice_detect.py`;
+the transcription step that writes these files comes with the live runner. `--debug` prints why each heard call was or wasn't spotted.
 Tests: `python3 -m pytest tests/test_voice_spot.py`.
 
 ## Measured
