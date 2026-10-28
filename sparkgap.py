@@ -7694,9 +7694,6 @@ class SparkGap:
                         self.managers)
         if _gui_feed is not None and hasattr(self.receiver, 'retune'):
             _gui_feed.on_control = self._take_control
-        for mgr in self.managers:  # a keyed Flex: empty spectrum rows, not the transmitter
-            if mgr._spectrum_tap is not None:
-                mgr._spectrum_tap.tx = getattr(self.receiver, 'transmitting_at', None)
 
         self.receiver.start()
         self.running = True
@@ -7782,9 +7779,7 @@ class SparkGap:
         self._set_telnet_bands()
         if _gui_feed is not None and mgr._spectrum_tap is not None:
             import feed_server
-            tx = mgr._spectrum_tap.tx
             mgr._spectrum_tap = feed_server.SpectrumTap(_gui_feed, rate, center_hz)
-            mgr._spectrum_tap.tx = tx
             _gui_feed.set_bands([{'name': name, 'center_khz': center_hz / 1000.0, 'span_khz': rate / 1000.0}])
         log.info("Live change: %s (%.3f kHz) -> %s (%.3f kHz)", old_name, old_hz / 1000.0, name, center_hz / 1000.0)
         return reply(True, "retuned to %s" % name)

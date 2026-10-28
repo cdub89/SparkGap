@@ -176,6 +176,9 @@ Several copies on one radio (one band each, each on its own
 `flex_daxiq_channel`) share one SparkGap station there: start
 `python3 flex_station.py --config <one of their configs>` before them and stop
 it after the last one. A copy started alone holds the station itself.
+The decoders get silence while the radio is keyed, until 0.1 s after
+its key-up (which comes after the transmitting client's CW delay), so
+your own transmissions and their key clicks are not decoded.
 
 **macOS** should work with light Makefile changes (`.dylib` instead of `.so`; on Apple Silicon
 omit `-march=native`). **Windows:** WSL2 with Ubuntu, then the Linux steps. Native builds for
