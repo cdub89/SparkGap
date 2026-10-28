@@ -1523,8 +1523,9 @@ static int extract_callsigns(
 }
 
 /* Sample index where this window's text ends: mid-way through the last word
- * gap, or the last letter gap when no word gap lies within CARRY_MAX of the
- * end.  Everything after it is decoded again with the next window. */
+ * gap (a leading silence counts), or the longest letter gap when no word gap
+ * lies within CARRY_MAX of the end.  Everything after it is decoded again
+ * with the next window. */
 static int find_carry_cut(itila_state_t *st, const int8_t *marks, int T, double wpm) {
     run_t *runs = st->sc_runs;
     int n_runs = 0;
@@ -1543,15 +1544,18 @@ static int find_carry_cut(itila_state_t *st, const int8_t *marks, int T, double 
 
     if (!runs[n_runs - 1].is_mark && runs[n_runs - 1].dur >= letter_word) return T;
 
-    int letter_cut = -1;
+    int letter_cut = -1, letter_dur = 0;
     int pos = T;
-    for (int r = n_runs - 1; r >= 1; r--) {
+    for (int r = n_runs - 1; r >= 0; r--) {
         pos -= runs[r].dur;
         if (runs[r].is_mark) continue;
         int cut = pos + runs[r].dur / 2;
-        if (T - cut > CARRY_MAX) break;
+        if (T - cut > CARRY_MAX) {
+            if (runs[r].dur < letter_word || T - (pos + runs[r].dur) >= CARRY_MAX) break;
+            cut = T - CARRY_MAX;  /* word gap reaching into range: cut inside it */
+        }
         if (runs[r].dur >= letter_word) return cut;
-        if (letter_cut < 0 && runs[r].dur >= 2.0 * unit_sp) letter_cut = cut;
+        if (runs[r].dur >= 2.0 * unit_sp && runs[r].dur > letter_dur) { letter_cut = cut; letter_dur = runs[r].dur; }
     }
     return letter_cut >= 0 ? letter_cut : T;
 }
