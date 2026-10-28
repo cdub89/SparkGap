@@ -248,6 +248,13 @@ def pan_slices(lines, pan_id):
             for m in [re.search(r'\|slice (\d+) ', line)] if m}
 
 
+def slice_letter(lines, slice_id):
+    """The letter SmartSDR and Maestro show for slice slice_id (its index_letter), or None."""
+    tag = re.compile(r'\|slice %d .*\bindex_letter=([A-Z])\b' % slice_id)
+    found = [m.group(1) for line in lines for m in [tag.search(line)] if m]
+    return found[-1] if found else None
+
+
 RX_KEYS = ('rxant', 'loopa', 'loopb', 'rfgain')   # our pan's receive path, as the radio reports it
 # receive loops by model (FLEX-6000 Hardware Reference Manual 7.17-7.20: RX ANT-A in/out, RX ANT-B on
 # the 6700/6700R only).  Other models report loopa=0 loopb=0 with no jacks behind them (6400M, 6600).
@@ -808,6 +815,7 @@ class FlexIQReceiver:
         self._stream_id = None
         self._pan_id = None
         self._slice_id = None
+        self.slice_letter = None        # the letter SmartSDR shows for our slice (slice_letter)
         self._stream_handle = None    # the client handle that made our stream
         self._pan_owner = None        # the station handle that owned our pan when we made it
         self._station_handle = None   # the station's GUI client handle, as a number
@@ -1011,6 +1019,7 @@ class FlexIQReceiver:
             raise RuntimeError(f"[Flex] The radio refused{self.rx_path} on slice {self._slice_id}")
         # locked, a click on its VFO (SmartSDR, Maestro, front panel) cannot move it or our pan (FlexLib Slice.Lock)
         conn.ok(f"slice {self._slice_id} locked", conn.cmd(f"slice lock {self._slice_id}"))
+        self.slice_letter = slice_letter(conn.cmd("sub slice all", settle=0.3), self._slice_id)
         # what the radio now reports for our pan's receive path, and the RF gain steps it offers
         self.rx = pan_rx(conn.cmd("sub pan all", settle=0.3), self._pan_id, loops=self.loops)
         self._target.update({k: self.rx[k] for k in RX_KEYS if self._target[k] is None and k in self.rx})  # unset: as first found
@@ -1113,6 +1122,8 @@ class FlexIQReceiver:
             m = re.search(r'\|client (0x[0-9A-F]+) disconnected', line, re.I)
             if m and int(m.group(1), 16) == self._station_handle:
                 self._station_lost = True
+        if self._slice_id is not None:
+            self.slice_letter = slice_letter(lines, self._slice_id) or self.slice_letter
         if self._pan_id is not None:
             self._note_rx(pan_rx(lines, self._pan_id, self.rx, self.loops))
         if ptt_ours(lines) and not self._ptt_warned:
@@ -1309,6 +1320,8 @@ class FlexIQReceiver:
                 'last_reconnect': self.last_reconnect, 'station': self.station,
                 'daxiq_channel': self.channel, 'others': list(self.others),
                 'muted_packets': self.muted_packets,
+                'slice': self._slice_id if self.state == "live" else None,  # a reconnect may make another
+                'slice_letter': self.slice_letter if self.state == "live" and self._slice_id is not None else None,
                 'rx': {**{k: self.rx.get(k) for k in RX_KEYS}, 'ant_list': list(self.rx.get('ant_list', [])),
                        'rfgain_range': list(self.rfgain_range) if self.rfgain_range else None}}
 

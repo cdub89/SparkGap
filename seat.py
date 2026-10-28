@@ -63,7 +63,7 @@ OPTION_CHOICES: dict[str, tuple[Any, ...]] = {
 }
 OPTION_DEFAULTS: dict[str, Any] = {"itila_window_sec": 60}  # where the key is read
 # a Flex copy's receive path: setting -> (the copy's live key, its config key).  The radio's
-# state is the truth: a running copy changes it live first, then its config
+# state is the truth: a running copy changes it live; startup values change while it is stopped
 RX_SETTINGS = {
     "antenna": ("rxant", "flex_rxant"),
     "loop_a": ("loopa", "flex_loopa"),
@@ -513,21 +513,14 @@ class Seat:
         alone first goes to live(name, band), which moves the running copy in place and returns its
         answer, None when it could not (then the copy restarts, onto the band just written), or
         raises SeatError while the copy recovers from a radio outage (nothing written).
-        Receive path settings (RX_SETTINGS) on a running copy go to live_rx(name, change) first; the
-        config is written only when the radio took them, and a refusal changes nothing."""
+        Receive path settings (RX_SETTINGS) on a running copy go to live_rx(name, change) only: the
+        config holds startup values, written while the copy is stopped."""
         i = self.instance(name)
         changes: dict[str, Any] = {}
         rx: dict[str, Any] = {}
         for key, value in settings.items():
             if key in RX_SETTINGS:
-                if self.radio(i) is None:
-                    raise SeatError(f"{key} is a FlexRadio setting")
-                if key == "antenna" and not (isinstance(value, str) and ANTENNA_RE.match(value)):
-                    raise SeatError("antenna must be one the radio lists")
-                if key in ("loop_a", "loop_b") and not isinstance(value, bool):
-                    raise SeatError(f"{key} must be true or false")
-                if key == "rf_gain" and (isinstance(value, bool) or not isinstance(value, int)):
-                    raise SeatError("rf_gain must be a whole number of dB")
+                self._check_rx(i, key, value)
                 rx[key] = value
             elif key == "band":
                 if self.multi_band(i):
@@ -585,23 +578,41 @@ class Seat:
                 if not took[0]:
                     raise SeatError(f"{name}: {took[1]}")
                 done = f"{name}: {took[1]}"
-            changes.update({RX_SETTINGS[k][1]: v for k, v in rx.items()})
+            elif rx:
+                changes.update({RX_SETTINGS[k][1]: v for k, v in rx.items()})
             answer = None
             if running and live is not None and set(rest) == {"band"}:
-                try:
-                    # before the write: a refusal changes nothing
-                    answer = live(name, settings["band"])
-                except SeatError:
-                    if rx:
-                        write_config(i.config, {RX_SETTINGS[k][1]: v for k, v in rx.items()})
-                    raise
-            write_config(i.config, changes)
+                answer = live(name, settings["band"])  # before the write: a refusal changes nothing
+            if changes:
+                write_config(i.config, changes)
             if not running or not rest:
                 return done
             if answer:
                 return f"{name}: {answer}"
             self._stop(i)
             return f"{done}; {self._start(i)}"
+
+    def _check_rx(self, i: Instance, key: str, value: Any) -> None:
+        if self.radio(i) is None:
+            raise SeatError(f"{key} is a FlexRadio setting")
+        if key == "antenna" and not (isinstance(value, str) and ANTENNA_RE.match(value)):
+            raise SeatError("antenna must be one the radio lists")
+        if key in ("loop_a", "loop_b") and not isinstance(value, bool):
+            raise SeatError(f"{key} must be true or false")
+        if key == "rf_gain" and (isinstance(value, bool) or not isinstance(value, int)):
+            raise SeatError("rf_gain must be a whole number of dB")
+
+    def startup(self, name: str, settings: dict[str, Any]) -> str:
+        """Write receive path startup values (RX_SETTINGS) to name's config: the radio and a
+        running copy are left as they are."""
+        i = self.instance(name)
+        if not settings or not set(settings) <= set(RX_SETTINGS):
+            raise SeatError(f"startup values here are: {', '.join(RX_SETTINGS)}")
+        for key, value in settings.items():
+            self._check_rx(i, key, value)
+        with self.lock(i):
+            write_config(i.config, {RX_SETTINGS[k][1]: v for k, v in settings.items()})
+        return f"{name}: starts with {', '.join(f'{k} {v}' for k, v in settings.items())}"
 
     # ---- status ----
 
