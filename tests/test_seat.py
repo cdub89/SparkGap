@@ -285,14 +285,13 @@ def _cfg(seat: Seat, name: str) -> dict[str, object]:
     return json.loads((seat.root / "config" / f"{name}.local.json").read_text())
 
 
-def test_a_running_copy_changes_its_receive_path_on_the_radio_first(seat: Seat) -> None:
+def test_a_running_copy_changes_its_receive_path_on_the_radio_only(seat: Seat) -> None:
     seat.start("dallas2")
     pid = seat.pid("dallas2")
     asked: list[dict[str, object]] = []
 
     def live_rx(name: str, rx: dict[str, object]) -> tuple[bool, str]:
         asked.append(rx)
-        assert "flex_rxant" not in _cfg(seat, name)  # the radio before the config
         return True, "receive path rxant=ANT2 loopa=1 rfgain=16"
 
     out = seat.change(
@@ -302,8 +301,8 @@ def test_a_running_copy_changes_its_receive_path_on_the_radio_first(seat: Seat) 
     assert (
         out == "dallas2: receive path rxant=ANT2 loopa=1 rfgain=16" and seat.pid("dallas2") == pid
     )
-    cfg = _cfg(seat, "dallas2")
-    assert cfg["flex_rxant"] == "ANT2" and cfg["flex_loopa"] is True and cfg["flex_rfgain"] == 16
+    cfg = _cfg(seat, "dallas2")  # startup values change only while stopped
+    assert not {"flex_rxant", "flex_loopa", "flex_rfgain"} & set(cfg)
 
 
 @pytest.mark.parametrize(
@@ -342,3 +341,19 @@ def test_a_receive_path_value_of_the_wrong_kind_is_refused(
     with pytest.raises(SeatError, match=error):
         seat.change("dallas1", settings)
     assert not any(k.startswith("flex_") for k in _cfg(seat, "dallas1"))
+
+
+def test_startup_writes_the_config_and_leaves_a_running_copy_alone(seat: Seat) -> None:
+    seat.start("dallas2")
+    pid = seat.pid("dallas2")
+    out = seat.startup("dallas2", {"antenna": "RX_B", "rf_gain": 16})
+    cfg = _cfg(seat, "dallas2")
+    assert cfg["flex_rxant"] == "RX_B" and cfg["flex_rfgain"] == 16 and seat.pid("dallas2") == pid
+    assert out == "dallas2: starts with antenna RX_B, rf_gain 16"
+
+
+@pytest.mark.parametrize("settings", [{}, {"band": "20m"}, {"rf_gain": "16"}, {"antenna": "ANT 1"}])
+def test_startup_takes_only_a_valid_receive_path(seat: Seat, settings: dict[str, object]) -> None:
+    with pytest.raises(SeatError):
+        seat.startup("dallas2", settings)
+    assert "flex_rxant" not in _cfg(seat, "dallas2")

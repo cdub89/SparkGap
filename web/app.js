@@ -732,6 +732,7 @@ const app = {
   servers: [],  // {address, token}: a machine's server and its join code; its copies come from its seat
   tab: "servers",  // the dialog's tab: "server" or "<server index>:<copy name>"
   pending: {},  // "<server address>|<copy name>" -> settings picked but not yet applied
+  saved: {},  // the same key -> the last Save Config: {busy}, {at} or {error}
   mode: load("mode", "info"),  // the dialog shows Settings or Info
   want: load("current", ""),  // the copy shown, by name, wherever its port is today
   instances: [],
@@ -896,6 +897,17 @@ function addInstance(url, token, at, server = null) {
   return i;
 }
 
+// the radio reports a different receive path for copy i (from this page, SmartSDR, Maestro or another
+// copy on the same SCU).  An open list in the dialog is left alone: the next status catches up
+function rxMoved(i) {
+  const r = i.status && i.status.radio && i.status.radio.rx, now = r ? JSON.stringify([r.rxant, r.rfgain, r.loopa, r.loopb]) : "";
+  if (now === i.rxSeen) return false;
+  const f = document.activeElement;
+  if (f && f.tagName === "SELECT" && $("modal").contains(f)) return false;
+  i.rxSeen = now;
+  return true;
+}
+
 function changed(i, what) {
   // a copy that comes back on another port is followed by name, but never away from a live one
   if (what === "hello" && i.name === app.want && i !== inst() && !(inst() && inst().state === "live")) {
@@ -903,6 +915,7 @@ function changed(i, what) {
   }
   if (what === "hello" && i === inst() && !app.want) { app.want = i.name; save("current", i.name); }
   if (what === "state") { renderConns(); if (i === inst()) renderState(); return; }
+  if (what === "status" && app.mode !== "info" && rxMoved(i)) renderSettings();  // any copy, set from anywhere
   if (i !== inst()) { if (what === "hello") { renderConns(); renderBands(); } return; }
   if (what === "hello" && i.moved) { i.moved = false; app.selectedKhz = -1; wf.sel = -1; }
   if (what === "hello") { wf.fit(); renderBands(); renderState(); renderStation(); renderSettings(); renderConns(); renderLadder(); }
@@ -1109,11 +1122,20 @@ function statusHtml(i, a) {
   const lossy = r.packets > 0 && r.lost / r.packets > LOST_WARN;
   const radio = [row("Type", r.type === "flex" ? "FlexRadio" : r.type === "hpsdr" ? "HPSDR" : r.type === "file" ? "File replay" : r.type, { ref: true }),
     r.type === "file" ? fileRow("File", r.address, "-", { ref: true }) : row("Address", r.address, { mono: true, ref: true })];
-  if ("station" in r) radio.push(row("Station", r.station, { ref: true }), row("DAX-IQ channel", r.daxiq_channel, { mono: true, ref: true }));
+  if ("station" in r) radio.push(row("Station", r.station, { ref: true }));
+  if ("slice" in r) radio.push(row("Slice", r.slice === null ? null : r.slice + (r.slice_letter ? ` (${r.slice_letter})` : ""), { mono: true, ref: true }));
+  if (r.rx) {
+    const parts = [`ANT = ${r.rx.rxant || "-"}`, `RF gain = ${typeof r.rx.rfgain === "number" ? r.rx.rfgain : "-"}`];
+    [["loopa", "Loop A"], ["loopb", "Loop B"]].forEach(([k, label]) => {
+      if (typeof r.rx[k] === "boolean") parts.push(`${label} = ${r.rx[k] ? "on" : "off"}`);
+    });
+    radio.push(row("Antenna", parts.join(", "), { mono: true, key: true }));
+  }
   const mhz = khz => (khz / 1000).toFixed(3);
   (h.bands || []).forEach((b, n) => {
     const tag = h.bands.length > 1 ? ` ${bandLabel(b)}` : "", d = (s.decode_khz || [])[n];
-    radio.push(row("IQ" + tag, `${mhz(b.center_khz)} MHz, ${b.span_khz} kHz`, { mono: true, ref: true }));
+    const dax = "daxiq_channel" in r;
+    radio.push(row((dax ? "DAX-IQ" : "IQ") + tag, `${dax ? `IQ = ${r.daxiq_channel}, ` : ""}centre = ${mhz(b.center_khz)} MHz, ${b.span_khz} kHz`, { mono: true, ref: true }));
     if (d) radio.push(row("Decoding" + tag, `${mhz(d[0])} to ${mhz(d[1])} MHz`, { mono: true, ref: true }));
   });
   if ("packets" in r) radio.push(row("Packets", num(r.packets), { mono: true, ref: true }), row("Lost", num(r.lost), { mono: true, key: true, bad: lossy }));
@@ -1469,10 +1491,19 @@ function runningWithHtml(h) {
 // Info on a stopped copy's tab: what its server knows
 function stoppedInfoHtml(a) {
   if (!a) return "";
+  // the running layout's Radio and SparkGap cards, with what the server knows and the rest empty
   const row = (k, v) => `<div class="srow"><span class="k">${esc(k)}</span><span class="v">${esc(dash(v))}</span></div>`;
-  return `<section class="scard wide"><h3><span>${esc(a.name)} · ${esc(String(a.band))}</span></h3>`
-    + row("State", a.busy || a.state) + row("Build", a.build) + row("Last log", a.log)
-    + (a.last_error ? `<div class="small err">${esc(a.last_error)}</div>` : "") + "</section>";
+  const card = (title, rows) => `<section class="scard"><h3><span>${title}</span></h3>${rows.join("")}</section>`;
+  const flex = !!a.radio;
+  const radio = [row("Type", flex ? "FlexRadio" : null), row("Address", a.radio),
+    ...(flex ? [row("Station", null), row("Slice", null), row("Antenna", null)] : []),
+    row(flex ? "DAX-IQ" : "IQ", null), row("Decoding", null), row("Packets", null), row("Lost", null), row("Reconnects", null),
+    ...(flex ? [row("Other stations", null)] : [])];
+  const sg = [row("Host", null), row("Build", a.build), row("Clock", null), row("Decoder", null), row("Bands", a.band),
+    row("Config", null), row("Log", a.log), row("Recording", null), row("IQ trimmed", null)];
+  return `<div class="infohead"><span class="sname">${esc(a.name)}</span><span class="pill warn">${esc(String(a.busy || a.state).toUpperCase())}</span></div>`
+    + (a.last_error ? `<div class="small err">${esc(a.last_error)}</div>` : "")
+    + `<div class="scards">${card("RADIO", radio)}${card("SPARKGAP", sg)}</div>`;
 }
 
 // Settings lists servers (address and join code); each line shows the copies found on it
@@ -1501,7 +1532,10 @@ function renderConns() {
     row.append(edit);
     if (!sv.here) {
       const del = document.createElement("button"); del.className = "btn small"; del.textContent = "✕";
-      del.onclick = e => { e.stopPropagation(); removeConn(n - here.length); };
+      del.onclick = e => {
+        e.stopPropagation();
+        if (confirm(`Remove ${sv.address}? Adding it again needs its join code.`)) removeConn(n - here.length);
+      };
       row.append(del);
     }
     row.onclick = () => { if (copies.length) setCurrent(app.instances.indexOf(copies[0])); };
@@ -1659,18 +1693,26 @@ function copyCards(k, sv, i) {
     + `<button class="btn small primary" ${at} data-cmd="apply"${busy ? " disabled" : ""}>${live ? "Apply (live)" : run ? `Apply (restarts ${esc(i.name)})` : "Save"}</button>`
     + `<button class="btn small" ${at} data-cmd="discard">Discard</button></div>` : "";
   const shown2 = v => v === true ? "on" : v === false ? "off" : String(v);
-  const starts = key => saved[key] !== null && saved[key] !== undefined && rx && saved[key] !== rx[key]
-    ? `<span class="small faint">starts at ${esc(shown2(saved[key]))}</span>` : "";  // the config's target differs from the radio
+  // the startup values in its config, set or not; the radio may hold others (SmartSDR, Maestro, a copy on its SCU)
+  const cfgHas = k => saved[k] !== null && saved[k] !== undefined;
+  // what the radio has that the startup values do not: Save Config writes it (a click, never at a stop)
+  const keep = rx ? Object.fromEntries(RX_KEYS.filter(k => rxHas(rx, k) && saved[k] !== rx[k]).map(k => [k, rx[k]])) : {};
+  const sv2 = app.saved[pendKey(sv, i.name)] || {};
+  const update = rx ? ` <button class="btn small" ${at} data-cmd="startup" data-keep="${esc(JSON.stringify(keep))}"${Object.keys(keep).length && !busy && !sv2.busy ? "" : " disabled"}`
+    + ` title="Save what the radio has now as ${esc(i.name)}'s startup values">${sv2.busy ? "Saving..." : "Save Config"}</button>`
+    + (sv2.at ? ` <span class="good">saved ${utcTime(sv2.at)}</span>` : sv2.error ? ` <span class="err">${esc(sv2.error)}</span>` : "") : "";
+  const startup = `<div class="small startup">Startup Config: Band = ${esc(bandText(saved.band || i.band || "-"))}${!i.radio ? "" : ", " + [["antenna", "ANT"], ["rf_gain", "RF gain"], ["loop_a", "Loop A"], ["loop_b", "Loop B"]]
+    .filter(([k]) => k === "antenna" || k === "rf_gain" || cfgHas(k)).map(([k, l]) => `${l} = ${esc(cfgHas(k) ? shown2(saved[k]) : "the radio's")}`).join(", ")}${update}</div>`;
   const sel = (key, opts, cur) => `<select class="bandsel${key in pend ? " pend" : ""}" ${at} data-key="${key}"${busy ? " disabled" : ""}>${
     (opts.some(([v]) => v === cur) ? opts : [[cur, String(cur)], ...opts]).map(([v, l]) =>
       `<option value="${esc(String(v))}"${v === cur ? " selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
   const gains = rx && rx.range ? Array.from({ length: Math.floor((rx.range[1] - rx.range[0]) / rx.range[2]) + 1 }, (_, g) => rx.range[0] + g * rx.range[2]) : [];
-  const radioOpts = [opt("BAND", bands, "Changes live while the skimmer runs."), opt("AFC", onOff("afc", st.afc), HINTS.afc)];
+  const radioOpts = [opt("BAND", bands, "Changes live while the skimmer runs.")];
   if (rx) {
-    if (rxHas(rx, "antenna")) radioOpts.push(opt("ANTENNA", `<div class="inline">${sel("antenna", rx.ant_list.map(a => [a, a]), rs.antenna)}${starts("antenna")}</div>`));
-    if (rxHas(rx, "rf_gain")) radioOpts.push(opt("RF GAIN", `<div class="inline">${sel("rf_gain", gains.map(g => [g, `${g} dB`]), rs.rf_gain)}${starts("rf_gain")}</div>`, SHARED_NOTE));
-    if (rxHas(rx, "loop_a")) radioOpts.push(opt("LOOP A", `<div class="inline">${onOff("loop_a", rs.loop_a)}${starts("loop_a")}</div>`, SHARED_NOTE));
-    if (rxHas(rx, "loop_b")) radioOpts.push(opt("LOOP B", `<div class="inline">${onOff("loop_b", rs.loop_b)}${starts("loop_b")}</div>`, SHARED_NOTE));
+    if (rxHas(rx, "antenna")) radioOpts.push(opt("ANTENNA", `<div class="inline">${sel("antenna", rx.ant_list.map(a => [a, a]), rs.antenna)}</div>`));
+    if (rxHas(rx, "rf_gain")) radioOpts.push(opt("RF GAIN", `<div class="inline">${sel("rf_gain", gains.map(g => [g, `${g} dB`]), rs.rf_gain)}</div>`, SHARED_NOTE));
+    if (rxHas(rx, "loop_a")) radioOpts.push(opt("LOOP A", `<div class="inline">${onOff("loop_a", rs.loop_a)}</div>`, SHARED_NOTE));
+    if (rxHas(rx, "loop_b")) radioOpts.push(opt("LOOP B", `<div class="inline">${onOff("loop_b", rs.loop_b)}</div>`, SHARED_NOTE));
   }
   const radioNote = !i.radio ? "" : rx ? SHARED_NOTE : `Antenna, loops and RF gain are read from the radio while ${i.name} runs.`;
   const radioTag = rx ? pillHtml("FROM THE RADIO", "ok") : i.radio ? pillHtml("FLEX", "idle") : "";
@@ -1684,9 +1726,9 @@ function copyCards(k, sv, i) {
     ...DECODER_OPTIONS.map(([key, label, hint, values]) => opt(label.toUpperCase(), values ? choices(key, values, st[key] === undefined ? null : st[key]) : onOff(key, st[key]), hint, values && values.length > 4))];
   return `<section class="scard wide copycard"><h3><span>${esc(i.name)} · ${esc(bandText(saved.band || i.band || ""))}</span>${pillHtml(state.toUpperCase(), busy ? "warnlvl" : run ? "ok" : "idle")}</h3>
     <div class="actions"><span class="small muted">${esc(host)}${run ? "" : " · settings are used at its next start"}</span></div>
-    <div class="opts instopts">${opt("RUN", runToggle(at, run, busy), "Off stops the skimmer, on starts it.")}${opt("RECORDING", onOff("record", st.record), HINTS.record)}</div>${err}${bar}</section>
-    <section class="scard wide"><h3><span>RADIO</span>${radioTag}</h3><div class="opts radioopts">${radioOpts.join("")}</div>
-    <div class="small muted cardnote">Band${rx ? ", antenna, loops and RF gain" : ""} change live; AFC restarts the skimmer.${radioNote ? ` ${esc(radioNote)}` : ""}</div></section>
+    <div class="opts instopts">${opt("RUN", runToggle(at, run, busy), "Off stops the skimmer, on starts it.")}${opt("RECORDING", onOff("record", st.record), HINTS.record)}${opt("AFC", onOff("afc", st.afc), HINTS.afc)}</div>${err}${bar}</section>
+    <section class="scard wide"><h3><span>RADIO</span>${radioTag}</h3>${startup}<div class="opts instopts">${radioOpts.join("")}</div>
+    <div class="small muted cardnote">Band${rx ? ", antenna, loops and RF gain" : ""} change live.${radioNote ? ` ${esc(radioNote)}` : ""}</div></section>
     <section class="scard wide"><details class="adv"${app.advOpen ? " open" : ""}><summary><span>DECODER OPTIONS</span>${decTag}</summary>
     <div class="opts">${decOpts.join("")}</div><div class="small muted cardnote">Changes restart the skimmer. Hover over an option for what it does.</div></details></section>`;
 }
@@ -1741,13 +1783,28 @@ async function applySettings(link, name) {
   const what = Object.entries(settings).map(([key, v]) => `${key.replace(/^spot_rule_/, "").replace(/_/g, " ")} ${v === true || v === false ? (v ? "on" : "off") : v === null ? "off" : v}`).join(", ");
   const others = Object.keys(settings).filter(x => !RX_KEYS.includes(x));
   const live = !others.length || (others.length === 1 && others[0] === "band");  // no restart unless the copy cannot
-  if (i && i.state === "running" && !live && !confirm(`${name}: ${what}. This restarts ${name}. Go ahead?`)) return;
+  // a restart starts it on its Startup Config: say where that differs from what the radio will have
+  const rx = rxOf(link.server, name), saved = (i && i.settings) || {}, label = { antenna: "ANT", rf_gain: "RF gain", loop_a: "Loop A", loop_b: "Loop B" };
+  const back = rx ? RX_KEYS.filter(key => rxHas(rx, key) && saved[key] !== null && saved[key] !== undefined && saved[key] !== (key in settings ? settings[key] : rx[key])) : [];
+  const warn = back.length ? ` It starts with its Startup Config: ${back.map(key => `${label[key]} = ${saved[key]}`).join(", ")} (the radio has ${back.map(key => `${label[key]} = ${key in settings ? settings[key] : rx[key]}`).join(", ")}). Save Config first to keep the radio's.` : "";
+  if (i && i.state === "running" && !live && !confirm(`${name}: ${what}. This restarts ${name}.${warn} Go ahead?`)) return;
   const ok = await seatRequest(link, "set", name, settings);
   const now = app.pending[k];
   if (ok && now) {  // clear what was sent; a choice picked while it was sent stays pending
     for (const [key, v] of Object.entries(settings)) if (now[key] === v) delete now[key];
     if (!Object.keys(now).length) delete app.pending[k];
   }
+  renderSettings();
+}
+
+// Save Config: the radio's receive path becomes name's startup values; the answer shows by the button
+async function saveStartup(link, name, keep) {
+  const k = pendKey(link.server, name);
+  app.saved[k] = { busy: true }; renderSettings();
+  const r = await link.request("startup", name, keep);
+  app.saved[k] = r.ok ? { at: Date.now() / 1000 } : { error: r.error };
+  const i = ((link.seat && link.seat.instances) || []).find(x => x.name === name);
+  if (r.ok && i) i.settings = { ...(i.settings || {}), ...keep };  // shown now, not at the next seat refresh
   renderSettings();
 }
 
@@ -1799,6 +1856,7 @@ async function seatClick(e) {
     const n = app.instances.findIndex(x => x.server === link.server && copyName(x) === name);
     if (n >= 0) { setCurrent(n); closeSettings(); }
   } else if (cmd === "apply") applySettings(link, name);
+  else if (cmd === "startup") saveStartup(link, name, JSON.parse(t.dataset.keep));
   else if (cmd === "discard") { delete app.pending[pendKey(link.server, name)]; renderSettings(); }
   else if (cmd === "startall" || cmd === "stopall") {
     const stop = cmd === "stopall", list = ((link.seat && link.seat.instances) || []).filter(x => (x.state === "running") === stop && !x.busy);

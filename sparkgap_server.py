@@ -87,7 +87,7 @@ MAX_PENDING = 32  # connections still sending their request: more are closed at 
 LOG_KEPT = 200  # server log lines kept for the web console
 REQUEST_WAIT_S = 5.0
 CONTROL_WAIT_S = 20.0  # a live band change: the radio's replies, then a new decoder
-COMMANDS = ("start", "stop", "restart", "set")
+COMMANDS = ("start", "stop", "restart", "set", "startup")
 NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,31}$")
 
 
@@ -460,7 +460,7 @@ class Server:
 
         if cmd not in COMMANDS or not isinstance(name, str) or not NAME_RE.match(name):
             return result(False, "unknown command or instance")
-        if cmd == "set" and not isinstance(settings, dict):
+        if cmd in ("set", "startup") and not isinstance(settings, dict):
             return result(False, "settings must be an object")
         if name in self.busy:
             return result(False, f"{name} is busy: {self.busy[name]}")
@@ -471,6 +471,7 @@ class Server:
         self.busy[name] = (
             "changing band" if band_only else
             "changing the receive path" if rx_only else
+            "saving its startup values" if cmd == "startup" else
             {"set": "restarting"}.get(cmd, cmd + ("ing" if cmd != "stop" else "ping"))
         )
         self.queued += 1
@@ -499,6 +500,8 @@ class Server:
             return self.seat.stop(name)
         if cmd == "restart":
             return self.seat.restart(name)
+        if cmd == "startup":
+            return self.seat.startup(name, settings)
         return self.seat.change(name, settings, live=self._live_band, live_rx=self._live_rx)
 
     def _live_band(self, name: str, band: str) -> str | None:

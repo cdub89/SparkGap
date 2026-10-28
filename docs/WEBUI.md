@@ -21,9 +21,7 @@ join code (for example `KTR-49X`).
    from the band list at the top.
 
 **⚙**, **Settings**, **Servers** lists each server you added, with the
-skimmers it runs:
-
-![Servers under Settings](web-settings.png)
+skimmers it runs.
 
 The page remembers the server, so next time it opens straight to the
 waterfall. A wrong code five times in a row locks your browser out for ten
@@ -60,13 +58,24 @@ minutes.
 Click **⚙**, then the skimmer's tab (its name, such as `shack40`).
 
 - The top card shows whether it runs. **Run** on starts it and off stops it;
-  off then on restarts it. **Recording** is there too. **Show** on the
-  **Servers** tab puts a skimmer on the main screen.
+  off then on restarts it. **Recording** and **AFC** are there too. **Show**
+  on the **Servers** tab puts a skimmer on the main screen.
 - To change a setting, pick the new value and click **Apply**, which appears
   in the top card. You can change several at once; they take effect together.
   **Discard** forgets them.
-- **Radio**: band and AFC, and on a FlexRadio the antenna, RF gain and loops
-  as the radio reports them.
+- **Radio**: the band, and on a FlexRadio the antenna, RF gain and loops as
+  the radio has them right now, however they were set: here, in SmartSDR or
+  Maestro, or by another skimmer. They follow the radio within a couple of
+  seconds. A change here goes to the radio straight away and does not touch
+  the skimmer's config.
+- **Startup Config**, at the top of the Radio card: the band, antenna and RF
+  gain the skimmer starts with (`the radio's` where none is set: it starts
+  with whatever the radio has). **Save Config** saves what the radio has now
+  as the startup values; it is greyed out when they already match.
+- Antenna, loops and RF gain are shared: on a FlexRadio, every panadapter on
+  the same receiver (SCU) has the same antenna and RF gain, and the radio
+  decides which SCU a panadapter uses. Changing one skimmer can change
+  another, or an operator's panadapter in SmartSDR or Maestro.
 - **Decoder Options** (click to open): the decode window, call validation,
   the known call list and the spot rule's options. The line beside it sums
   them up.
@@ -78,6 +87,8 @@ Click **⚙**, then the skimmer's tab (its name, such as `shack40`).
   skimmer, which takes about half a minute. A skimmer set up to listen at an
   exact frequency rather than a band shows that frequency first in the list,
   for example `7038.0 kHz`; picking a band name moves it to that band.
+
+![A skimmer's settings](web-settings.png)
 
 Settings, in plain terms:
 
@@ -141,7 +152,12 @@ yet. Settings in full colour were set for this skimmer; dimmer ones are built
 into the spot rule; the dimmest are left at SparkGap's default. Hover over one
 to see which.
 
-![Servers under Info](web-info.png)
+A skimmer's own tab under Info shows its health, counts, radio and SparkGap.
+On a FlexRadio the radio card shows the skimmer's slice (with the letter
+SmartSDR shows), its antenna and RF gain as the radio has them, and its DAX-IQ
+channel. A stopped skimmer shows the same cards, empty.
+
+![A skimmer under Info](web-info.png)
 
 ## This browser
 
@@ -154,6 +170,13 @@ Under **⚙**, **Settings**, **Servers**:
 
 ## What's new
 
+- **2026-10-28.** The radio card follows the radio: antenna, RF gain and
+  loops changed in SmartSDR, Maestro or by another skimmer show within a
+  couple of seconds. **Startup Config** shows what a skimmer starts with, and
+  **Save Config** saves the radio's current values. A change here no longer
+  changes the config by itself. Info shows the slice, antenna and DAX-IQ
+  channel; a stopped skimmer shows its cards empty. AFC moved to the top card.
+  Removing a server asks first.
 - **2026-10-27.** The surer of the two readings is in bold, and a reading that
   copied nothing says so. AFC can be switched per skimmer. Each skimmer keeps
   the signal you last picked on it. Ctrl+F finds text inside the ⚙ dialog.

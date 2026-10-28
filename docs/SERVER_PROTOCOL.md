@@ -94,8 +94,8 @@ new line as it is logged: connections, requests and their results.
  "settings": {"validation": "normal", "call_source": "rbn+skcc"}}
 ```
 
-- `cmd`: `start`, `stop`, `restart` or `set`. A Flex instance's radio station
-  is started before its first copy and stopped after its last.
+- `cmd`: `start`, `stop`, `restart`, `set` or `startup`. A Flex instance's
+  radio station is started before its first copy and stopped after its last.
 - `set` writes the settings to the instance's config and restarts it if it is
   running. Only these, each checked: `band` (a band the instance's SparkGap
   knows), `validation` (`off`, `permissive`, `normal`, `aggressive`),
@@ -118,6 +118,13 @@ new line as it is logged: connections, requests and their results.
   answer or has no feed, the server restarts it, which brings it up on the band
   just written, and the result reads as for a restart. Any other mix of settings
   is applied by a restart, and a stopped copy is only written.
+- A Flex instance's receive path, `antenna` (one the radio lists), `loop_a`,
+  `loop_b` (true or false) and `rf_gain` (whole dB), given to a running copy
+  goes to the radio only: the config is not written. Given to a stopped copy,
+  it is written as the startup values (`flex_rxant`, `flex_loopa`, `flex_loopb`,
+  `flex_rfgain`).
+- `startup` writes receive path settings to the config as its startup values,
+  running or stopped, and leaves the radio and the copy as they are.
 - One request at a time per instance: another while one runs is refused as
   busy. Requests run in order, at most 8 waiting. The instance's lock is held
   through the write, the live attempt and any restart.

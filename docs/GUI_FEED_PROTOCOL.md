@@ -168,7 +168,7 @@ Every 2 seconds.
            "packets": 5023532, "lost": 0, "reconnects": 1,
            "last_reconnect": 1792019016, "station": "SparkGap-2",
            "daxiq_channel": 2, "others": ["Shack (SmartSDR-Win)"],
-           "muted_packets": 0,
+           "muted_packets": 0, "slice": 1, "slice_letter": "B",
            "rx": {"rxant": "ANT1", "loopa": false, "loopb": false, "rfgain": 8,
                   "ant_list": ["ANT1", "ANT2", "RX_A", "XVTA"],
                   "rfgain_range": [-8, 32, 8]}},
@@ -207,7 +207,8 @@ The station (absent in file mode except `radio`):
   `last_reconnect` (UTC seconds or `null`), its `station` name, its
   `daxiq_channel`, the `others` stations on the radio at the last connect,
   how many packets it has silenced while the radio was keyed
-  (`muted_packets`), and
+  (`muted_packets`), our slice's number (`slice`) and the letter SmartSDR shows
+  for it (`slice_letter`), and
   `rx`: our pan's receive path as the radio reports it (`rxant`, `loopa`,
   `loopb`, `rfgain`, `null` when the radio reports none; a loop only on a
   model with its jacks: Loop A on the FLEX-6500, 6700 and 6700R, Loop B on the
