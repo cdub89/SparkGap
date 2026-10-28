@@ -859,6 +859,7 @@ DB_PER_UNIT = 0.25  # u8 steps: 0.25 dB, 0 .. 63.75 dB over the noise floor
 # noise floor per block, so the radio's IQ roll-off at the edges is not drawn black
 FLOOR_BLOCK_HZ = 1_500.0
 FLOOR_SMOOTH = 0.1  # per row: block floors settle over ~10 rows (1/6 s) instead of flickering
+SILENT_DB = -150.0  # a row's mean power below this is silence (a keyed Flex sends zeros): drawn empty
 
 
 class SpectrumTap:
@@ -878,8 +879,6 @@ class SpectrumTap:
         self.floor_blk = max(8, round(FLOOR_BLOCK_HZ / (sample_rate / n_out)))
         self.floor_x = (np.arange(n_out // self.floor_blk) + 0.5) * self.floor_blk
         self.floor: np.ndarray | None = None
-        # the radio was keyed at time t: those rows go out empty, not the transmitter (Flex)
-        self.tx: Callable[[float], bool] | None = None
 
     def feed_iq(self, i_samples: Any, q_samples: Any) -> None:
         if not self.feed.n_clients:
@@ -905,7 +904,7 @@ class SpectrumTap:
 
     def row(self, seg: np.ndarray, utc: float) -> None:
         hz_per_bin = self.sample_rate / self.nfft * self.pool
-        if self.tx is not None and self.tx(utc):  # dark while keyed; the floor keeps its level
+        if 10 * np.log10(float(np.mean(np.abs(seg) ** 2)) + 1e-30) < SILENT_DB:  # empty; the floor holds
             empty = bytes(self.nfft // self.pool)
             self.feed.publish_spectrum(
                 self.center_hz - self.sample_rate / 2, hz_per_bin, DB_PER_UNIT, empty, utc

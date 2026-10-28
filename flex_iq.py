@@ -67,8 +67,7 @@ STATION_POLL_S = 10
 LIVE_LOCK_WAIT_S = 2.0      # a live change waits this long for the receiver; a recovery holds it longer
 RETUNE_SETTLE_S = 0.5       # IQ dropped this long after a retune's replies: still the old frequency
 TX_STATES = ('PTT_REQUESTED', 'TRANSMITTING', 'UNKEY_REQUESTED')  # the radio's interlock while keyed
-TX_HOLD_S = 0.5             # after key-up (READY/RECEIVE): bridges the gaps between words of an over, where
-                            # the radio's IQ flashes back to the noise floor (61 gaps on 10-27: 51 under 0.5 s)
+TX_HOLD_S = 0.1             # after key-up (READY/RECEIVE): bridges the shortest gaps between words of an over
 TX_SPANS_KEPT = 64
 
 
@@ -1218,8 +1217,7 @@ class FlexIQReceiver:
 
     def transmitting_at(self, t):
         """Whether the radio was keyed at time t (seconds since the epoch, as the IQ arrived), with
-        TX_HOLD_S after each key-up: the spectrum shows those rows empty instead of the transmitter,
-        and the decoders get silence.  Key-up is the interlock's READY, which comes after
+        TX_HOLD_S after each key-up: the decoders (and so the spectrum) get silence.  Key-up is the interlock's READY, which comes after
         the transmitting client's own CW delay (a per-client setting we cannot read)."""
         since = self._tx_since
         if since is not None and t >= since:
