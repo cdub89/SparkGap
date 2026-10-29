@@ -2888,6 +2888,9 @@ def _get_itila_scanner(sample_rate, center_hz, max_bins, min_snr,
                 lib.itila_sc_set_afc.restype = _ct.c_int
                 lib.itila_sc_set_afc.argtypes = [_ct.c_void_p, _ct.c_int]
                 lib.itila_sc_set_afc(_ct.c_void_p(h), 1)
+                if hasattr(lib, 'itila_sc_get_afc_hz'):
+                    lib.itila_sc_get_afc_hz.restype = _ct.c_double
+                    lib.itila_sc_get_afc_hz.argtypes = [_ct.c_void_p, _ct.c_double]
             else:
                 log.warning("itila2_afc: %s has no itila_sc_set_afc; off", _scanner_lib_path)
         return _ItilaSc(lib, _ct.c_void_p(h))
@@ -3424,6 +3427,13 @@ class _ItilaScanner:
             decoded = [(r, c, w, d if d is not None else other) for r, c, w, d in decoded]
         return snr, decoded
 
+    def _log_afc(self, f_hz):
+        """itila2_afc: log the bin's offset with its window, to see where AFC holds each bin."""
+        if _afc and self._sc and hasattr(self._sc._lib, 'itila_sc_get_afc_hz'):
+            import ctypes as _ct
+            log.info("ITILA afc %.1f kHz %+.1f Hz", f_hz / 1000.0,
+                     self._sc._lib.itila_sc_get_afc_hz(self._sc._h, _ct.c_double(f_hz)))
+
     def _decode_post(self, f_hz, st, win):
         """Log, extract and queue spots for one decoded window (main thread)."""
         import ctypes as _ct
@@ -3435,6 +3445,8 @@ class _ItilaScanner:
         window_key = next(_window_seq)
 
         texts = any(r for r, _, _, _ in decoded)
+        if texts:
+            self._log_afc(f_hz)
         for raw, cost, wpm_est, dsnr in decoded:
             if not raw:   # a path with nothing decoded: the GUI's line for it, when the other path has text
                 if _gui_feed and texts:
@@ -3524,6 +3536,7 @@ class _ItilaScanner:
 
         now = time.time()
         self._c_batch = next(_window_seq)
+        afc_logged = set()
         for i in range(n):
             offset = i * result_size
             f_hz = _ct.c_double.from_buffer(buf, offset).value
@@ -3537,6 +3550,9 @@ class _ItilaScanner:
                 continue
             f_khz = f_hz / 1000.0
             log.info("ITILA raw %.1f kHz cost=%.2f: %r", f_khz, cost, raw[:400])
+            if f_hz not in afc_logged:
+                afc_logged.add(f_hz)
+                self._log_afc(f_hz)
             if _gui_feed:
                 _gui_feed.publish_window(f_khz, raw, wpm, snr, cost)
             if self.gate_timing_cost and cost > self.timing_cost_max:
@@ -8128,6 +8144,7 @@ class SparkGap:
                     self.receiver._h, poll_buf, _ct.c_int(max_poll))
                 now = time.time()
                 self._poll_batch = next(_window_seq)
+                afc_logged = set()
                 for i in range(n):
                     off = i * result_size
                     f_hz = _ct.c_double.from_buffer(poll_buf, off).value
@@ -8150,6 +8167,9 @@ class SparkGap:
                         if mgr._itila_scanner:
                             scanner = mgr._itila_scanner
                             break
+                    if scanner and f_hz not in afc_logged:
+                        afc_logged.add(f_hz)
+                        scanner._log_afc(f_hz)
                     # Timing-cost gate (gated off by default at scanner-level).
                     # Drop the whole decode window's downstream processing when
                     # segmentation is too sloppy and the gate is enabled.
