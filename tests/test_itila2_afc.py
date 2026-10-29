@@ -118,3 +118,9 @@ def test_silence_does_not_move_afc() -> None:
     _, afc = _run(48_000, [(15.0, 0.0), (5.0, 35.0), (10.0, None)], 1)
     assert abs(afc[1] - afc[0] - 35.0) < 2.0
     assert abs(afc[2] - afc[1]) < 1.0
+
+
+def test_a_neighbour_100_hz_off_does_not_pull_the_bin() -> None:
+    # the bin's station stops and a station 100 Hz up keys: the bin stays on its own tone
+    _, afc = _run(48_000, [(15.0, 0.0), (15.0, 100.0)], 1)
+    assert abs(afc[1] - afc[0]) < 5.0
