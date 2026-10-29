@@ -77,6 +77,11 @@
 #define SC_CAND_EXPIRY_SCANS   10
 #define SC_CAND_CLUSTER_HZ     150.0
 #define SC_CAND_AVG_HZ         25.0    /* hits averaged into the new bin's frequency */
+/* itila2_spawn_guard: a peak with one at least SC_SKIRT_DB stronger within SC_SKIRT_HZ in the same scan is
+ * that station's skirt or key clicks: it scores no hit toward a new bin. A real station beside a strong one
+ * still collects its hits while the strong one is key-up. */
+#define SC_SKIRT_HZ           150.0
+#define SC_SKIRT_DB            20.0
 
 #include "itila_fir_coeffs.h"
 /* Hot loops built twice, AVX2/FMA and baseline, chosen at load time: portable builds keep
@@ -340,6 +345,7 @@ struct ItilaSc {
     double  n0;            /* noise density, input power per Hz; 0 until the first scan */
 
     int     afc;           /* itila2_afc (itila_sc_set_afc) */
+    int     spawn_guard;   /* itila2_spawn_guard (itila_sc_set_spawn_guard) */
     double  afc_decay;     /* per 200 Hz step decay of the key-down peak power */
     double  afc_rise;      /* per 200 Hz step rise of the noise floor */
 
@@ -612,6 +618,13 @@ HOT_CLONES static void run_scan(ItilaSc *sc, const double *seg_i, const double *
             }
         }
         if (found) continue;
+        if (sc->spawn_guard) {      /* peaks are sorted strongest first */
+            int skirt = 0;
+            for (int j = 0; j < i && !skirt; j++)
+                skirt = fabs(peaks[j].f_exact - peaks[i].f_exact) <= SC_SKIRT_HZ &&
+                        peaks[j].power - peaks[i].power >= SC_SKIRT_DB;
+            if (skirt) continue;
+        }
 
         /* Lazy spawn gate: require SC_CAND_HITS_REQUIRED scans at this
          * frequency before allocating a real bin. Find existing candidate
@@ -1076,6 +1089,17 @@ int itila_sc_set_afc(ItilaSc *sc, int on)
     sc->afc_rise = exp(1.0 / (SC_AFC_FLOOR_S * 200.0));
     sc->afc = on != 0;
     int r = sc->afc;
+    pthread_mutex_unlock(&sc->lock);
+    return r;
+}
+
+/* itila2_spawn_guard on or off; returns the new state. */
+int itila_sc_set_spawn_guard(ItilaSc *sc, int on)
+{
+    if (!sc) return 0;
+    pthread_mutex_lock(&sc->lock);
+    sc->spawn_guard = on != 0;
+    int r = sc->spawn_guard;
     pthread_mutex_unlock(&sc->lock);
     return r;
 }

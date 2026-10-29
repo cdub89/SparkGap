@@ -1970,6 +1970,17 @@ def _select_afc(on):
         log.info("ITILA scanner: bins follow the keyed tone (itila2_afc)")
     return _afc
 
+_spawn_guard = False   # config itila2_spawn_guard
+
+def _select_spawn_guard(on):
+    """Config key itila2_spawn_guard (default off): the itila2 scanner spawns no bin for a peak with one
+    20 dB stronger within 150 Hz in the same scan (a strong station's skirt or key clicks)."""
+    global _spawn_guard
+    _spawn_guard = bool(on)
+    if _spawn_guard:
+        log.info("ITILA scanner: no bins on a strong station's skirts (itila2_spawn_guard)")
+    return _spawn_guard
+
 _SPOT_RULES = ('off', 'repeat')
 _spot_rule_on = False
 _window_seq = itertools.count(1)   # window keys for spot_rule; never reused, unlike id(bin state)
@@ -2893,6 +2904,13 @@ def _get_itila_scanner(sample_rate, center_hz, max_bins, min_snr,
                     lib.itila_sc_get_afc_hz.argtypes = [_ct.c_void_p, _ct.c_double]
             else:
                 log.warning("itila2_afc: %s has no itila_sc_set_afc; off", _scanner_lib_path)
+        if _spawn_guard:
+            if hasattr(lib, 'itila_sc_set_spawn_guard'):
+                lib.itila_sc_set_spawn_guard.restype = _ct.c_int
+                lib.itila_sc_set_spawn_guard.argtypes = [_ct.c_void_p, _ct.c_int]
+                lib.itila_sc_set_spawn_guard(_ct.c_void_p(h), 1)
+            else:
+                log.warning("itila2_spawn_guard: %s has no itila_sc_set_spawn_guard; off", _scanner_lib_path)
         return _ItilaSc(lib, _ct.c_void_p(h))
     except OSError:
         log.warning("%s not found", _scanner_lib_path)
@@ -7512,6 +7530,7 @@ class SparkGap:
         _select_decode_threads(self.cfg.get('itila_decode_threads', 1))
         _select_snr_decoder(self.cfg.get('itila2_snr_decoder', False))
         _select_afc(self.cfg.get('itila2_afc', False))
+        _select_spawn_guard(self.cfg.get('itila2_spawn_guard', False))
         if _select_spot_rule(_spot_rule_name(self.cfg)):
             self.tracker.spot_rule = _make_spot_rule(self.cfg, self.tracker)
             log.info("Spot rule: lock-on, CQ groups, CQ qualifiers%s",
@@ -9008,6 +9027,7 @@ def run_file_mode(args, config):
     _select_decode_threads(config.get('itila_decode_threads', 1))
     _select_snr_decoder(config.get('itila2_snr_decoder', False))
     _select_afc(config.get('itila2_afc', False))
+    _select_spawn_guard(config.get('itila2_spawn_guard', False))
     if _select_spot_rule(_spot_rule_name(config)):
         _trk = tracker
         _trk.spot_rule = _make_spot_rule(config, tracker)
