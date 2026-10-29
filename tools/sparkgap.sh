@@ -18,7 +18,7 @@ sparkgap.sh: run the SparkGap instances on this machine.
                                    CPU, memory, band, GUI feed address and join code, telnet port, recording,
                                    spots, errors, warnings, reconnects, IQ trimmed, top calls and its log
   sparkgap.sh start [name ...]     start in the background and wait until it is live;
-                                   the log goes to logs/<name>_<band>_<UTC>.log (UTC to the second, as recordings);
+                                   the log goes to logs/<name>_<UTC>.log (UTC to the second, as recordings);
                                    a Flex instance first starts its radio's station (flex_station.py, log
                                    logs/station_<radio>_<UTC>.log), one per radio, which every copy binds to
   sparkgap.sh stop [name ...]      stop cleanly (as Ctrl-C would) and wait up to ${STOP_WAIT_S} s; the last
@@ -144,7 +144,7 @@ stop_flex() { stop_copy "$1" && station_down "$1"; }
 start_copy() {
   local i=$1 p t log
   if p=$(pid "$i"); then echo "$i: already running (pid $p)"; return; fi
-  t=$(date -u +%Y%m%d_%H%M%SZ); log="$R/logs/${i}_$(band "$i")_$t.log"
+  t=$(date -u +%Y%m%d_%H%M%SZ); log="$R/logs/${i}_$t.log"
   # exec: the subshell becomes the copy, so no sparkgap.sh is left holding the caller's output
   (cd "$(dir "$i")" && exec setsid bash -c 'echo $$ > "$1"; exec "$2" sparkgap.py --config "$3" > "$4" 2>&1' \
      _ "$R/logs/$i.pid" "$(field "$i" 4)" "$(cfg "$i")" "$log" < /dev/null > /dev/null 2>&1 8>&- 9>&- &)
