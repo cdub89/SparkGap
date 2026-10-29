@@ -730,6 +730,7 @@ class Waterfall {
 
 const app = {
   servers: [],  // {address, token}: a machine's server and its join code; its copies come from its seat
+  codeShown: false,  // join codes in clear (masked by default: screenshots carry them)
   tab: "servers",  // the dialog's tab: "server" or "<server index>:<copy name>"
   pending: {},  // "<server address>|<copy name>" -> settings picked but not yet applied
   saved: {},  // the same key -> the last Save Config: {busy}, {at} or {error}
@@ -933,7 +934,7 @@ function setCurrent(n) {
   app.current = Math.max(0, Math.min(n, app.instances.length - 1));
   const i = inst();
   const covers = k => k > 0 && i && (!i.nBins || (i.lowKhz <= k && k <= i.highKhz));
-  if (!covers(khz) && i && i.lastPick && covers(i.lastPick.khz)) ({ khz, lo, hi } = i.lastPick);
+  if (i && i.lastPick && (!i.nBins || !covers(khz)) && covers(i.lastPick.khz)) ({ khz, lo, hi } = i.lastPick);  // not drawn yet: its own pick
   if (i && i.hello.run) { app.want = i.name; save("current", i.name); }
   app.selectedKhz = -1;
   wf.sel = -1;
@@ -1453,18 +1454,26 @@ function renderSettings() {
   box.innerHTML = i ? copyCards(k, sv, i) : "";
 }
 
+// a server's join code: masked until clicked; Copy puts it on the clipboard
+function joinCodeRow(sv) {
+  const code = String(sv.token || "").replace(/[^0-9A-Za-z]/g, "").toUpperCase();
+  if (!code) return '<div class="srow"><span class="k">Join code</span><span class="v mono">-</span></div>';
+  return `<div class="srow"><span class="k">Join code</span><span class="v"><span class="mono act" data-act="code" title="${app.codeShown ? "Click to hide" : "Click to show"}">`
+    + `${esc(app.codeShown ? `${code.slice(0, 3)}-${code.slice(3)}` : "•••-•••")}</span> `
+    + `<button class="btn small" data-act="copycode" data-code="${esc(`${code.slice(0, 3)}-${code.slice(3)}`)}">Copy</button></span></div>`;
+}
+
 // Info on the Servers tab: each server, its station and a line for each copy
 function serversInfoHtml() {
   const servers = app.servers.filter(sv => sv.link);
   if (!servers.length) return '<div class="small muted">No server yet: add one under Settings.</div>';
   return '<div class="scards">' + servers.map(sv => {
     const a = sv.link, seat = a.seat || { instances: [], stations: [] };
-    const code = String(sv.token || "").replace(/[^0-9A-Za-z]/g, "").toUpperCase();
     const rows = [`<div class="srow"><span class="k">Server</span><span class="v">${esc(a.state === "live" ? `${(a.hello && a.hello.host) || ""} (${a.hello && a.hello.build ? a.hello.build : "-"})` : a.state)}</span></div>`,
-      `<div class="srow"><span class="k">Join code</span><span class="v mono">${esc(code ? `${code.slice(0, 3)}-${code.slice(3)}` : "-")}</span></div>`];
+      joinCodeRow(sv)];
     for (const st of seat.stations || []) {
       const loss = st.last_loss ? `, last ${utcTime(st.last_loss[0])}: ${st.last_loss[1]}` : "";
-      rows.push(`<div class="srow"><span class="k">Station</span><span class="v">${esc(`${st.station || st.radio}: ${st.live || st.state}${typeof st.rtt_ms === "number" ? `, ping ${st.rtt_ms} ms` : ""}, ${Number(st.losses_hour) || 0} losses in the last hour${loss}`)}</span></div>`);
+      rows.push(`<div class="srow"><span class="k">Station</span><span class="v">${esc(`${st.station || st.radio}: ${st.live || st.state}, ${Number(st.losses_hour) || 0} losses in the last hour${loss}`)}</span></div>`);
     }
     for (const i of seat.instances || []) {
       const up = i.state === "running" && i.started ? `, up ${duration(now() - i.started)}` : "";
@@ -1640,14 +1649,13 @@ function runToggle(at, run, busy) {
 // a server's card under Settings: the server, its stations, each copy with its controls, and all of them at once
 function serverCardHtml(sv, k) {
   const a = sv.link, seat = a.seat || { instances: [], stations: [] }, list = seat.instances || [];
-  const code = String(sv.token || "").replace(/[^0-9A-Za-z]/g, "").toUpperCase();
   const srow = (key, v, cls = "") => `<div class="srow"><span class="k">${key}</span><span class="v ${cls}">${v}</span></div>`;
   const rows = [srow("Host", esc(`${(a.hello && a.hello.host) || sv.address}${a.hello && a.hello.build ? ` (${a.hello.build})` : ""}`), "ref mono"),
-    srow("Join code", esc(code ? `${code.slice(0, 3)}-${code.slice(3)}` : "-"), "mono")];
+    joinCodeRow(sv)];
   for (const st of seat.stations || []) {
     const good = st.live === "live" || st.state === "live";
     rows.push(srow(`Station ${esc(st.station || st.radio)}`, `${pillHtml(String(st.live || st.state).toUpperCase(), good ? "ok" : "warn")} `
-      + esc(`${typeof st.rtt_ms === "number" ? `ping ${st.rtt_ms} ms, ` : ""}${Number(st.losses_hour) || 0} losses in the last hour`)));
+      + esc(`${Number(st.losses_hour) || 0} losses in the last hour`)));
   }
   const at = name => `data-server="${k}" data-name="${esc(name)}"`;
   const copies = list.map(i => {
@@ -1675,7 +1683,7 @@ function copyCards(k, sv, i) {
   const rx = run && i.radio ? rxOf(sv, i.name) : null, rs = rx ? { ...rx, ...pend } : {};
   const at = `data-server="${k}" data-name="${esc(i.name)}"`;
   const btn = (cmd, label, on) => `<button class="btn small" ${at} data-cmd="${cmd}"${on && !busy ? "" : " disabled"}>${label}</button>`;
-  const choices = (k2, opts, cur, off = false) => `<div class="seg${k2 in pend ? " pend" : ""}${off ? " off" : ""}" ${at} data-key="${k2}"${off ? ' title="not used while call validation is off"' : ""}>${opts.map(([v, l]) =>
+  const choices = (k2, opts, cur, off = false) => `<div class="seg${k2 in pend ? " pend" : ""}${off ? " off" : ""}" ${at} data-key="${k2}"${off ? ` title="${typeof off === "string" ? off : "not used while call validation is off"}"` : ""}>${opts.map(([v, l]) =>
     `<span data-value="${esc(JSON.stringify(v))}"${v === cur ? ' class="on"' : ""}>${esc(l)}</span>`).join("")}</div>`;
   const onOff = (k2, cur) => choices(k2, [[false, "off"], [true, "on"]], !!cur);
   // one option: its label over its control; hint on hover; wide ones take a whole row
@@ -1726,7 +1734,7 @@ function copyCards(k, sv, i) {
     ...DECODER_OPTIONS.map(([key, label, hint, values]) => opt(label.toUpperCase(), values ? choices(key, values, st[key] === undefined ? null : st[key]) : onOff(key, st[key]), hint, values && values.length > 4))];
   return `<section class="scard wide copycard"><h3><span>${esc(i.name)} · ${esc(bandText(saved.band || i.band || ""))}</span>${pillHtml(state.toUpperCase(), busy ? "warnlvl" : run ? "ok" : "idle")}</h3>
     <div class="actions"><span class="small muted">${esc(host)}${run ? "" : " · settings are used at its next start"}</span></div>
-    <div class="opts instopts">${opt("RUN", runToggle(at, run, busy), "Off stops the skimmer, on starts it.")}${opt("RECORDING", onOff("record", st.record), HINTS.record)}${opt("AFC", onOff("afc", st.afc), HINTS.afc)}</div>${err}${bar}</section>
+    <div class="opts instopts">${opt("RUN", runToggle(at, run, busy), "Off stops the skimmer, on starts it.")}${opt("RECORDING", onOff("record", st.record), HINTS.record)}${opt("AFC", choices("afc", [[false, "off"], [true, "on"]], !!st.afc, st.decoder && st.decoder !== "itila2" ? "acts only with the itila2 decoder" : false), HINTS.afc)}</div>${err}${bar}</section>
     <section class="scard wide"><h3><span>RADIO</span>${radioTag}</h3>${startup}<div class="opts instopts">${radioOpts.join("")}</div>
     <div class="small muted cardnote">Band${rx ? ", antenna, loops and RF gain" : ""} change live.${radioNote ? ` ${esc(radioNote)}` : ""}</div></section>
     <section class="scard wide"><details class="adv"${app.advOpen ? " open" : ""}><summary><span>DECODER OPTIONS</span>${decTag}</summary>
@@ -1884,6 +1892,11 @@ function bindInput() {
     if (t) { app.tab = t.dataset.tab; app.editing = -2; renderSettings(); }
   };
   $("tabCopy").onclick = seatClick;
+  $("modal").addEventListener("click", e => {
+    if (e.target.closest('[data-act="code"]')) { app.codeShown = !app.codeShown; renderSettings(); renderConns(); }
+    const copy = e.target.closest('[data-act="copycode"]');
+    if (copy) copyText(copy.dataset.code).then(ok => { copy.textContent = ok ? "Copied" : "Copy failed"; });
+  });
   $("conns").addEventListener("click", seatClick);
   $("tabCopy").addEventListener("toggle", e => { if (e.target.classList.contains("adv")) app.advOpen = e.target.open; }, true);
   $("tabCopy").onchange = e => {
