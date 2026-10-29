@@ -441,6 +441,31 @@ def band_center_hz(name, sample_rate):
     """Centre for a named band: its lower CW edge plus 0.4 of the IQ span."""
     return BANDS[name] * 1000 + round(sample_rate * (0.5 - BAND_EDGE_MARGIN))
 
+
+def _rbn_utc(t):
+    return time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(t))
+
+
+def _log_rbn_row(callsign, freq_khz, call, snr, wpm, t):
+    """A spot for RBN as the archive row RBN would store (UTC, 0.1 kHz), for scoring a run before it is on RBN."""
+    band = SpotTracker._band_id_for_freq(freq_khz)
+    log.info("RBN: %s,,,%.1f,%s,%s,,,CQ,%d,%s,%d,CW", callsign.upper(), freq_khz,
+             '%dm' % band if band else '', call, round(snr), _rbn_utc(t), wpm)
+
+
+def _log_rbn_node(callsign, grid):
+    """The node's call and locator, which the archive row has no column for; a grid that is not Maidenhead is left out."""
+    grid = (grid or '').strip()
+    ok = re.fullmatch(r'[A-Ra-r]{2}[0-9]{2}([A-Xa-x]{2})?', grid)
+    log.info("RBN node: %s%s", callsign.upper(), ' ' + grid[:2].upper() + grid[2:4] + grid[4:].lower() if ok else '')
+
+
+def _log_rbn_span(t, centres_khz, rate):
+    """The spans the run listens to from t on, one per band."""
+    log.info("RBN span: %s %s", _rbn_utc(t), ' '.join(
+        '%.1f-%.1f' % (c - rate / 2000, c + rate / 2000) for c in centres_khz))
+
+
 def _derive_cw_window(center_khz, exclude_ft8=True, exclude_ft4=False):
     """Look up the CW window for the IARU R2 band containing center_khz.
 
@@ -7719,6 +7744,9 @@ class SparkGap:
             log.info("SparkGap LIVE: %s (%.3f kHz) rx%d, telnet :%d",
                      name, cal_center_khz, rx_idx,
                      self.cfg.get('telnet_port', 7300))
+        _log_rbn_node(self.cfg.get('callsign', ''), self.cfg.get('grid', ''))
+        _log_rbn_span(time.time(), [self._corrected_freq_khz(c / 1000.0) for _n, c, _r in self._band_meta],
+                      rx_sample_rate)
 
         # SIGUSR1 → snapshot the current IQ buffer for every enabled band
         # to /tmp/diag_<band>_<HHMMSS>.wav for live-vs-replay diagnostics.
@@ -7799,6 +7827,7 @@ class SparkGap:
             mgr._spectrum_tap = feed_server.SpectrumTap(_gui_feed, rate, center_hz)
             mgr._spectrum_tap.tx = tx
             _gui_feed.set_bands([{'name': name, 'center_khz': center_hz / 1000.0, 'span_khz': rate / 1000.0}])
+        _log_rbn_span(time.time(), [self._corrected_freq_khz(center_hz / 1000.0)], rate)
         log.info("Live change: %s (%.3f kHz) -> %s (%.3f kHz)", old_name, old_hz / 1000.0, name, center_hz / 1000.0)
         return reply(True, "retuned to %s" % name)
 
@@ -8318,6 +8347,8 @@ class SparkGap:
                         log.info("*** SPOT: %10.2f  %-12s  %d dB  %d WPM  [%s] ***",
                                  spot['freq_khz'], spot['call'], spot['snr'],
                                  spot_wpm, method)
+                        _log_rbn_row(self.cfg.get('callsign', ''), self._corrected_freq_khz(spot['freq_khz']),
+                                     spot['call'], spot['snr'], spot_wpm, time.time())
                         if self._spot_log:
                             import datetime
                             ts = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
@@ -9140,6 +9171,9 @@ def run_file_mode(args, config):
 
     manager.update_signals(clustered, center_khz)
     del scan_i, scan_q
+    if t0 is not None:
+        _log_rbn_node(config.get('callsign', ''), config.get('grid', ''))
+        _log_rbn_span(t0 + start_sec, [center_khz], file_rate)
 
     # Feed continuous audio chunks — same decoder instances for entire recording
     for t_start in np.arange(start_sec, end_sec, chunk_sec):
@@ -9263,6 +9297,9 @@ def run_file_mode(args, config):
                     log.info("SPOT: %.2f kHz %s %d dB %d WPM [%s]",
                              spot['freq_khz'], spot['call'],
                              spot['snr'], spot.get('wpm', 0), spot['method'])
+                    if t0 is not None:
+                        _log_rbn_row(config.get('callsign', ''), spot['freq_khz'], spot['call'],
+                                     spot['snr'], spot.get('wpm', 0), t0 + _file_audio_t)
 
         # Final collect after all data fed — give decoders a moment to flush
         import time as _time
