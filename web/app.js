@@ -375,8 +375,9 @@ class Instance {
     const t = now();
     for (const [khz, w] of this.signals) {
       if (khz < lo || khz > hi || t - w.utc > HEARD_S) continue;
-      if (taken.some(k => Math.abs(khz - k) <= FREQ_MATCH_KHZ)) continue;
+      if (taken.some(k => Math.abs(khz - k) <= DETAIL_MATCH_KHZ)) continue;  // a neighbour 100 Hz off is its own row
       const guess = this.guessCall(khz);
+      if (items.some(x => x.call === guess && Math.abs(x.khz - khz) <= FREQ_MATCH_KHZ)) continue;
       if (guess) { items.push({ call: guess, khz, wpm: w.wpm, spot: false }); taken.push(khz); }
     }
     const sel = this.selKhz;
@@ -390,7 +391,7 @@ class Instance {
   guessCall(khz) {
     const n = new Map();
     for (const [k, texts] of this.recent) {
-      if (Math.abs(k - khz) > FREQ_MATCH_KHZ) continue;
+      if (Math.abs(k - khz) > DETAIL_MATCH_KHZ) continue;
       for (const text of texts) {
         for (const word of text.split(/\s+/)) {
           const base = baseCall(word);
@@ -442,8 +443,17 @@ class Instance {
 
   select(khz, call) { this.selKhz = khz; this.selCall = call; this.on("detail"); }
 
-  // a decoded signal near khz if there is one, else the strongest trace near it, else -1
+  // the stream under a tap: of the bins heard near khz, the one keying hardest now (of a QSO's two
+  // sides, the one sending); else a decoded signal near khz; else the strongest trace near it; else -1
   nearestSignal(khz, tol) {
+    const reach = Math.max(tol, FREQ_MATCH_KHZ), t = now();
+    let pick = -1, most = 0;
+    for (const [k, w] of this.signals) {
+      if (Math.abs(k - khz) > reach || t - w.utc > HEARD_S) continue;
+      const level = this.keyLevel(k);
+      if (level > most || (level === most && level > 0 && Math.abs(k - khz) < Math.abs(pick - khz))) { pick = k; most = level; }
+    }
+    if (pick > 0) return pick;
     const cands = [...[...this.spots.values()].map(s => s.khz), ...this.signals.keys()];
     if (cands.length) {
       const best = cands.reduce((a, b) => (Math.abs(b - khz) < Math.abs(a - khz) ? b : a));
@@ -473,6 +483,17 @@ class Instance {
       for (let i = b0; i < b1; i++) if (this.ring[o + i] >= need) { on++; break; }
     }
     return cols.length > 0 && on / cols.length >= TRACE_DUTY;
+  }
+
+  // mean level in khz's own waterfall bin over the last PEAK_LOOK_S, keyed columns only; 0 below TRACE_DUTY
+  keyLevel(khz) {
+    if (!this.ring || !this.cols) return 0;
+    const b = Math.floor((khz * 1000 - this.firstHz) / this.hzPerBin);
+    if (b < 0 || b >= this.nBins) return 0;
+    const cols = this.recentCols(), need = PEAK_MIN_DB / this.dbUnit;
+    let on = 0, sum = 0;
+    for (const c of cols) { const v = this.ring[c * this.nBins + b]; if (v >= need) { on++; sum += v; } }
+    return cols.length > 0 && on / cols.length >= TRACE_DUTY ? sum / cols.length : 0;
   }
 
   // [khz, dB] of the strongest bin within tol of khz over the last PEAK_LOOK_S
