@@ -1,5 +1,5 @@
 """rbn2_feeder: the auth library's contract (through a fake, never a real library), fail closed,
-one spot per post, and the sign-in."""
+posts on the upload tick, and the sign-in."""
 
 import ctypes
 import queue
@@ -49,9 +49,19 @@ class FakeLib:
 
             return h
 
+        def batch(calls: Any, n: int, out: Any, _n: int) -> int:
+            got = [calls[i].decode() for i in range(n)]
+            if refuse in got:
+                return -1
+            # the spec: a one-call batch hashes as that call's spot hash
+            out.value = fake_hash("h" if n == 1 else "b", "|".join(got)).encode()
+            return 0
+
         self.rbn2_auth_version = FakeFn(ver)
         self.rbn2_auth_short_hash = FakeFn(hashed("s"))
         self.rbn2_auth_spot_hash = FakeFn(hashed("h"))
+        if interface == 2:
+            self.rbn2_auth_batch_hash = FakeFn(batch)
 
 
 def _auth(**kw: Any) -> f.Auth:
@@ -85,8 +95,15 @@ def test_the_library_is_set_up_and_reports_its_version() -> None:
 
 
 def test_another_interface_is_refused() -> None:
-    with pytest.raises(f.AuthError, match="interface 2"):
-        _auth(interface=2)
+    with pytest.raises(f.AuthError, match="interface 3"):
+        _auth(interface=3)
+
+
+def test_interface_2_without_its_batch_hash_is_refused() -> None:
+    lib = FakeLib(interface=2)
+    del lib.rbn2_auth_batch_hash
+    with pytest.raises(f.AuthError, match="batch hash"):
+        f.Auth("librbn2_auth.so", loader=lambda _p: lib)
 
 
 def test_a_missing_library_is_refused() -> None:
@@ -113,7 +130,7 @@ def test_an_unusable_version_string_is_refused(version: bytes) -> None:
 @pytest.mark.parametrize("bad", [b"", b"abc", b"zzzzzzzz", b"0123456789", b"\xff" * 8])
 def test_a_malformed_hash_is_a_refusal(bad: bytes) -> None:
     sess = _session(_auth(bad_hash=bad))
-    assert sess.spot_body(SPOT, 0.0) is None
+    assert sess.spots_body([SPOT], 0.0) is None
     assert sess.id_body() is None
 
 
@@ -130,16 +147,37 @@ def test_a_session_without_a_library_may_only_dry_run() -> None:
     assert _session(None, dry_run=True).agg == "rbn2auth/none"
 
 
-def test_a_spot_is_one_post_hashed_from_its_call() -> None:
-    body = _session(_auth()).spot_body(SPOT, 1_761_000_000.0)
+def test_interface_1_hashes_one_call_a_post() -> None:
+    sess = _session(_auth())
+    assert sess.max_batch == 1
+    assert sess.spots_body([SPOT, {**SPOT, "call": "K1ABC"}], 0.0) is None
+    body = sess.spots_body([SPOT], 1_761_000_000.0)
     assert body is not None
     assert body["h"] == fake_hash("h", "JA0FVU")
     assert body["agg"] == "rbn2auth/test" and body["e"] == "N0CALL-1"
     assert body["s"] == [["7027.64", "JA0FVU", "1", "25", "30", "dB", "1", "CQ", "D:"]]
 
 
+def test_interface_2_hashes_the_post_s_calls_in_row_order() -> None:
+    sess = _session(_auth(interface=2))
+    assert sess.max_batch == f.MAX_BATCH
+    assert sess.auth is not None and sess.auth._batch is not None
+    assert sess.auth._batch.argtypes == [
+        ctypes.POINTER(ctypes.c_char_p),
+        ctypes.c_size_t,
+        ctypes.c_char_p,
+        ctypes.c_size_t,
+    ]
+    assert sess.auth.batch_hash(["JA0FVU"]) == sess.auth.spot_hash("JA0FVU")
+    body = sess.spots_body([SPOT, {**SPOT, "call": "K1ABC", "freq": 7031.0}], 0.0)
+    assert body is not None and body["h"] == fake_hash("b", "JA0FVU|K1ABC")
+    assert [r[:2] for r in body["s"]] == [["7027.64", "JA0FVU"], ["7031.00", "K1ABC"]]
+    assert sess.spots_body([SPOT] * (f.MAX_BATCH + 1), 0.0) is None
+
+
 def test_a_refused_call_drops_the_spot() -> None:
-    assert _session(_auth(refuse="JA0FVU")).spot_body(SPOT, 0.0) is None
+    assert _session(_auth(refuse="JA0FVU")).spots_body([SPOT], 0.0) is None
+    assert _session(_auth(interface=2, refuse="JA0FVU")).spots_body([SPOT], 0.0) is None
 
 
 def test_the_sign_in_names_sparkgap_and_its_commit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -153,7 +191,7 @@ def test_the_sign_in_names_sparkgap_and_its_commit(monkeypatch: pytest.MonkeyPat
     assert body["justCQ"] == "1" and body["ClockNtp"] is True
     assert body["bandLimits"] == body["mIXEDBandLimits"] == "7000.0-7096.0"
     assert body["cWBandLimits"] == ""
-    spot = sess.spot_body(SPOT, 0.0)
+    spot = sess.spots_body([SPOT], 0.0)
     assert spot is not None and spot["nTP"] is True  # as the last id.php reported
 
 
@@ -173,7 +211,10 @@ def test_a_failed_id_stops_spots_until_one_succeeds(monkeypatch: pytest.MonkeyPa
     assert sess.post_id() and sess.registered.is_set()
 
 
-def _run_upload(sess: f.Session, calls: list[str], blacklist: set[str]) -> list[dict[str, Any]]:
+def _run_upload(
+    sess: f.Session, calls: list[str], blacklist: set[str], posts: int
+) -> list[dict[str, Any]]:
+    """Queue the calls, run the loop on a fast tick until it has made `posts` posts (or 1 s)."""
     sent: list[dict[str, Any]] = []
     spots: queue.Queue[dict[str, Any]] = queue.Queue()
     for call in calls:
@@ -182,29 +223,62 @@ def _run_upload(sess: f.Session, calls: list[str], blacklist: set[str]) -> list[
 
     def post(path: str, body: dict[str, Any]) -> dict[str, Any]:
         sent.append(body)
+        if len(sent) >= posts:
+            shutdown.set()
         return {}
 
     sess.post = post  # type: ignore[method-assign]
+    sess.upload_s = 0.01
     t = threading.Thread(target=f.upload_loop, args=(sess, spots, blacklist, shutdown, lambda: 0.0))
     t.start()
-    while not spots.empty():  # the loop finishes a spot it has taken before checking shutdown
-        shutdown.wait(0.01)
+    t.join(1.0)
     shutdown.set()
     t.join()
     return sent
 
 
-def test_each_spot_goes_out_on_its_own() -> None:
+def test_interface_1_sends_one_spot_a_tick() -> None:
     sess = _session(_auth())
     sess.registered.set()
-    sent = _run_upload(sess, ["JA0FVU", "N0CALL", "K1ABC"], {"N0CALL"})  # N0CALL is blacklisted
-    assert [b["s"][0][1] for b in sent] == ["JA0FVU", "K1ABC"]
-    assert all(len(b["s"]) == 1 for b in sent)
+    sent = _run_upload(sess, ["JA0FVU", "N0CALL", "K1ABC"], {"N0CALL"}, posts=2)  # blacklisted
+    assert [[r[1] for r in b["s"]] for b in sent] == [["JA0FVU"], ["K1ABC"]]
+
+
+def test_interface_2_sends_a_tick_s_spots_in_one_post() -> None:
+    sess = _session(_auth(interface=2))
+    sess.registered.set()
+    sent = _run_upload(sess, ["JA0FVU", "N0CALL", "K1ABC"], {"N0CALL"}, posts=1)
+    assert [[r[1] for r in b["s"]] for b in sent] == [["JA0FVU", "K1ABC"]]
+
+
+def test_a_post_carries_at_most_max_batch_and_the_rest_wait() -> None:
+    sess = _session(_auth(interface=2))
+    sess.registered.set()
+    calls = [f"K{i}AA" for i in range(f.MAX_BATCH + 6)]
+    sent = _run_upload(sess, calls, set(), posts=2)
+    assert [len(b["s"]) for b in sent] == [f.MAX_BATCH, 6]
+    assert [r[1] for b in sent for r in b["s"]] == calls
+
+
+def test_the_tick_follows_the_server_s_upload_interval(monkeypatch: pytest.MonkeyPatch) -> None:
+    sess = _session(_auth())
+    replies: list[dict[str, Any]] = [
+        {"serverUploadInterval": 20},
+        {"serverUploadInterval": "x"},
+        {},
+    ]
+    monkeypatch.setattr(sess, "post", lambda path, body: replies.pop(0))
+    assert sess.upload_s == f.UPLOAD_S
+    sess.post_id()
+    assert sess.upload_s == 20.0
+    sess.post_id()
+    sess.post_id()
+    assert sess.upload_s == 20.0
 
 
 def test_no_spot_goes_out_before_the_sign_in_succeeds() -> None:
     sess = _session(_auth())
-    assert _run_upload(sess, ["JA0FVU", "K1ABC"], set()) == []
+    assert _run_upload(sess, ["JA0FVU", "K1ABC"], set(), posts=1) == []
 
 
 def test_a_reply_that_is_not_json_text_counts_as_sent(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -220,3 +294,112 @@ def test_a_reply_that_is_not_json_text_counts_as_sent(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(f.urlreq, "urlopen", lambda req, timeout: Resp())
     assert _session(_auth()).post("s.php", {"t": "s"}) == {}
+
+
+SPOT_LINE = (
+    b"DX de WX7V-5-#:  14025.00  K7WP         CW   21 dB 27 WPM  CQ"
+    b"                  SG  1945Z\a\r\n"
+)
+
+
+class FakeSock:
+    """recv replies in order: bytes, or an exception to raise."""
+
+    def __init__(self, replies: list[Any], shutdown: threading.Event) -> None:
+        self.replies, self.shutdown, self.sent = replies, shutdown, b""
+
+    def __enter__(self) -> "FakeSock":
+        return self
+
+    def __exit__(self, *a: Any) -> None:
+        pass
+
+    def sendall(self, data: bytes) -> None:
+        self.sent += data
+
+    def recv(self, n: int) -> bytes:
+        if not self.replies:
+            self.shutdown.set()
+            return b""
+        r = self.replies.pop(0)
+        if isinstance(r, BaseException):
+            raise r
+        return r
+
+
+def _read(replies: list[Any]) -> tuple[list[dict[str, Any]], int]:
+    shutdown = threading.Event()
+    spots: queue.Queue[dict[str, Any]] = queue.Queue()
+    sock = FakeSock(replies, shutdown)
+    connects = []
+
+    def connect(addr: Any, timeout: float) -> FakeSock:
+        connects.append(addr)
+        return sock
+
+    f.read_local("127.0.0.1", 7300, "WX7V-5", spots, shutdown, connect)  # type: ignore[arg-type]
+    assert sock.sent == b"WX7V-5\n"
+    return [spots.get() for _ in range(spots.qsize())], len(connects)
+
+
+def test_a_quiet_minute_keeps_the_connection() -> None:
+    got, connects = _read([TimeoutError(), TimeoutError(), SPOT_LINE])
+    assert [s["call"] for s in got] == ["K7WP"]
+    assert connects == 1
+
+
+def test_a_spot_split_across_reads_is_put_together() -> None:
+    got, _ = _read([SPOT_LINE[:20], SPOT_LINE[20:]])
+    assert [s["call"] for s in got] == ["K7WP"]
+
+
+def test_eof_reconnects_and_reads_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(f, "RECONNECT_S", 0.0)
+    shutdown = threading.Event()
+    spots: queue.Queue[dict[str, Any]] = queue.Queue()
+    socks = [FakeSock([b""], threading.Event()), FakeSock([SPOT_LINE], shutdown)]
+    f.read_local("127.0.0.1", 7300, "WX7V-5", spots, shutdown, lambda a, timeout: socks.pop(0))  # type: ignore[arg-type]
+    assert not socks
+    assert spots.get_nowait()["call"] == "K7WP"
+
+
+def test_a_failed_thread_stops_the_feeder() -> None:
+    shutdown, failed = threading.Event(), threading.Event()
+
+    def boom() -> None:
+        raise ValueError("bad reply")
+
+    f.worker(boom, shutdown, failed)()
+    assert failed.is_set() and shutdown.is_set()
+
+
+def test_a_thread_that_ends_unasked_stops_the_feeder() -> None:
+    shutdown, failed = threading.Event(), threading.Event()
+    f.worker(lambda: None, shutdown, failed)()
+    assert failed.is_set() and shutdown.is_set()
+    shutdown, failed = threading.Event(), threading.Event()
+    shutdown.set()
+    f.worker(lambda: None, shutdown, failed)()  # asked to stop: not a failure
+    assert not failed.is_set()
+
+
+def test_a_broken_http_reply_is_a_failed_post(monkeypatch: pytest.MonkeyPatch) -> None:
+    def urlopen(req: Any, timeout: float) -> Any:
+        raise f.http.client.IncompleteRead(b"")
+
+    monkeypatch.setattr(f.urlreq, "urlopen", urlopen)
+    assert _session(_auth()).post("s.php", {"t": "s"}) is None
+
+
+def test_a_dry_run_logs_no_hash_or_fingerprint(caplog: pytest.LogCaptureFixture) -> None:
+    sess = _session(_auth(), dry_run=True)
+    caplog.set_level("INFO")
+    sess.post_id()
+    body = sess.spots_body([SPOT], 0.0)
+    assert body is not None
+    sess.post("s.php", body)
+    logged = caplog.text
+    assert sess.auth is not None
+    for secret in ("f" * 32, sess.auth.short_hash(sess.sign_in()), sess.auth.spot_hash("JA0FVU")):
+        assert secret and secret not in logged
+    assert '"fingerPrint":"<hidden>"' in logged and '"h":"<hidden>"' in logged

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """rbn2_feeder.py: SparkGap's RBN feeder, authenticated by the private librbn2_auth library.
 
-Reads SparkGap's local cluster telnet like rbn_feeder.py (whose spot parsing, reader and band
-probe it reuses) and posts to RBN's id.php and s.php. The two hash fields come from the
+Reads SparkGap's local cluster telnet like rbn_feeder.py (whose spot parsing and band probe it
+reuses) and posts to RBN's id.php and s.php. The two hash fields come from the
 library named by --auth-lib, which is handed out separately and never kept in this repo.
 Without a library of the expected interface the feeder does not post (--dry-run aside).
 
-Differences from rbn_feeder.py: one spot per post, sent as it arrives; heartbeat every 300 s;
+Differences from rbn_feeder.py: one post per upload tick carrying the spots since the last (one
+spot per tick with an interface 1 library, which hashes single calls only); heartbeat every 300 s;
 SparkGap identifies itself as SparkGap/<short commit>, with the library's version string as
 the Aggregator version.
 
@@ -16,6 +17,7 @@ usage: rbn2_feeder.py --call N0CALL-1 --grid FN31pr --auth-lib PATH [--dry-run]
 import argparse
 import ctypes
 import hashlib
+import http.client
 import json
 import logging
 import queue
@@ -35,16 +37,20 @@ import rbn_feeder as base
 
 log = logging.getLogger("rbn2_feeder")
 
-AUTH_INTERFACE = 1  # the librbn2_auth interface this feeder is written for
+AUTH_INTERFACES = (1, 2)  # 2 adds rbn2_auth_batch_hash, for posts of several spots
+MAX_BATCH = 64  # RBN2_AUTH_MAX_BATCH
+UPLOAD_S = 10.0  # Aggregator's tick when id.php names no serverUploadInterval
 VERSION_LEN = 64
 HASH_LEN = 16
 HASH_CHARS = 8
 HEARTBEAT_S = 300.0
 ID_RETRY_S = 60.0  # after a failed id.php; spots wait until it succeeds
 HTTP_TIMEOUT_S = 15
-QUEUE_POLL_S = 1.0
+READ_TIMEOUT_S = 60.0
+RECONNECT_S = 5.0
 MODE_CODE = {"CW": "1", "RTTY": "11"}  # Aggregator 6.7's mode table
 CQ_CODE = {"CQ": "1", "DX": "2", "BCN": "3", "BEACON": "3"}
+HIDDEN = ("fingerPrint", "fp", "h", "shortHash")  # never in a log
 
 
 class AuthError(RuntimeError):
@@ -52,7 +58,7 @@ class AuthError(RuntimeError):
 
 
 class Auth:
-    """librbn2_auth through ctypes: its version string and the two hashes."""
+    """librbn2_auth through ctypes: its version string and the hashes."""
 
     def __init__(self, path: str, loader: Callable[[str], Any] = ctypes.CDLL) -> None:
         try:
@@ -71,8 +77,21 @@ class Auth:
             fn.restype = ctypes.c_int
         buf = ctypes.create_string_buffer(VERSION_LEN)
         got = ver(buf, VERSION_LEN)
-        if got != AUTH_INTERFACE:
-            raise AuthError(f"{path} has interface {got}, this feeder needs {AUTH_INTERFACE}")
+        if got not in AUTH_INTERFACES:
+            raise AuthError(f"{path} has interface {got}, this feeder takes {AUTH_INTERFACES}")
+        batch = None
+        if got == 2:
+            try:
+                batch = lib.rbn2_auth_batch_hash
+            except AttributeError as e:
+                raise AuthError(f"{path} has interface 2 but no batch hash: {e}") from e
+            batch.argtypes = [
+                ctypes.POINTER(ctypes.c_char_p),
+                ctypes.c_size_t,
+                ctypes.c_char_p,
+                ctypes.c_size_t,
+            ]
+            batch.restype = ctypes.c_int
         try:
             version = buf.value.decode("ascii")
         except UnicodeDecodeError:
@@ -80,11 +99,12 @@ class Auth:
         if not version or not version.isprintable():
             raise AuthError(f"{path} reports no usable version string")
         self.version = version
-        self._short, self._spot = short, spot
+        self._short, self._spot, self._batch = short, spot, batch
+        self.max_batch = MAX_BATCH if batch else 1
 
-    def _hash(self, fn: Any, text: str) -> str | None:
+    def _hash(self, fn: Any, *args: Any) -> str | None:
         out = ctypes.create_string_buffer(HASH_LEN)
-        if fn(text.encode("utf-8"), out, HASH_LEN) != 0:
+        if fn(*args, out, HASH_LEN) != 0:
             return None
         h = out.value.decode("ascii", errors="replace")
         if len(h) != HASH_CHARS or not all(c in string.hexdigits for c in h):
@@ -93,10 +113,19 @@ class Auth:
         return h
 
     def short_hash(self, sign_in: str) -> str | None:
-        return self._hash(self._short, sign_in)
+        return self._hash(self._short, sign_in.encode("utf-8"))
 
     def spot_hash(self, call: str) -> str | None:
-        return self._hash(self._spot, call)
+        return self._hash(self._spot, call.encode("utf-8"))
+
+    def batch_hash(self, calls: list[str]) -> str | None:
+        """h for a post of these calls, in row order; None past max_batch or when refused."""
+        if not calls or len(calls) > self.max_batch:
+            return None
+        if self._batch is None:
+            return self.spot_hash(calls[0])
+        arr = (ctypes.c_char_p * len(calls))(*(c.encode("utf-8") for c in calls))
+        return self._hash(self._batch, arr, len(calls))
 
 
 def sparkgap_version() -> str | None:
@@ -171,6 +200,8 @@ class Session:
             dry_run,
         )
         self.agg = auth.version if auth else "rbn2auth/none"
+        self.max_batch = auth.max_batch if auth else MAX_BATCH
+        self.upload_s = UPLOAD_S  # the server's serverUploadInterval once id.php names one
         self.registered = threading.Event()  # set while the last id.php succeeded
         self.ntp = False  # the clock state the last id.php reported
 
@@ -211,22 +242,26 @@ class Session:
             "t": "id",
         }
 
-    def spot_body(self, spot: dict[str, Any], now: float) -> dict[str, Any] | None:
-        """The s.php body for one spot, or None when its call could not be hashed (dropped)."""
-        h = self.auth.spot_hash(spot["call"]) if self.auth else ""
+    def spots_body(self, spots: list[dict[str, Any]], now: float) -> dict[str, Any] | None:
+        """The s.php body for these spots, or None when their calls can't be hashed (dropped)."""
+        calls = [spot["call"] for spot in spots]
+        h = self.auth.batch_hash(calls) if self.auth else ""
         if h is None:
-            log.error("auth library refused call %r: spot dropped", spot["call"])
+            log.error("auth library refused calls %s: spots dropped", calls)
             return None
-        row = [
-            f"{spot['freq']:.2f}",
-            spot["call"],
-            CQ_CODE.get(spot["cq_flag"], "1"),
-            str(spot["snr"]),
-            str(spot["wpm"]),
-            "dB",
-            MODE_CODE.get(spot["mode"], "1"),
-            spot["cq_flag"],
-            "D:",
+        rows = [
+            [
+                f"{spot['freq']:.2f}",
+                spot["call"],
+                CQ_CODE.get(spot["cq_flag"], "1"),
+                str(spot["snr"]),
+                str(spot["wpm"]),
+                "dB",
+                MODE_CODE.get(spot["mode"], "1"),
+                spot["cq_flag"],
+                "D:",
+            ]
+            for spot in spots
         ]
         return {
             "agg": self.agg,
@@ -235,14 +270,15 @@ class Session:
             "h": h,
             "nTP": self.ntp,
             "tm": now,
-            "s": [row],
+            "s": rows,
             "t": "s",
         }
 
     def post(self, path: str, body: dict[str, Any]) -> dict[str, Any] | None:
         data = json.dumps(body, separators=(",", ":"))
         if self.dry_run:
-            log.info("[DRY] POST %s %s", path, data[:300])
+            shown = {k: "<hidden>" if k in HIDDEN else v for k, v in body.items()}
+            log.info("[DRY] POST %s %s", path, json.dumps(shown, separators=(",", ":"))[:300])
             return None
         req = urlreq.Request(
             f"{self.url}/{path}",
@@ -257,7 +293,7 @@ class Session:
         try:
             with urlreq.urlopen(req, timeout=HTTP_TIMEOUT_S) as resp:
                 got = json.loads(resp.read() or b"{}")
-        except (urlerror.URLError, OSError) as e:
+        except (urlerror.URLError, OSError, http.client.HTTPException) as e:
             log.warning("%s failed: %s", path, e)
             return None
         except ValueError:  # a reply that is not JSON text: the post itself went through
@@ -275,6 +311,14 @@ class Session:
             self.registered.clear()
         if resp:
             log.info("id.php reply: %s", resp)
+            interval = resp.get("serverUploadInterval")
+            try:
+                if interval is not None and float(interval) > 0:
+                    self.upload_s = float(interval)
+            except (TypeError, ValueError):
+                log.warning(
+                    "serverUploadInterval %r unusable: tick stays %.0f s", interval, self.upload_s
+                )
         return ok
 
 
@@ -285,25 +329,90 @@ def upload_loop(
     shutdown: threading.Event,
     clock: Callable[[], float],
 ) -> None:
-    """Post each spot as it arrives, one per post."""
+    """Each upload tick, one post of the spots queued since the last, up to max_batch (the rest
+    wait for the next tick, oldest first)."""
     counts = {"sent": 0, "blacklisted": 0, "dropped": 0, "not signed in": 0}
-    while not shutdown.is_set():
-        try:
-            spot = spots.get(timeout=QUEUE_POLL_S)
-        except queue.Empty:
-            continue
-        if spot["call"] in blacklist:
-            counts["blacklisted"] += 1
+    pending: list[dict[str, Any]] = []
+    while not shutdown.wait(sess.upload_s):
+        while True:
+            try:
+                spot = spots.get_nowait()
+            except queue.Empty:
+                break
+            if spot["call"] in blacklist:
+                counts["blacklisted"] += 1
+            else:
+                pending.append(spot)
+        if not pending:
             continue
         if not sess.registered.is_set():  # dropped, not held: no backlog of old spots later
-            counts["not signed in"] += 1
+            counts["not signed in"] += len(pending)
+            pending = []
             continue
-        body = sess.spot_body(spot, clock())
+        batch, pending = pending[: sess.max_batch], pending[sess.max_batch :]
+        body = sess.spots_body(batch, clock())
         if body is None or (sess.post("s.php", body) is None and not sess.dry_run):
-            counts["dropped"] += 1
+            counts["dropped"] += len(batch)
         else:
-            counts["sent"] += 1
-        log.info("%s %.2f: %s", spot["call"], spot["freq"], counts)
+            counts["sent"] += len(batch)
+        log.info("%s: %s, %d waiting", " ".join(s["call"] for s in batch), counts, len(pending))
+
+
+def read_local(
+    host: str,
+    port: int,
+    call: str,
+    spots: queue.Queue[dict[str, Any]],
+    shutdown: threading.Event,
+    connect: Callable[..., socket.socket] = socket.create_connection,
+) -> None:
+    """SparkGap's telnet into spots. A quiet minute is not a lost connection: only EOF or a
+    socket error reconnects, since a spot sent while disconnected never arrives."""
+    while not shutdown.is_set():
+        try:
+            with connect((host, port), timeout=READ_TIMEOUT_S) as s:
+                log.info("connected to local skimmer %s:%d", host, port)
+                s.sendall(f"{call}\n".encode("ascii"))
+                buf = b""
+                while not shutdown.is_set():
+                    try:
+                        chunk = s.recv(8192)
+                    except TimeoutError:
+                        continue
+                    if not chunk:
+                        log.warning("local skimmer disconnected (EOF)")
+                        break
+                    buf += chunk
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        text = line.decode("ascii", errors="replace").rstrip("\r")
+                        if "DX de" in text:
+                            spot = base.parse_spot(text)
+                            if spot is not None and base.uploadable(spot):
+                                spots.put(spot)
+        except OSError as e:
+            log.warning("local read error: %s: reconnecting in %.0f s", e, RECONNECT_S)
+        if not shutdown.is_set():
+            shutdown.wait(RECONNECT_S)
+
+
+def worker(target: Callable[..., None], shutdown: threading.Event, failed: threading.Event):
+    """target in a thread that stops the feeder if it dies, so it never runs on without it."""
+
+    def run(*args: Any) -> None:
+        name = threading.current_thread().name
+        try:
+            target(*args)
+        except Exception:
+            log.exception("%s thread failed: the feeder stops", name)
+        else:
+            if shutdown.is_set():
+                return
+            log.error("%s thread ended unasked: the feeder stops", name)
+        failed.set()
+        shutdown.set()
+
+    return run
 
 
 def heartbeat_loop(sess: Session, shutdown: threading.Event) -> None:
@@ -343,7 +452,7 @@ def main() -> None:
             auth = Auth(a.auth_lib)
         except AuthError as e:
             sys.exit(f"rbn2_feeder: {e}")
-        log.info("auth library %s", auth.version)
+        log.info("auth library %s, up to %d spots a post", auth.version, auth.max_batch)
     version = sparkgap_version()
     why = not_ready(auth, version, a.dry_run)
     if why:
@@ -370,22 +479,25 @@ def main() -> None:
     log.info("signing in as %r", sess.sign_in())
 
     spots: queue.Queue[dict[str, Any]] = queue.Queue()
-    shutdown = threading.Event()
+    shutdown, failed = threading.Event(), threading.Event()
     threads = [
         threading.Thread(
-            target=base.read_local,
+            target=worker(read_local, shutdown, failed),
             args=(a.local_host, a.local_port, a.call, spots, shutdown),
             name="read_local",
             daemon=True,
         ),
         threading.Thread(
-            target=upload_loop,
+            target=worker(upload_loop, shutdown, failed),
             args=(sess, spots, base.load_blacklist(a.blacklist), shutdown, time.time),
             name="upload",
             daemon=True,
         ),
         threading.Thread(
-            target=heartbeat_loop, args=(sess, shutdown), name="heartbeat", daemon=True
+            target=worker(heartbeat_loop, shutdown, failed),
+            args=(sess, shutdown),
+            name="heartbeat",
+            daemon=True,
         ),
     ]
     for t in threads:
@@ -395,6 +507,8 @@ def main() -> None:
             pass
     except KeyboardInterrupt:
         shutdown.set()
+    if failed.is_set():
+        sys.exit("rbn2_feeder: a thread failed, see the log")
 
 
 if __name__ == "__main__":
