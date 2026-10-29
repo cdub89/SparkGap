@@ -7814,7 +7814,7 @@ class SparkGap:
             return reply(False, "not supported: only a Flex copy changes its receive path live")
         try:
             text = await asyncio.to_thread(self.receiver.set_rx, rx)
-        except (ValueError, RuntimeError) as e:
+        except (ValueError, RuntimeError, OSError) as e:
             log.info("Live change %s refused: %s", rx, e)
             return reply(False, str(e).replace("[Flex] ", ""))
         log.info("Live change: %s", text)
