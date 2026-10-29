@@ -57,6 +57,8 @@
 #define SC_AFC_FLOOR_S  10.0     /* the noise floor (lowest step power) rises over this long */
 #define SC_AFC_FLOOR_X   4.0     /* step power under this many times the floor counts for nothing */
 #define SC_AFC_MAX_HZ   50.0     /* never further than this from the bin's frequency */
+#define SC_AFC_CAPTURE_HZ 40.0   /* a step whose tone is further than this from the bin's frequency is
+                                    another station (a neighbour 75 to 100 Hz off): it does not move the bin */
 
 /* Lazy bin spawn: a peak must be detected by ≥SC_CAND_HITS_REQUIRED scans
  * before a bin is allocated for it. Filters single-scan noise crossings
@@ -752,9 +754,11 @@ static int bin_push_12k(const ItilaSc *sc, ScBin *b, double s1_i, double s1_q)
         double w = b->afc_pw - SC_AFC_FLOOR_X * b->afc_floor;
         if (w > 0.0 && b->afc_peak > 0.0) {
             double resid = atan2(b->afc_im, b->afc_re) * 2000.0 / (2.0 * M_PI);
-            b->afc_hz += resid * (w / b->afc_peak) / (SC_AFC_LOOP_S * 200.0);
-            if (b->afc_hz >  SC_AFC_MAX_HZ) b->afc_hz =  SC_AFC_MAX_HZ;
-            if (b->afc_hz < -SC_AFC_MAX_HZ) b->afc_hz = -SC_AFC_MAX_HZ;
+            if (fabs(b->afc_hz + resid) <= SC_AFC_CAPTURE_HZ) {
+                b->afc_hz += resid * (w / b->afc_peak) / (SC_AFC_LOOP_S * 200.0);
+                if (b->afc_hz >  SC_AFC_MAX_HZ) b->afc_hz =  SC_AFC_MAX_HZ;
+                if (b->afc_hz < -SC_AFC_MAX_HZ) b->afc_hz = -SC_AFC_MAX_HZ;
+            }
         }
         b->afc_re = b->afc_im = b->afc_pw = 0.0;
     }
