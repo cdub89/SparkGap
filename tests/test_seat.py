@@ -112,6 +112,7 @@ def test_afc_is_written_to_the_config(seat: Seat) -> None:
     i = seat.instance("dallas1")
     assert seat.change("dallas1", {"afc": True}) == "dallas1: afc True"
     assert seat.config(i)["itila2_afc"] is True and seat.settings(i)["afc"] is True
+    assert seat.settings(i)["decoder"] == "itila2"
 
 
 def test_decoder_options_are_written_and_off_removes_the_key(seat: Seat) -> None:

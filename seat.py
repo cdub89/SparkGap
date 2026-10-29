@@ -495,6 +495,7 @@ class Seat:
             "validation": cfg.get("spot_validation") or "off",
             "call_source": cfg.get("spot_validation_calls") or "scp",
             "afc": bool(cfg.get("itila2_afc", False)),
+            "decoder": cfg.get("cw_decoder", "itila2"),  # shown only: AFC acts with itila2
             **{k: bool(cfg.get(k, False)) for k in OPTION_FLAGS},
             **{k: cfg.get(k, OPTION_DEFAULTS.get(k)) for k in OPTION_CHOICES},
             "record": bool(cfg.get("record_wav")),

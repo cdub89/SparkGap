@@ -102,12 +102,14 @@ Settings, in plain terms:
   pattern is), and the known call list is not used.
 - **AFC**: each signal's decoder follows the signal's own tone, which helps
   weak signals and ones slightly off tune. Changing it restarts the skimmer.
+  It acts only with the itila2 decoder and is greyed out with any other.
 - **Known call list**: calls on this list count as more likely to be right.
   SCP is the contest call list; RBN adds calls other RBN skimmers heard in the
   past week; RBN + SKCC adds the SKCC roster, good for hand-keyed CW.
 - **Spot rule options**, under Decoder Options: each changes which calls are
-  spotted. All are off unless set. Some spot more calls with some risk of a
-  wrong one:
+  spotted. All are off unless set. A config with `local_spot_rule` keeps its
+  own validation and spot rule for the local port, which these settings do not
+  change. Some spot more calls with some risk of a wrong one:
   - **Split runs**: reads `CQCQDE` as `CQ CQ DE`, for fists that run words
     together.
   - **Contest words**: treats CWT, SST or MST before a call like CQ, for
@@ -140,8 +142,9 @@ wrong, worst first. Common ones:
 - **A stopped skimmer**: its tab shows why. Turn **Run** on; if it stops again,
   send the message to whoever set it up.
 
-The **Servers** tab under Info shows each server's join code, its skimmers,
-and the server's log: every start, stop and setting change, with its result.
+The **Servers** tab under Info shows each server's join code (masked: click
+it to show it, **Copy** puts it on the clipboard), its skimmers, and the
+server's log: every start, stop and setting change, with its result.
 The log is the first thing to look at, and the thing to send along when
 asking for help.
 
