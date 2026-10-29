@@ -112,14 +112,18 @@ def test_a_refusal_puts_back_what_the_radio_had(monkeypatch: Monkey) -> None:
     assert rx.rx["rxant"] == "ANT1" and "rxant=ANT1" in rx.rx_path
 
 
-def test_a_change_on_the_radio_is_what_a_reconnect_restores(monkeypatch: Monkey) -> None:
-    _, rx = _live(monkeypatch, rxant="ANT1")
+def test_another_clients_change_is_shown_and_a_reconnect_restores_ours(monkeypatch: Monkey) -> None:
+    radio, rx = _live(monkeypatch, rxant="ANT1", loopb=True)
     conn = rx.conn
-    assert isinstance(conn, FakeConnection)
-    conn.queue.append("S0|display pan 0x40000000 rxant=RX_A loopb=1")  # changed in SmartSDR
+    assert isinstance(conn, FakeConnection) and radio.pans[PAN].loopb
+    radio.pans[PAN].loopb = False
+    conn.queue.append("S0|display pan 0x40000000 rxant=RX_A loopb=0")  # changed in SmartSDR
     rx._poll()
-    assert rx.rx["rxant"] == "RX_A" and rx.rx["loopb"] is True
-    assert rx.rx_path == " rxant=RX_A loopa=0 loopb=1"
+    assert rx.rx["rxant"] == "RX_A" and rx.rx["loopb"] is False
+    assert rx.rx_path == " rxant=ANT1 loopa=0 loopb=1"
+    conn.cut()
+    rx._recover("lost", "link")
+    assert rx.state == "live" and rx._pan_id is not None and radio.pans[rx._pan_id].loopb
 
 
 def test_loops_follow_the_model() -> None:
@@ -130,7 +134,7 @@ def test_loops_follow_the_model() -> None:
 
 
 def test_a_model_without_loops_offers_none_though_its_status_lists_them(
-    monkeypatch: Monkey,
+    monkeypatch: Monkey, caplog: pytest.LogCaptureFixture
 ) -> None:
     radio = use_fake_radio(monkeypatch, loops=True, model="FLEX-6600")
     rx = FlexIQReceiver(
@@ -139,6 +143,7 @@ def test_a_model_without_loops_offers_none_though_its_status_lists_them(
     rx.start()
     assert "loopa" not in rx.rx and rx.health()["rx"]["loopb"] is None
     assert not any("loopa" in c for _, c in radio.log)  # the config's loop is never sent
+    assert "flex_loopa set, but this radio model has no such loop" in caplog.text
     with pytest.raises(ValueError, match="has no loopa"):
         rx.set_rx({"loopa": True})
 

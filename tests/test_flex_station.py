@@ -372,6 +372,21 @@ def test_unanswered_pings_are_ridden_out_while_the_connection_lasts(radio: FakeR
     assert st._beat() is None and st._unanswered is None and len(_gui_commands(radio)) == 1
 
 
+def test_a_socket_error_on_a_heartbeat_is_a_loss_the_station_recovers(radio: FakeRadio) -> None:
+    """Fred 10-28: ConnectionAbortedError out of _beat killed the station thread."""
+    st = _station(radio)
+    conn = st.conn
+    assert isinstance(conn, FakeConnection)
+
+    def abort(*_: object, **__: object) -> list[str]:
+        raise ConnectionAbortedError(103, "Software caused connection abort")
+
+    conn.cmd = abort  # pyright: ignore[reportAttributeAccessIssue]
+    why = st._beat()
+    assert why and why.startswith("Control connection error")
+    assert st._recover(why) and st.state == "live"
+
+
 def test_the_station_registers_again_once_the_radio_dropped_it(radio: FakeRadio) -> None:
     st = _station(radio)
     radio.drop_all()  # the outage outlasted the radio's 15 s keepalive

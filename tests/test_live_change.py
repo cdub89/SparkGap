@@ -145,3 +145,16 @@ def test_a_receiver_without_a_receive_path_says_so() -> None:
     sg = _copy([])
     ok, text = _change(sg, {"rx": {"rxant": "ANT2"}})
     assert not ok and "only a Flex copy" in text
+
+
+class LostRadio:
+    def set_rx(self, rx: dict[str, Any]) -> str:
+        raise ConnectionAbortedError(103, "Software caused connection abort")
+
+
+def test_a_socket_error_on_a_receive_path_change_is_a_refusal() -> None:
+    sg = _copy([])
+    sg.receiver = LostRadio()
+    out: list[tuple[bool, str]] = []
+    asyncio.run(sg._live_rx({"rxant": "ANT2"}, lambda ok, text: out.append((ok, text))))
+    assert out and out[0][0] is False and "connection abort" in out[0][1]

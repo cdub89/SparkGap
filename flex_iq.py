@@ -673,7 +673,10 @@ class FlexStation:
         ping, then closes the connection).  Leaving on our own would take every copy's pan with us
         (2026-10-22 14:02Z: the station left after 11 s of a 17 s outage the radio rode out)."""
         t0 = time.time()
-        lines = self.conn.cmd("ping", timeout=HEARTBEAT_TIMEOUT_S)
+        try:
+            lines = self.conn.cmd("ping", timeout=HEARTBEAT_TIMEOUT_S)
+        except OSError as e:
+            return "Control connection error: %s" % e
         self._status(lines)
         if self.conn.lost:
             return self.conn.lost
@@ -786,8 +789,8 @@ class FlexIQReceiver:
         # flex_rxant / flex_loopa / flex_loopb / flex_rfgain: the receive path our pan starts with;
         # None leaves the radio's (band-persistence) value.  A receive loop is shared by every pan on
         # that antenna and RF gain by every pan on the same SCU, so a pan that comes up with the loop
-        # off turns it off for whatever hangs on the loop.  The radio's state is the truth: once live,
-        # the target follows what the radio reports, so a reconnect restores that, not the config.
+        # off turns it off for whatever hangs on the loop.  The radio's state is what we show; the target
+        # moves only on our own live change (set_rx), so a reconnect restores ours, not another client's.
         self._target = {'rxant': rxant, 'loopa': None if loopa is None else bool(loopa),
                         'loopb': None if loopb is None else bool(loopb),
                         'rfgain': None if rfgain is None else int(rfgain)}
@@ -874,6 +877,9 @@ class FlexIQReceiver:
         conn = self.conn = FlexConnection(self.ip, self.control_port)
         conn.open()
         self.loops = radio_loops(conn.cmd("info"))
+        dropped = [k for k in ('loopa', 'loopb') if self._target[k] is not None and k not in self.loops]
+        if dropped:
+            log.warning("[Flex] flex_%s set, but this radio model has no such loop: not sent", "/flex_".join(dropped))
         self.station = station_name(conn, self._station_cfg)
         register_program(conn)
         self._clients = conn.cmd("sub client all", settle=0.5)
@@ -1007,6 +1013,7 @@ class FlexIQReceiver:
         conn.ok(f"slice {self._slice_id} locked", conn.cmd(f"slice lock {self._slice_id}"))
         # what the radio now reports for our pan's receive path, and the RF gain steps it offers
         self.rx = pan_rx(conn.cmd("sub pan all", settle=0.3), self._pan_id, loops=self.loops)
+        self._target.update({k: self.rx[k] for k in RX_KEYS if self._target[k] is None and k in self.rx})  # unset: as first found
         self.rfgain_range = rfgain_steps(conn.reply(conn.cmd(f"display pan rfgain_info 0x{self._pan_id:08x}")))
         log.info("[Flex] Receive path:%s (antennas %s; RF gain %s)", rx_args({k: self.rx.get(k) for k in RX_KEYS}),
                  ','.join(self.rx.get('ant_list', [])) or "not reported",
@@ -1115,12 +1122,12 @@ class FlexIQReceiver:
         return lines
 
     def _note_rx(self, rx):
-        """The radio reported our pan's receive path: it is what we run with and what a reconnect restores."""
+        """The radio reported our pan's receive path: shown as it is; the target stays ours (set_rx)."""
         changed = {k: rx[k] for k in RX_KEYS if k in rx and rx.get(k) != self.rx.get(k)}
         if changed and self.rx:
             log.info("[Flex] Our pan now reports%s", rx_args(changed))
         self.rx = rx
-        self._target.update({k: rx[k] for k in RX_KEYS if k in rx})
+        self._target.update({k: rx[k] for k in RX_KEYS if self._target[k] is None and k in rx})  # unset: as first found
 
     @contextlib.contextmanager
     def _live_lock(self):
@@ -1178,7 +1185,7 @@ class FlexIQReceiver:
                 return ok
 
             if send(want):
-                self._target.update({k: v for k, v in want.items() if k not in self.rx})  # else as reported
+                self._target.update({k: self.rx.get(k, v) for k, v in want.items()})  # as the radio reported
                 return "receive path" + rx_args({k: self.rx.get(k, want[k]) for k in want})
             back = not old or send(old)
             raise RuntimeError(f"[Flex] The radio refused{rx_args(want)}"
