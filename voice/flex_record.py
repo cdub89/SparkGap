@@ -2,11 +2,16 @@
 complex float32 (I, Q interleaved) at 192 kHz per band, plus a .json sidecar (centre_hz, start_utc).
 live_voice.py --follow reads a recording as it grows.
 
-usage: flex_record.py RADIO_IP OUTDIR SECONDS CH:FREQ_HZ [CH:FREQ_HZ ...]   (e.g. auto:14246000 auto:7200000)
+usage: flex_record.py RADIO_IP OUTDIR SECONDS CH:FREQ_HZ [CH:FREQ_HZ ...] [--rxant ANT] [--loopa 0|1] [--loopb 0|1]
+       (e.g. auto:14246000 auto:7200000 --rxant ANT1 --loopb 1)
 CH "auto" takes the first DAX-IQ channel (1-4) the radio doesn't refuse: one held by another station
 (SmartSDR, DAX, another program) stays theirs. A 192 kHz stream takes 8 of a radio's 16 DAX-IQ units,
 so two at most. Uses flex_iq.FlexIQReceiver, so the radio sees one SparkGap station (flex_station.py).
+--rxant, --loopa and --loopb set the receive path on our pans and slices, as flex_rxant, flex_loopa and
+flex_loopb do for SparkGap; left out, the radio's band setting stays. Set them when the antenna hangs on
+a receive loop: a pan that comes up with the loop off turns it off for everything on that antenna.
 """
+import argparse
 import json
 import logging
 import os
@@ -25,11 +30,31 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(mess
 log = logging.getLogger('flex_record')
 
 
+def channel_taken(err):
+    """flex_iq's refusal of the DAX-IQ channel itself (another program holds it), as opposed to the pan,
+    the slice or the receive path, which are the same on every channel."""
+    msg = str(err)
+    return ('DAX-IQ' in msg and 'in use' in msg) or 'refused DAX-IQ channel' in msg
+
+
+def stop_all(rxs):
+    for rx in rxs:
+        rx.stop()
+
+
 def main():
-    if len(sys.argv) < 5:
-        raise SystemExit(__doc__)
-    radio, outdir, seconds = sys.argv[1], sys.argv[2], float(sys.argv[3])
-    specs = [(s.split(':')[0], int(s.split(':')[1])) for s in sys.argv[4:]]
+    ap = argparse.ArgumentParser(usage=argparse.SUPPRESS, description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)   # the text has the usage
+    ap.add_argument('radio')
+    ap.add_argument('outdir')
+    ap.add_argument('seconds', type=float)
+    ap.add_argument('specs', nargs='+', metavar='CH:FREQ_HZ')
+    ap.add_argument('--rxant', default=None)
+    ap.add_argument('--loopa', type=int, choices=(0, 1), default=None)
+    ap.add_argument('--loopb', type=int, choices=(0, 1), default=None)
+    args = ap.parse_args()
+    radio, outdir, seconds = args.radio, args.outdir, args.seconds
+    specs = [(s.split(':')[0], int(s.split(':')[1])) for s in args.specs]
     os.makedirs(outdir, exist_ok=True)
     stamp = time.strftime('%Y%m%d_%H%M%SZ', time.gmtime())
     rxs, threads, files, counts = [], [], [], []
@@ -37,13 +62,17 @@ def main():
     for k, (want, freq) in enumerate(specs):
         for ch in ([int(want)] if want != 'auto' else [c for c in (1, 2, 3, 4) if c not in used]):
             rx = FlexIQReceiver(radio, freq_hz=freq, sample_rate=RATE, daxiq_channel=ch,
-                                udp_port=7791 + k)
+                                udp_port=7791 + k, rxant=args.rxant, loopa=args.loopa, loopb=args.loopb)
             try:
                 rx.start()
                 break
             except RuntimeError as e:
+                if not channel_taken(e):          # a refused receive path, pan or slice: no other channel helps
+                    stop_all(rxs)
+                    raise SystemExit(str(e))
                 log.info('DAX-IQ %d not available (%s); trying the next', ch, e)
         else:
+            stop_all(rxs)
             raise SystemExit('no free DAX-IQ channel for %d Hz' % freq)
         used.add(ch)
         path = os.path.join(outdir, '%s_%dkHz_ch%d.cf32' % (stamp, freq // 1000, ch))

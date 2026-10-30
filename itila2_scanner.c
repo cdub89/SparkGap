@@ -46,6 +46,19 @@
 #define SC_SNR_REF_HZ    500.0   /* SNR is quoted in 500 Hz, as CW Skimmer does */
 #define SC_NOISE_PCT     25      /* noise density from this percentile of the band's FFT bins */
 #define SC_NOISE_TAU_S   20.0    /* ...smoothed over this long */
+/* itila2_afc: each bin re-centres both paths on the keyed tone, so a station off the bin's frequency
+ * (the other side of a QSO in the same bin, or drift) stays inside the narrow path. Each 200 Hz step
+ * measures the tone from the wide path's phase step over that step alone, and moves by it in
+ * proportion to the step's power above the noise floor against the recent key-down peak: silence and
+ * noise do not move it. Replays 2026-10-26: 40m CWT 83 of 91 WX7V/5 calls held (82 off), net 24 calls
+ * confirmed (21 off), W1AW text and noise-file spots unchanged. */
+#define SC_AFC_LOOP_S    0.5     /* re-centre time constant at full key-down power */
+#define SC_AFC_PEAK_S    2.0     /* the key-down peak power decays over this long */
+#define SC_AFC_FLOOR_S  10.0     /* the noise floor (lowest step power) rises over this long */
+#define SC_AFC_FLOOR_X   4.0     /* step power under this many times the floor counts for nothing */
+#define SC_AFC_MAX_HZ   50.0     /* never further than this from the bin's frequency */
+#define SC_AFC_CAPTURE_HZ 40.0   /* a step whose tone is further than this from the bin's frequency is
+                                    another station (a neighbour 75 to 100 Hz off): it does not move the bin */
 
 /* Lazy bin spawn: a peak must be detected by ≥SC_CAND_HITS_REQUIRED scans
  * before a bin is allocated for it. Filters single-scan noise crossings
@@ -237,6 +250,11 @@ typedef struct {
      * using them.  Cleared when decode_ready re-acquires the lock and is
      * done with the bin. */
     int    in_decode;
+
+    /* itila2_afc: the offset the bin's oscillator adds (tone above f_hz), the wide path's last 2 kHz
+     * sample, this 200 Hz step's phase step and power, the key-down peak power and the noise floor */
+    double afc_hz;
+    double afc_pi, afc_pq, afc_re, afc_im, afc_pw, afc_peak, afc_floor;
 } ScBin;
 
 /* ---- scanner ---- */
@@ -313,6 +331,10 @@ struct ItilaSc {
     double *scan_pow;      /* energy_win linear bin powers for the noise percentile */
     double  sum_w2;        /* sum of scan_win^2 */
     double  n0;            /* noise density, input power per Hz; 0 until the first scan */
+
+    int     afc;           /* itila2_afc (itila_sc_set_afc) */
+    double  afc_decay;     /* per 200 Hz step decay of the key-down peak power */
+    double  afc_rise;      /* per 200 Hz step rise of the noise floor */
 
     /* Worker pool for process_bins (itila_sc_set_threads).  Bin k goes to
      * stripe k % n_threads; stripe 0 runs on the calling thread. */
@@ -703,6 +725,12 @@ HOT_CLONES static int bin_push_12k(const ItilaSc *sc, ScBin *b, double s1_i, dou
     if (++b->dlw_count == SC_WIDE_LEN) b->dlw_count = 0;
     s2_200i = fir_dot(b->dlw_i, pw, WIDE_TAPS, SC_WIDE_LEN);
     s2_200q = fir_dot(b->dlw_q, pw, WIDE_TAPS, SC_WIDE_LEN);
+    if (sc->afc) {      /* phase step and power of the wide path over this 200 Hz step */
+        b->afc_re += s2_200i * b->afc_pi + s2_200q * b->afc_pq;
+        b->afc_im += s2_200q * b->afc_pi - s2_200i * b->afc_pq;
+        b->afc_pw += s2_200i * s2_200i + s2_200q * s2_200q;
+        b->afc_pi = s2_200i; b->afc_pq = s2_200q;
+    }
 
     /* Envelope at 2 kHz */
     double env2_100 = sqrt(s2_100i*s2_100i + s2_100q*s2_100q);
@@ -720,6 +748,20 @@ HOT_CLONES static int bin_push_12k(const ItilaSc *sc, ScBin *b, double s1_i, dou
     if (++b->dl3_count == FIR_STAGE3_LEN * SC_DEC3) b->dl3_count = 0;
 
     if (b->dl3_count % SC_DEC3 != 0) return 0;
+    if (sc->afc) {      /* re-centre, once per 200 Hz sample */
+        b->afc_peak = fmax(b->afc_pw, b->afc_peak * sc->afc_decay);
+        b->afc_floor = b->afc_floor > 0.0 ? fmin(b->afc_pw, b->afc_floor * sc->afc_rise) : b->afc_pw;
+        double w = b->afc_pw - SC_AFC_FLOOR_X * b->afc_floor;
+        if (w > 0.0 && b->afc_peak > 0.0) {
+            double resid = atan2(b->afc_im, b->afc_re) * 2000.0 / (2.0 * M_PI);
+            if (fabs(b->afc_hz + resid) <= SC_AFC_CAPTURE_HZ) {
+                b->afc_hz += resid * (w / b->afc_peak) / (SC_AFC_LOOP_S * 200.0);
+                if (b->afc_hz >  SC_AFC_MAX_HZ) b->afc_hz =  SC_AFC_MAX_HZ;
+                if (b->afc_hz < -SC_AFC_MAX_HZ) b->afc_hz = -SC_AFC_MAX_HZ;
+            }
+        }
+        b->afc_re = b->afc_im = b->afc_pw = 0.0;
+    }
     /* Output one 200 Hz envelope sample */
     double env_100 = fir_dot(b->dl3_100, pos3, FIR_STAGE3, FIR_STAGE3_LEN);
     double env_200 = fir_dot(b->dl3_200, pos3, FIR_STAGE3, FIR_STAGE3_LEN);
@@ -747,7 +789,8 @@ HOT_CLONES static int process_bin(ItilaSc *sc, ScBin *b, const double *i_full, c
     {
 
         /* Oscillator for mixing to baseband */
-        double step   = -2.0 * M_PI * (b->f_hz - sc->center_hz) / sc->sample_rate;
+        double off    = b->f_hz - sc->center_hz + (sc->afc ? b->afc_hz : 0.0);   /* itila2_afc adds its offset */
+        double step   = -2.0 * M_PI * off / sc->sample_rate;
         double c_step = cos(step);
         double s_step = sin(step);
         double cp = b->c_phase, sp = b->s_phase;
@@ -808,7 +851,7 @@ HOT_CLONES static int process_bin_fft(ItilaSc *sc, ScBin *b, int slot, double *y
     long ph = (long)(((int64_t)k0 % N * (sc->ring_a[slot] % N)) % N);
     double th = -2.0 * M_PI * (double)ph / N;
     double pc = cos(th) / N, ps = sin(th) / N;          /* 1/N: unnormalised forward + inverse */
-    double step = -2.0 * M_PI * r * sc->dec1 / sc->sample_rate;
+    double step = -2.0 * M_PI * (sc->afc ? r + b->afc_hz : r) * sc->dec1 / sc->sample_rate;   /* itila2_afc adds its offset */
     double c_step = cos(step), s_step = sin(step);
     double cp = b->c_phase, sp = b->s_phase;
     int drops = 0;
@@ -986,6 +1029,32 @@ static void pow_shift(struct ScPow *pw, int n)
         memmove(pw->p[1], pw->p[1] + n, (size_t)keep * sizeof(float));
     }
     pw->n = keep > 0 ? keep : 0;
+}
+
+/* itila2_afc on or off for every bin; returns the new state. */
+int itila_sc_set_afc(ItilaSc *sc, int on)
+{
+    if (!sc) return 0;
+    pthread_mutex_lock(&sc->lock);
+    sc->afc_decay = exp(-1.0 / (SC_AFC_PEAK_S * 200.0));
+    sc->afc_rise = exp(1.0 / (SC_AFC_FLOOR_S * 200.0));
+    sc->afc = on != 0;
+    int r = sc->afc;
+    pthread_mutex_unlock(&sc->lock);
+    return r;
+}
+
+/* itila2_afc: the offset a bin applies, tone above its frequency in Hz (0 for no such bin). */
+double itila_sc_get_afc_hz(ItilaSc *sc, double f_hz)
+{
+    double hz = 0.0;
+    pthread_mutex_lock(&sc->lock);
+    for (int i = 0; i < SC_MAX_BINS; i++) {
+        ScBin *b = &sc->bins[i];
+        if (b->active && fabs(b->f_hz - f_hz) < 1.0) { hz = b->afc_hz; break; }
+    }
+    pthread_mutex_unlock(&sc->lock);
+    return hz;
 }
 
 /* Config itila2_snr_decoder: keep each bin's linear power and the band's noise density (see

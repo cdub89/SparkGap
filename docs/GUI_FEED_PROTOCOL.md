@@ -162,7 +162,8 @@ Every 2 seconds.
  "radio": {"type": "flex", "address": "192.168.1.20", "state": "live",
            "packets": 5023532, "lost": 0, "reconnects": 1,
            "last_reconnect": 1792019016, "station": "SparkGap-2",
-           "daxiq_channel": 2, "others": ["Shack (SmartSDR-Win)"]},
+            "daxiq_channel": 2, "others": ["Shack (SmartSDR-Win)"],
+            "muted_packets": 0},
  "telnet": {"port": 7300, "clients": 1}, "iq_trimmed_s": 0.0,
  "recording": {"file": "/srv/sparkgap/rec/40m.wav", "bytes": 2473963564},
  "windows": 72823, "calls": 97, "spots_hour": 41, "bins_peak": 52,
@@ -196,7 +197,8 @@ The station (absent in file mode except `radio`):
   or the file being replayed) and `state` (`connecting`, `live`, `reconnecting`,
   `waiting` or `replaying`). A Flex adds `packets`, `lost`, `reconnects`,
   `last_reconnect` (UTC seconds or `null`), its `station` name, its
-  `daxiq_channel` and the `others` stations on the radio at the last connect.
+  `daxiq_channel`, the `others` stations on the radio at the last connect, and
+  how many packets it has silenced while the radio was keyed (`muted_packets`).
   The HPSDR C receiver adds `packets`, `lost` and `pkt_per_s`; file mode adds
   `position_s`.
 - `telnet`: the spot port and how many telnet clients are connected.

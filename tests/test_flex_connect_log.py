@@ -223,7 +223,7 @@ def test_transmitting_at_covers_key_down_to_key_up_and_a_hold() -> None:
     assert rx.transmitting_at(100.5) and rx.transmitting_at(101.05 + flex_iq.TX_HOLD_S)
     assert not rx.transmitting_at(101.05 + flex_iq.TX_HOLD_S + 0.01)
     rx._note_tx("PTT_REQUESTED", 102.0)                 # keyed again, not yet up
-    assert rx.transmitting_at(102.5) and not rx.transmitting_at(101.5)
+    assert rx.transmitting_at(102.5) and not rx.transmitting_at(101.05 + flex_iq.TX_HOLD_S + 0.1)
 
 
 def _lines_at(caplog: Caplog, level: int) -> list[str]:
