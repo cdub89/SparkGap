@@ -2233,6 +2233,11 @@ def _rtty_contest(cfg):
     return RTTY_CONTESTS[name]
 
 
+def _rtty_printable(text):
+    """Decoded RTTY text for a log or spot line: control characters (line feeds, bells) as spaces."""
+    return ''.join(c if c.isprintable() else ' ' for c in text)
+
+
 def _rtty_split_keywords(text):
     """RTTY prints line noise between transmissions with no spaces, so a keyword runs into
     junk: EFXTEST AI4WW, CQPDE KQ4TNF. Cut CQ, TEST and DE out of any token that is not itself
@@ -2399,10 +2404,10 @@ def _rtty_scan_band_repeat(skimmer, rtty_lib, bn, band_center_khz, fi, fq, n_sam
                 skimmer._rtty_excluded += 1
         if not text:
             continue
-        log.info("RTTY %s @ %.1f kHz (%.0f dB): %s", bn, rf_khz, snr_db, text[:80])
+        log.info("RTTY %s @ %.1f kHz (%.0f dB): %s", bn, rf_khz, snr_db, _rtty_printable(text[:80]))
         w = rule.window_id(int(round(rf_khz * 10)), int(now // 60), now)
         for call, sf in rule.feed(w, rf_khz, _rtty_split_keywords(text), now, snr=snr_db):
-            log.info("*** RTTY SPOT: %.1f kHz  %-10s  %+d dB  [%s] ***", sf, call, int(snr_db), text[:50])
+            log.info("*** RTTY SPOT: %.1f kHz  %-10s  %+d dB  [%s] ***", sf, call, int(snr_db), _rtty_printable(text[:50]))
             skimmer.broadcast(freq_khz=skimmer._corrected_freq_khz(sf), dx_call=call,
                               snr=int(snr_db), wpm=RTTY_SPOT_BAUD, mode='RTTY',
                               comment='CQ')
@@ -2591,7 +2596,7 @@ def _rtty_scan_band(skimmer, rtty_lib, bn, band_center_khz, fi, fq, n_samples):
             skimmer._rtty_emitted[key] = now
             mark_khz = (rf_hz + RTTY_MARK_HZ) / 1000.0
             log.info("*** RTTY SPOT: %.1f kHz  %-10s  %+d dB  [%s] ***",
-                     mark_khz, call, int(snr_db), text[:50])
+                     mark_khz, call, int(snr_db), _rtty_printable(text[:50]))
             # Not tagged CQ: this path spots any call in the text, callers included, and
             # rbn_feeder uploads only CQ-tagged lines. rtty_spot_rule "repeat" tags CQ.
             skimmer.broadcast(
@@ -2600,7 +2605,7 @@ def _rtty_scan_band(skimmer, rtty_lib, bn, band_center_khz, fi, fq, n_samples):
                 snr=int(snr_db),
                 wpm=RTTY_SPOT_BAUD,
                 mode='RTTY',
-                comment=text[:60])
+                comment=_rtty_printable(text[:60]))
             skimmer.spot_count += 1
             n_spots += 1
 
