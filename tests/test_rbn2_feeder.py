@@ -104,9 +104,10 @@ def test_another_version_is_refused() -> None:
         _auth(version=b"rbn2auth/1.3")
 
 
-def test_a_failed_version_call_is_refused() -> None:
-    with pytest.raises(f.AuthError, match="no version"):
-        _auth(ret=-1)
+@pytest.mark.parametrize("ret", [-1, 1])
+def test_a_version_call_that_does_not_return_0_is_refused(ret: int) -> None:
+    with pytest.raises(f.AuthError, match=f"returned {ret}"):
+        _auth(ret=ret)  # writes rbn2auth/1.2 all the same
 
 
 def test_a_missing_library_is_refused() -> None:
@@ -260,6 +261,18 @@ def test_the_tick_follows_the_server_s_upload_interval(monkeypatch: pytest.Monke
     sess.post_id()
     sess.post_id()
     assert sess.upload_s == 20.0
+
+
+def test_the_id_reply_is_logged_with_hidden_fields_masked(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sess = _session(_auth())
+    echo = {"Limit3Min": 40, "skimSignIn": "x is operated by y", "shortHash": "1234abcd"}
+    monkeypatch.setattr(sess, "post", lambda path, body: echo)
+    caplog.set_level("INFO")
+    sess.post_id()
+    assert "Limit3Min" in caplog.text and "40" in caplog.text
+    assert "x is operated by y" not in caplog.text and "1234abcd" not in caplog.text
 
 
 def test_no_spot_goes_out_before_the_sign_in_succeeds() -> None:

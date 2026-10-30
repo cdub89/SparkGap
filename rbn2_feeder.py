@@ -51,6 +51,11 @@ CQ_CODE = {"CQ": "1", "DX": "2", "BCN": "3", "BEACON": "3"}
 HIDDEN = ("fingerPrint", "fp", "h", "shortHash", "skimSignIn")  # never in a log
 
 
+def masked(body: dict[str, Any]) -> dict[str, Any]:
+    """body with the HIDDEN fields replaced, for logging."""
+    return {k: "<hidden>" if k in HIDDEN else v for k, v in body.items()}
+
+
 class AuthError(RuntimeError):
     """The auth library is missing or not the version this feeder expects."""
 
@@ -79,11 +84,12 @@ class Auth:
         ]
         short.restype = spot.restype = ctypes.c_int
         buf = ctypes.create_string_buffer(VERSION_LEN)
-        if ver(buf, VERSION_LEN) < 0:
-            raise AuthError(f"{path} reports no version")
-        if buf.value != AUTH_VERSION.encode("ascii"):
+        ret = ver(buf, VERSION_LEN)
+        if ret != 0 or buf.value != AUTH_VERSION.encode("ascii"):
             got = buf.value.decode("ascii", errors="replace")
-            raise AuthError(f"{path} is version {got!r}, this feeder takes {AUTH_VERSION}")
+            raise AuthError(
+                f"{path} is version {got!r} (returned {ret}), this feeder takes {AUTH_VERSION}"
+            )
         self.version = AUTH_VERSION
         self._short, self._spot = short, spot
 
@@ -256,8 +262,7 @@ class Session:
     def post(self, path: str, body: dict[str, Any]) -> dict[str, Any] | None:
         data = json.dumps(body, separators=(",", ":"))
         if self.dry_run:
-            shown = {k: "<hidden>" if k in HIDDEN else v for k, v in body.items()}
-            log.info("[DRY] POST %s %s", path, json.dumps(shown, separators=(",", ":")))
+            log.info("[DRY] POST %s %s", path, json.dumps(masked(body), separators=(",", ":")))
             return None
         req = urlreq.Request(
             f"{self.url}/{path}",
@@ -289,7 +294,7 @@ class Session:
         else:
             self.registered.clear()
         if resp:
-            log.info("id.php reply: %s", resp)
+            log.info("id.php reply: %s", masked(resp))
             interval = resp.get("serverUploadInterval")
             try:
                 if interval is not None and float(interval) > 0:
