@@ -2529,7 +2529,7 @@ def _rtty_scan_band(skimmer, rtty_lib, bn, band_center_khz, fi, fq, n_samples):
             log.info("RTTY %s @ %.1f kHz (%.0f dB): no text", bn, rf_hz/1000.0, snr_db)
             continue
         log.info("RTTY %s @ %.1f kHz (%.0f dB): %s",
-                 bn, rf_hz / 1000.0, snr_db, text[:80])
+                 bn, rf_hz / 1000.0, snr_db, _rtty_printable(text[:80]))
 
         # Letter-first prefix: kills "33W"-style garbage from bit errors,
         # keeps 1x1 special event calls (K0M, K1Y, W2B). Allows 3-8 chars.
