@@ -3,14 +3,15 @@
 
 Reads SparkGap's local cluster telnet like rbn_feeder.py (whose spot parsing and band probe it
 reuses) and posts to RBN's id.php and s.php. The two hash fields come from the
-library named by --auth-lib, which is handed out separately and never kept in this repo.
+library librbn2_auth.so in the run root (the folder above this file's), handed out separately and
+never kept in a git checkout.
 Without a library of the expected version the feeder does not post (--dry-run aside).
 
 Differences from rbn_feeder.py: heartbeat every 300 s;
 SparkGap identifies itself as SparkGap/<short commit>, with the library's version string as
 the Aggregator version.
 
-usage: rbn2_feeder.py --call N0CALL-1 --grid FN31pr --auth-lib PATH [--dry-run]
+usage: rbn2_feeder.py --call N0CALL-1 --grid FN31pr [--dry-run]
 """
 
 import argparse
@@ -37,6 +38,7 @@ import rbn_feeder as base
 log = logging.getLogger("rbn2_feeder")
 
 AUTH_VERSION = "rbn2auth/1.2"  # RBN2_AUTH_VERSION, compared as text
+AUTH_LIB = "librbn2_auth.so"
 UPLOAD_S = 10.0  # Aggregator's tick when id.php names no serverUploadInterval
 VERSION_LEN = 64
 HASH_LEN = 16
@@ -144,12 +146,17 @@ def ntp_synced() -> bool:
     return out.stdout.strip() == "yes"
 
 
+def auth_lib_path() -> Path:
+    """The run root's librbn2_auth.so: ~/sparkgap/ for a seat in ~/sparkgap/<name>/."""
+    return Path(__file__).resolve().parent.parent / AUTH_LIB
+
+
 def not_ready(auth: Auth | None, version: str | None, dry_run: bool) -> str | None:
     """Why the feeder must not post, or None. A dry run posts nothing, so it always may run."""
     if dry_run:
         return None
     if auth is None:
-        return "no auth library (--auth-lib): RBN would drop these spots"
+        return f"no {auth_lib_path()}: RBN would drop these spots"
     if version is None:
         return "no SparkGap version (not a git checkout): the sign-in must name the commit"
     return None
@@ -413,7 +420,6 @@ def main() -> None:
         choices=["Permissive", "Normal", "Aggressive"],
         help="the spot_validation level SparkGap runs with",
     )
-    p.add_argument("--auth-lib", help="path to librbn2_auth.so, kept outside every SparkGap clone")
     p.add_argument("--local-host", default="127.0.0.1")
     p.add_argument("--local-port", type=int, default=7300)
     p.add_argument("--rbn-url", default=base.DEFAULT_RBN_URL)
@@ -428,12 +434,13 @@ def main() -> None:
     )
 
     auth = None
-    if a.auth_lib:
+    lib = auth_lib_path()
+    if lib.exists():
         try:
-            auth = Auth(a.auth_lib)
+            auth = Auth(str(lib))
         except AuthError as e:
             sys.exit(f"rbn2_feeder: {e}")
-        log.info("auth library %s", auth.version)
+        log.info("auth library %s from %s", auth.version, lib)
     version = sparkgap_version()
     why = not_ready(auth, version, a.dry_run)
     if why:

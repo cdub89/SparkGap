@@ -138,6 +138,13 @@ def test_a_malformed_hash_is_a_refusal(bad: bytes) -> None:
     assert sess.id_body() is None
 
 
+def test_the_library_is_looked_for_in_the_run_root() -> None:
+    from pathlib import Path
+
+    assert f.auth_lib_path() == Path(f.__file__).resolve().parent.parent / "librbn2_auth.so"
+    assert str(f.auth_lib_path()) in (f.not_ready(None, "SparkGap/abc1234", dry_run=False) or "")
+
+
 def test_without_a_library_or_a_version_nothing_is_posted() -> None:
     assert f.not_ready(None, "SparkGap/abc1234", dry_run=False)
     assert f.not_ready(_auth(), None, dry_run=False)
