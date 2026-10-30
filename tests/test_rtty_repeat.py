@@ -1,5 +1,6 @@
 """rtty_spot_rule "repeat": an RTTY CQ cut from wideband IQ spots after tier(call) minutes."""
 import os
+import time
 import types
 
 import numpy as np
@@ -38,7 +39,8 @@ def test_rtty_cq_spots_after_two_minutes(monkeypatch: pytest.MonkeyPatch) -> Non
     text = "CQ TEST KN0L KN0L CQ " * 6
     for minute in range(2):
         fi, fq = _iq(text, 5000.0, 20.0, minute)
-        monkeypatch.setattr(sparkgap, "time", types.SimpleNamespace(time=lambda m=minute: 1791669600.0 + 60 * (m + 1)))
+        monkeypatch.setattr(sparkgap, "time", types.SimpleNamespace(time=lambda m=minute: 1791669600.0 + 60 * (m + 1),
+                                                              gmtime=time.gmtime, strftime=time.strftime))
         sparkgap._rtty_scan_band_repeat(sk, lib, "20m", 14090, fi, fq, len(fi))
         if minute == 0:
             assert spots == []                    # one minute is one copy

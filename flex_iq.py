@@ -65,7 +65,7 @@ STATION_TAKEOVER_S = 10     # times the DAX-IQ channel: a copy waits this long f
 STATION_POLL_S = 10
 RETUNE_SETTLE_S = 0.5       # IQ dropped this long after a retune's replies: still the old frequency
 TX_STATES = ('PTT_REQUESTED', 'TRANSMITTING', 'UNKEY_REQUESTED')  # the radio's interlock while keyed
-TX_HOLD_S = 0.15            # after key-up: the DAX-IQ of the transmission arrives after the status line
+TX_HOLD_S = 0.1             # after key-up (READY/RECEIVE): bridges the shortest gaps between words of an over
 TX_SPANS_KEPT = 64
 
 
@@ -761,6 +761,7 @@ class FlexIQReceiver:
         self.others = []          # other stations on the radio at the last connect
         self._tx_since = None     # arrival time of the key-down in progress
         self._tx_spans = []       # (key-down, key-up) arrival times, newest last
+        self.muted_packets = 0
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -851,6 +852,8 @@ class FlexIQReceiver:
         status = (conn.cmd("sub pan all", settle=0.5) + conn.cmd("sub slice all", settle=0.5)
                   + conn.cmd("sub daxiq all", settle=0.5))
         conn.ok("transmit state for the GUI", conn.cmd("sub tx all", settle=0.3))  # key-down: an empty spectrum
+        log.info("[Flex] Decoding muted while the radio is keyed, until %d ms after its key-up",
+                 round(TX_HOLD_S * 1000))
         # A DAX-IQ channel another station's pan holds (Maestro, SmartSDR, DAX) is not ours to take,
         # nor one another client streams (another copy set to the same channel included).
         stations = gui_stations(self._clients)
@@ -1039,11 +1042,16 @@ class FlexIQReceiver:
 
     def transmitting_at(self, t):
         """Whether the radio was keyed at time t (seconds since the epoch, as the IQ arrived), with
-        TX_HOLD_S after each key-up: the spectrum shows those rows empty instead of the transmitter."""
+        TX_HOLD_S after each key-up: the decoders (and so the spectrum) get silence. Key-up is the
+        interlock's READY, which comes after the transmitting client's own CW delay (a per-client
+        setting we cannot read)."""
         since = self._tx_since
         if since is not None and t >= since:
             return True
-        return any(a <= t <= b + TX_HOLD_S for a, b in reversed(self._tx_spans))
+        hold, spans = TX_HOLD_S, self._tx_spans
+        if not spans or t > spans[-1][1] + hold:   # after the newest key-up: every packet not keyed
+            return False
+        return any(a <= t <= b + hold for a, b in reversed(spans))
 
     def _recover(self, why, kind):
         """Recover from a loss while the budget lasts; stop SparkGap when it is spent or recovery fails.
@@ -1137,7 +1145,8 @@ class FlexIQReceiver:
         return {'type': 'flex', 'address': self.ip, 'state': self.state,
                 'packets': self.packets, 'lost': self.lost, 'reconnects': self.reconnects,
                 'last_reconnect': self.last_reconnect, 'station': self.station,
-                'daxiq_channel': self.channel, 'others': list(self.others)}
+                'daxiq_channel': self.channel, 'others': list(self.others),
+                'muted_packets': self.muted_packets}
 
     def retune(self, freq_hz):
         """Move our pan and slice to freq_hz in place: nothing is torn down and no other copy is touched.
@@ -1339,6 +1348,9 @@ class FlexIQReceiver:
             iq_rows = np.frombuffer(data, dtype=f"{endian_char}f4", count=2 * n_samples,
                                     offset=VITA_HEADER_SIZE).astype(np.float64).reshape(-1, 2)
             iq_rows /= DAXIQ_FULL_SCALE
+            if self.transmitting_at(now):
+                iq_rows[:] = 0.0   # our own transmission: silence, so the time base holds
+                self.muted_packets += 1
             callback(0, iq_rows)
 
             if not pkt_count:

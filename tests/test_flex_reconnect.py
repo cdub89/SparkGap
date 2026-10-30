@@ -128,3 +128,29 @@ def test_no_disconnect_line_when_never_connected(caplog: Caplog) -> None:
     with caplog.at_level(logging.INFO, logger="sparkgap.flex"):
         rx._close("failed start")
     assert not caplog.records and rx.conn is None
+
+
+def test_iq_while_keyed_reaches_the_decoders_as_silence(monkeypatch: Monkey, radio: FakeRadio) -> None:
+    rx = _live(radio)
+    head = struct.pack(">BBHI", 0x38, 0x01, 0, rx._stream_id) + bytes(flex_iq.VITA_HEADER_SIZE - 8)
+    packet = head + struct.pack("<4f", 0.5, -0.5, 0.25, 0.25)
+
+    class Udp:
+        def recvfrom(self, *_: object) -> tuple[bytes, tuple[str, int]]:
+            return packet, ("192.0.2.1", 4991)
+
+        def close(self) -> None:
+            pass
+
+    rx._udp = Udp()  # pyright: ignore[reportAttributeAccessIssue]
+    monkeypatch.setattr(flex_iq.select, "select", lambda r, *_: ([rx._udp], [], []))
+    got = []
+
+    def take(_: int, iq: object) -> None:
+        got.append(iq.copy())  # pyright: ignore[reportAttributeAccessIssue]
+        rx._running = False
+
+    for keyed in (True, False):
+        rx._tx_since, rx._tx_spans, rx._running = (0.0 if keyed else None), [], True
+        rx.receive(take)
+    assert not got[0].any() and got[1].any() and rx.muted_packets == 1
