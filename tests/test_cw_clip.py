@@ -1,5 +1,6 @@
 """tools/listen/cw_clip.py: a tone in a recording comes out at the pitch, across part files, and
 the log lines near the frequency and time come with it."""
+import calendar
 import os
 import sys
 import wave
@@ -81,3 +82,55 @@ def test_log_lines_near_the_frequency_and_time_with_their_continuations(tmp_path
     got = cw_clip.log_lines(str(log), 7035.0, t0 + 8 * 60, t0 + 10 * 60)
     assert got == ["13:07:40 INFO ITILA raw 7035.0 kHz cost=0.2: 'CQ CWT W3RJ\nW3RJ'",
                    "13:07:53 INFO *** SPOT:     7035.1  W3RJ          42 dB  28 WPM  [repeat] ***"]
+
+
+def test_any_iq_wav_with_centre_and_start(tmp_path):
+    base = _recording(tmp_path)
+    other = tmp_path / "lake3_7020_20261014_125900Z.wav"          # record_wav's template, not the recorder's
+    os.rename(base, other)
+    out = tmp_path / "c.wav"
+    import pytest
+    with pytest.raises(SystemExit):
+        cw_clip.main([str(other), "--freq", "7031.2", "--time", "+1", "--out", str(out)])
+    cw_clip.main([str(other), "--freq", "7031.2", "--time", "12:59:01", "--dur", "1",
+                  "--centre", "7020", "--start", "2026-10-14 12:59:00", "--out", str(out)])
+    assert abs(_peak_hz(out)[0] - 600) < 2
+
+
+def test_log_times_are_the_logging_pcs_local_time(tmp_path):
+    log = tmp_path / "sparkgap.log"
+    log.write_text("09:07:53 INFO *** SPOT:     7035.1  W3RJ          42 dB  28 WPM  [repeat] ***\n")
+    t0 = cw_clip.parse_name("20261014_125900Z_7090kHz_192000_24bit.wav")[0]     # 12:59Z
+    assert cw_clip.log_lines(str(log), 7035.0, t0 + 8 * 60, t0 + 10 * 60, utc_offset_h=-4)   # EDT log
+    assert not cw_clip.log_lines(str(log), 7035.0, t0 + 8 * 60, t0 + 10 * 60, utc_offset_h=0)
+
+
+def test_record_wav_parts_and_start_from_the_name(tmp_path):
+    """record_wav's names carry the UTC start and continue in _p2 ... (cdub89's note on #89)."""
+    base = _recording(tmp_path)                                   # 6 s, split into two files at 2.5 s
+    rw = tmp_path / "lake3_7020_20261014_125900Z.wav"
+    os.rename(base, rw)
+    os.rename(tmp_path / f"20261014_125900Z_7020kHz_{RATE}_24bit_p2.wav", tmp_path / "lake3_7020_20261014_125900Z_p2.wav")
+    parts, t0, ck, _rate = cw_clip.recording_parts(str(tmp_path / "lake3_7020_20261014_125900Z_p2.wav"), centre_khz=7020)
+    assert [os.path.basename(p) for p in parts] == ["lake3_7020_20261014_125900Z.wav", "lake3_7020_20261014_125900Z_p2.wav"]
+    assert ck == 7020000 and t0 == calendar.timegm((2026, 10, 14, 12, 59, 0))   # from the name
+    out = tmp_path / "c.wav"                                      # 12:59:01.5 to 12:59:05.5 crosses into _p2
+    cw_clip.main([str(rw), "--freq", "7031.2", "--time", "12:59:01", "--dur", "4", "--centre", "7020", "--out", str(out)])
+    hz, n = _peak_hz(out)
+    assert abs(hz - 600) < 2 and n >= 3.9 * cw_clip.OUT_RATE
+
+
+def test_record_wav_missing_first_part_and_stray_files(tmp_path):
+    """A _p2 without its first part stops (its times would shift); a stray _pold.wav is ignored."""
+    import pytest
+    base = _recording(tmp_path)
+    rw = tmp_path / "lake3_7020_20261014_125900Z.wav"
+    os.rename(base, rw)
+    p2 = tmp_path / "lake3_7020_20261014_125900Z_p2.wav"
+    os.rename(tmp_path / f"20261014_125900Z_7020kHz_{RATE}_24bit_p2.wav", p2)
+    (tmp_path / "lake3_7020_20261014_125900Z_pold.wav").write_bytes(b"")
+    parts, *_ = cw_clip.recording_parts(str(rw), centre_khz=7020)
+    assert [os.path.basename(p) for p in parts] == [rw.name, p2.name]
+    os.remove(rw)
+    with pytest.raises(SystemExit):
+        cw_clip.recording_parts(str(p2), centre_khz=7020)

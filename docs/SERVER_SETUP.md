@@ -12,6 +12,36 @@ skimmers, changes their settings, serves SparkGap Web, and passes each
 skimmer's live feed through to the browser. Browsers talk only to the server;
 the skimmers' own feeds stay on the machine.
 
+## The run folder
+
+The server runs the skimmers listed in its run folder (`~/sparkgap`, or
+`--root` / `$SPARKGAP_ROOT`). Set it up once:
+
+```text
+~/sparkgap/
+  instances             one line per skimmer
+  config/shack40.local.json
+  config/shack20.local.json
+  logs/                 the server and each skimmer write here
+  rec/                  recordings, when turned on
+```
+
+`instances` has one line per skimmer: its name, the SparkGap folder it runs
+from, its config file in `config/`, and the Python to run it with. Lines
+starting with `#` are ignored.
+
+```text
+# name   code folder          config               python
+shack40  /home/op/SparkGap    shack40.local.json   /home/op/SparkGap/.venv/bin/python
+shack20  /home/op/SparkGap    shack20.local.json   /home/op/SparkGap/.venv/bin/python
+```
+
+Each config is an ordinary SparkGap config (start from
+`skimmer_flex.example.json`). Skimmers on one FlexRadio need their own
+`flex_daxiq_channel`, `flex_udp_port`, `telnet_port` and `skimmer_suffix`;
+give each a `gui_feed` block (below) so it shows in SparkGap Web. A name is a
+letter then letters, digits, `-` or `_`.
+
 ## Starting the server
 
 ```text

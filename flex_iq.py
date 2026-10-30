@@ -1249,8 +1249,9 @@ class FlexIQReceiver:
 
     def transmitting_at(self, t):
         """Whether the radio was keyed at time t (seconds since the epoch, as the IQ arrived), with
-        TX_HOLD_S after each key-up: the decoders (and so the spectrum) get silence.  Key-up is the interlock's READY, which comes after
-        the transmitting client's own CW delay (a per-client setting we cannot read)."""
+        TX_HOLD_S after each key-up: the decoders (and so the spectrum) get silence. Key-up is the
+        interlock's READY, which comes after the transmitting client's own CW delay (a per-client
+        setting we cannot read)."""
         since = self._tx_since
         if since is not None and t >= since:
             return True

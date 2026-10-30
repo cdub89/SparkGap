@@ -175,6 +175,10 @@ def _get_hpsdr_fast():
         try:
             lib = _ct.CDLL('./libhpsdr_fast.so')
             lib.hpsdr_create.restype = _ct.c_void_p
+            if hasattr(lib, 'hpsdr_create_listen'):      # a local port of its own (behind hpsdr_proxy.py)
+                lib.hpsdr_create_listen.restype = _ct.c_void_p
+                lib.hpsdr_create_listen.argtypes = [_ct.c_char_p, _ct.c_int, _ct.c_int, _ct.c_int,
+                                                    _ct.c_int, _ct.c_int]
             lib.hpsdr_create.argtypes = [_ct.c_char_p, _ct.c_int, _ct.c_int,
                                           _ct.c_int, _ct.c_int]
             lib.hpsdr_set_freq.restype = None
@@ -259,6 +263,12 @@ def _get_hpsdr_fast():
                 lib.hpsdr_pkt_lost.argtypes = [_ct.c_void_p]
             except AttributeError:
                 pass
+            try:
+                lib.hpsdr_set_restart_after.argtypes = [_ct.c_void_p, _ct.c_double]
+                lib.hpsdr_restarts.restype = _ct.c_uint64
+                lib.hpsdr_restarts.argtypes = [_ct.c_void_p]
+            except AttributeError:
+                pass
             _hpsdr_fast_lib = lib
             log.info("Loaded libhpsdr_fast.so (C receiver)")
         except OSError:
@@ -270,19 +280,41 @@ def _get_hpsdr_fast():
 class _CReceiver:
     """Drop-in replacement for HPSDRReceiver using C receive thread."""
 
-    def __init__(self, ip, port, n_receivers, sample_rate, lna_gain=20):
+    def __init__(self, ip, port, n_receivers, sample_rate, lna_gain=20, restart_after_s=30.0, listen_port=None):
         import ctypes as _ct
         self.ip = ip
         self._health_pkts = (0, time.time())
+        self._restarts_seen = 0
         self.lib = _get_hpsdr_fast()
         self.n_receivers = n_receivers
         self.sample_rate = sample_rate
         self._h = None
         if self.lib:
-            self._h = _ct.c_void_p(self.lib.hpsdr_create(
-                ip.encode(), port, n_receivers, sample_rate, lna_gain))
+            own_port = bool(listen_port and listen_port != port)
+            if own_port and not hasattr(self.lib, 'hpsdr_create_listen'):
+                log.warning("hpsdr_listen_port %d: libhpsdr_fast.so has no hpsdr_create_listen (an old build: "
+                            "make -B libhpsdr_fast.so); receiving on port %d", listen_port, port)
+            if own_port and hasattr(self.lib, 'hpsdr_create_listen'):
+                self._h = _ct.c_void_p(self.lib.hpsdr_create_listen(
+                    ip.encode(), port, listen_port, n_receivers, sample_rate, lna_gain))
+            else:
+                self._h = _ct.c_void_p(self.lib.hpsdr_create(
+                    ip.encode(), port, n_receivers, sample_rate, lna_gain))
             if not self._h:
                 log.error("hpsdr_create failed")
+            elif hasattr(self.lib, 'hpsdr_set_restart_after'):
+                self.lib.hpsdr_set_restart_after(self._h, float(restart_after_s))
+
+    def restarts(self):
+        """How many times the receive thread re-sent the start sequence after silence; logs new ones."""
+        if not self._h or not self.lib or not hasattr(self.lib, 'hpsdr_restarts'):
+            return 0
+        n = self.lib.hpsdr_restarts(self._h)
+        if n > self._restarts_seen:
+            log.warning("Receiver: no IQ from %s, sent the start sequence again (%d time%s so far)",
+                        self.ip, n, '' if n == 1 else 's')
+            self._restarts_seen = n
+        return n
 
     def set_frequency(self, rx_index, freq_hz):
         if self._h and self.lib:
@@ -329,7 +361,7 @@ class _CReceiver:
         rate = (pkts - last) / (now - t) if now > t else 0.0
         self._health_pkts = (pkts, now)
         return {'type': 'hpsdr', 'address': self.ip, 'state': 'live' if pkts > last else 'waiting',
-                'packets': pkts, 'lost': drops, 'pkt_per_s': round(rate)}
+                'packets': pkts, 'lost': drops, 'pkt_per_s': round(rate), 'restarts': self.restarts()}
 
     def tap_enable(self, on):
         """GUI feed waterfall: have the C worker copy IQ into its spectrum taps. False when the
@@ -450,6 +482,7 @@ def _log_rbn_span(t, centres_khz, rate):
     """The spans the run listens to from t on, one per band."""
     log.info("RBN span: %s %s", _rbn_utc(t), ' '.join(
         '%.1f-%.1f' % (c - rate / 2000, c + rate / 2000) for c in centres_khz))
+
 
 def _decode_span(bmin, bmax, center_khz, sample_rate):
     """The CW window as decoded: the band plan's segment cut to the IQ span around the centre."""
@@ -639,6 +672,22 @@ def _wav_drop_cache(path):
 
 PEAK_SCAN_SAMPLES = 8192    # live peak scan FFT; the Python receive path keeps only this much IQ
 RECORD_WAV_MAX_BYTES = 4_000_000_000    # under the WAV format's 2**32 - 1 byte limit
+RECORD_WAV_DROP_BYTES = 256_000_000     # a recording leaves the page cache every this many bytes (cdub89/SparkGap#21)
+
+
+def _wav_drop_cache(path):
+    """Let Linux drop a recording's written pages from its file cache; under WSL that cache is Windows memory."""
+    if not hasattr(os, 'posix_fadvise'):
+        return
+    try:
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        finally:
+            os.close(fd)
+    except OSError as e:
+        log.warning("Recording IQ: file cache not dropped for %s: %s", path, e)
+
 
 
 class DecoderInstance:
@@ -2236,6 +2285,14 @@ RTTY_RANGES_KHZ = {
     '10m': (28060.0, 28150.0),
 }
 RTTY_MAX_CANDIDATES = 100      # per band per minute (config rtty_max_candidates)
+# rtty_contest: what one RTTY contest's runners send, from its published rules. words: the contest's
+# name as runners put it in their CQ (CQ MAKRO AC2FA AC2FA, or MAKRO AE1P AE1P when the CQ is lost)
+# opens a CQ group; exchange "grid": a call followed by a grid square is being sent the exchange, so a
+# caller (CQ MAKRO NK2Y NK2Y CQ AA4DD AA4DD FN31). Measured on the 10-10 Makrothen recording against
+# RTTY Skimmer Server on the same replay: 92 -> 93 real stations, none unconfirmed.
+RTTY_CONTESTS = {
+    'makrothen': {'words': ('MAK', 'MAKRO', 'MAKROTHEN', 'MKR'), 'exchange': 'grid'},
+}
 # FT8 and JS8 dials (kHz): each dial and 3 kHz above it is no RTTY, so no candidate there.
 # FT4 dials are not excluded: RTTY contest stations sit in them (7047.5, 14080), and on the PA
 # and JARTS recordings excluding them lost 2 confirmed calls each and removed no junk.
@@ -2263,6 +2320,19 @@ def _in_digital_window(rf_khz):
 
 
 _RTTY_KEYWORD = re.compile(r'(CQ|TEST|DE)')
+
+
+def _rtty_contest(cfg):
+    """The RTTY_CONTESTS entry config rtty_contest names, or None (the general rule)."""
+    name = (cfg.get('rtty_contest') or '').strip().lower()
+    if not name:
+        return None
+    if name not in RTTY_CONTESTS:
+        log.warning("rtty_contest %r is not one of %s: the general RTTY rule is used", name,
+                    ', '.join(sorted(RTTY_CONTESTS)))
+        return None
+    log.info("RTTY spot rule: %s contest words and exchange", name)
+    return RTTY_CONTESTS[name]
 
 
 def _rtty_printable(text):
@@ -2300,7 +2370,16 @@ def _rtty_split_keywords(text):
             merged.append(p)
             i += 1
         out.extend(merged)
-    return ' '.join(out)
+    return ' '.join(_split_doubled(t) for t in out)
+
+
+def _split_doubled(tok):
+    """IV3WMSIV3WMS -> IV3WMS IV3WMS: a call sent twice with the space between them lost."""
+    from spot_rule import CALL_RE
+    h = len(tok) // 2
+    if len(tok) % 2 == 0 and h >= 4 and tok[:h] == tok[h:] and CALL_RE.fullmatch(tok[:h]):
+        return tok[:h] + ' ' + tok[h:]
+    return tok
 
 
 def _rtty_hold_spectrum(fi, fq, lo_hz, hi_hz, fs=192000):
@@ -2368,10 +2447,14 @@ def _rtty_scan_band_repeat(skimmer, rtty_lib, bn, band_center_khz, fi, fq, n_sam
         # through (TU KQ4TNF CQ N4TL N4TL .. 59 N4TL FM06), and split_runs gains nothing on
         # RTTY, which has real spaces. Same audio within 30 s: scans are a minute apart and a
         # runner's 100 Hz bin can change between two.
+        contest = _rtty_contest(skimmer.cfg)
         rule = skimmer._rtty_rule = RepeatSpotRule(
             lambda c: {'active': 2, 'rare': 3}.get(trk._matches_patt3ch(c), 4),
             cq_groups=True, lockon=True, window_s=30.0,
-            fragments=skimmer.cfg.get('rtty_spot_rule_fragments') or None)
+            fragments=skimmer.cfg.get('rtty_spot_rule_fragments') or None,
+            contest_words=contest is not None,
+            words=frozenset(contest['words']) if contest else None,
+            grid=bool(contest) and contest.get('exchange') == 'grid')
     cands = [c for c in _rtty_candidates(fi, fq, *rng)
              if not _in_digital_window(band_center_khz + c[0] / 1000.0)]
     cap = int(skimmer.cfg.get('rtty_max_candidates', RTTY_MAX_CANDIDATES))
@@ -7689,14 +7772,19 @@ class SparkGap:
             # Use C receiver for multi-band (handles 9600+ pkt/s)
             self._use_c_receiver = (n_bands > 1 and _get_hpsdr_fast() is not None)
             if self._use_c_receiver:
+                # hpsdr_restart_after_s: seconds without IQ before the start sequence is sent
+                # again (another client stopped the radio); 0 = never
                 self.receiver = _CReceiver(device_ip, sdr_port,
-                                            n_rx, rx_sample_rate, lna_gain)
+                                            n_rx, rx_sample_rate, lna_gain,
+                                            self.cfg.get('hpsdr_restart_after_s', 30.0),
+                                            listen_port=listen_port)
             else:
                 self.receiver = HPSDRReceiver(device_ip, port=sdr_port,
                                               n_receivers=n_rx, sample_rate=rx_sample_rate,
                                               listen_port=listen_port,
                                               passive=passive, rx_filter=rx_filter)
                 self.receiver.lna_gain = lna_gain
+                self.receiver.restart_after_s = float(self.cfg.get('hpsdr_restart_after_s', 30.0))
             for _name, center_hz, rx_idx in self._band_meta:
                 self.receiver.set_frequency(rx_idx, center_hz)
         if not getattr(self, '_use_c_receiver', False):
@@ -8151,6 +8239,14 @@ class SparkGap:
                     if enable_ft8 and not os.path.exists(_ft8_decoder(self.cfg)):
                         log.warning("enable_ft8 is on but %s is missing (make ft8, or set ft8_decoder); "
                                     "FT8 decode will fail", _ft8_decoder(self.cfg))
+                    if enable_ft8 and self.cfg.get('ft8_windows', 'aligned') == 'aligned':
+                        # The DT watch only sees a clock 1-2.4 s late: one further off, or early, gives
+                        # no decodes at all (cdub89, #81). Say so at the start if NTP isn't keeping it.
+                        from feed_server import clock_synced
+                        if clock_synced() is False:
+                            log.warning("FT8 windows are aligned to this PC's clock, and timedatectl says "
+                                        "it isn't NTP-synchronised: FT8 needs it within about a second "
+                                        "(enable NTP, or set ft8_windows: sliding)")
                     if enable_ft8 or enable_rtty or self._iq_rec is not None:
                         FT8_FREQS = {3590: 3573, 7090: 7074, 10118: 10136,
                                      14090: 14074, 18083: 18100,
@@ -8508,6 +8604,8 @@ class SparkGap:
                         log.info("Health: ring_drops=%d/%d samples (%.4f%%) env_drops=%d bins=%d peak=%d",
                                  rdrop, samples, 100.0 * rdrop / max(samples, 1),
                                  env_drops_total, bins_total, bins_peak)
+                        if hasattr(self.receiver, 'restarts'):
+                            self.receiver.restarts()     # logs a warning when the radio had to be restarted
                         # Per-band breakdown.  Format: name:total|<30s,<60s,<300s,300s+
                         # If list_bin_ages unavailable, just name:total.
                         if per_band and any(b[2] for b in per_band):
@@ -9020,14 +9118,17 @@ _file_audio_t = 0.0  # file mode: audio position (s) that log lines are stamped 
 
 
 def _wav_start_utc(path):
-    """UTC start (epoch s) of a record_wav file from its name; a _pN part adds the earlier parts. None if unknown."""
-    m = re.search(r'_(\d{8}_\d{6})Z(?:_p(\d+))?\.wav$', path)
+    """UTC start (epoch s) of a recording from its name: record_wav's (lake3_14038_20261021_183854Z.wav)
+    or iq_recorder's (20261014_125900Z_7090kHz_192000_24bit.wav). A _pN part adds the earlier parts.
+    None if unknown."""
+    m = re.search(r'(\d{8}_\d{6})Z', os.path.basename(path))
     if not m:
         return None
     t = datetime.strptime(m.group(1), '%Y%m%d_%H%M%S').replace(tzinfo=timezone.utc).timestamp()
-    stem = path[:m.end(1) + 1]
+    part = re.search(r'_p(\d+)\.wav$', path)
+    stem = path[:part.start()] if part else path[:-len('.wav')]
     import wave
-    for n in range(1, int(m.group(2) or 1)):
+    for n in range(1, int(part.group(1)) if part else 1):
         try:
             w = wave.open(stem + ('.wav' if n == 1 else '_p%d.wav' % n), 'rb')
         except (OSError, EOFError, wave.Error):
@@ -9063,8 +9164,6 @@ def run_file_mode(args, config):
     _select_decode_threads(config.get('itila_decode_threads', 1))
     _select_snr_decoder(config.get('itila2_snr_decoder', False))
     _select_afc(config.get('itila2_afc', False))
-    _select_spawn_guard(config.get('itila2_spawn_guard', False))
-    _select_parallel_decode(config.get('itila2_parallel_decode', False))
     if _select_spot_rule(_spot_rule_name(config)):
         _trk = tracker
         _trk.spot_rule = _make_spot_rule(config, tracker)

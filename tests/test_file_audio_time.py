@@ -37,3 +37,10 @@ def test_missing_earlier_part_is_unknown(tmp_path: Path) -> None:
 
 def test_name_without_a_start_is_unknown() -> None:
     assert _wav_start_utc("B1_recording.wav") is None
+
+
+def test_iq_recorder_names_and_their_parts(tmp_path: Path) -> None:
+    rec = "20261018_152029Z_14090kHz_192000_24bit"
+    assert _wav_start_utc(str(tmp_path / f"{rec}.wav")) == START
+    _wav(tmp_path / f"{rec}.wav", 2.0)
+    assert _wav_start_utc(str(tmp_path / f"{rec}_p2.wav")) == START + 2.0

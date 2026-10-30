@@ -19,11 +19,12 @@ def _lines(caplog: Caplog, prefix: str) -> list[str]:
 
 def test_a_spot_is_one_archive_row(caplog: Caplog) -> None:
     with caplog.at_level(logging.INFO, logger="sparkgap"):
-        sparkgap._log_rbn_row("wx7v", 7027.64, "JA0FVU", 24.6, 30, T)
+        sparkgap._log_rbn_row("n0call", 7027.64, "JA0FVU", 24.6, 30, T)
     (row,) = _lines(caplog, "RBN: ")
     got = dict(zip(COLUMNS, next(csv.reader([row]), []), strict=True))
-    assert got == {"callsign": "WX7V", "de_pfx": "", "de_cont": "", "freq": "7027.6", "band": "40m",
-                   "dx": "JA0FVU", "dx_pfx": "", "dx_cont": "", "mode": "CQ", "db": "25",
+    assert got == {"callsign": "N0CALL", "de_pfx": "", "de_cont": "", "freq": "7027.6",
+                   "band": "40m", "dx": "JA0FVU", "dx_pfx": "", "dx_cont": "", "mode": "CQ",
+                   "db": "25",
                    "date": "2026-10-21 12:35:54", "speed": "30", "tx_mode": "CW"}
 
 
@@ -52,8 +53,8 @@ def test_a_span_line_holds_every_band(caplog: Caplog) -> None:
 
 def test_the_node_line_carries_a_valid_grid_only(caplog: Caplog) -> None:
     with caplog.at_level(logging.INFO, logger="sparkgap"):
-        sparkgap._log_rbn_node("wx7v", "em12OU")
-        sparkgap._log_rbn_node("wx7v", "EM12")
-        sparkgap._log_rbn_node("wx7v", "")
-        sparkgap._log_rbn_node("wx7v", "Dallas")
-    assert _lines(caplog, "RBN node: ") == ["WX7V EM12ou", "WX7V EM12", "WX7V", "WX7V"]
+        sparkgap._log_rbn_node("n0call", "fn31PR")
+        sparkgap._log_rbn_node("n0call", "FN31")
+        sparkgap._log_rbn_node("n0call", "")
+        sparkgap._log_rbn_node("n0call", "Shack")
+    assert _lines(caplog, "RBN node: ") == ["N0CALL FN31pr", "N0CALL FN31", "N0CALL", "N0CALL"]

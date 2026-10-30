@@ -1,6 +1,6 @@
 """The SparkGap instances on one machine: start, stop, status and settings.
 
-The same root, files and per-radio lock as tools/sparkgap.sh, so both can run side by side:
+The run folder (docs/SERVER_SETUP.md):
 <root>/instances (name, code folder, config, python), config/<name>.local.json, logs/<name>.pid,
 logs/<name>_<band>_<UTC>.log, logs/station_<radio>.{pid,json,lock}, rec/.  Every function blocks
 (a start waits for the copy to go live); the server calls them from one worker thread.
@@ -289,7 +289,11 @@ class Seat:
 
     def band(self, i: Instance) -> str:
         bands = self.config(i).get("bands") or ["?"]
-        return str(bands[0])
+        return "+".join(str(b) for b in bands)
+
+    def multi_band(self, i: Instance) -> bool:
+        """Several bands in one copy: its bands are set in its config, never from the web."""
+        return len(self.config(i).get("bands") or []) > 1
 
     def radio(self, i: Instance) -> str | None:
         """The Flex radio an instance uses (its sdr_ip), None for any other receiver."""
@@ -338,8 +342,7 @@ class Seat:
 
     @contextlib.contextmanager
     def lock(self, i: Instance) -> Iterator[None]:
-        """One start, stop or config write at a time: the radio's lock, then the instance's,
-        the same flocks and order sparkgap.sh takes."""
+        """One start, stop or config write at a time: the radio's lock, then the instance's."""
         self.logs.mkdir(parents=True, exist_ok=True)
         radio = self.radio(i)
         with contextlib.ExitStack() as held:
@@ -349,7 +352,7 @@ class Seat:
             yield
 
     def _launch(self, cwd: Path, pidfile: Path, log: Path, argv: list[str]) -> None:
-        """Start argv in its own session, detached from us (as sparkgap.sh's setsid subshell):
+        """Start argv in its own session, detached from us (a setsid subshell):
         it keeps running when the server stops, and init reaps it."""
         inner = 'echo $$ > "$2"; log=$3; shift 3; exec "$@" > "$log" 2>&1'
         script = f'cd "$1" && (setsid bash -c \'{inner}\' _ "$@" < /dev/null > /dev/null 2>&1 &)'
@@ -488,6 +491,7 @@ class Seat:
         return {
             "band": self.band(i),
             "bands_known": self.bands_known(i),
+            "multi_band": self.multi_band(i),
             "validation": cfg.get("spot_validation", "normal") or "off",
             "call_source": cfg.get("spot_validation_calls") or "scp",
             "afc": bool(cfg.get("itila2_afc", False)),
@@ -520,6 +524,8 @@ class Seat:
                 self._check_rx(i, key, value)
                 rx[key] = value
             elif key == "band":
+                if self.multi_band(i):
+                    raise SeatError(f"{name} runs {self.band(i)}: set its bands in its config")
                 if value not in self.bands_known(i):
                     raise SeatError(f"band must be one of: {' '.join(self.bands_known(i))}")
                 changes["bands"] = [value]

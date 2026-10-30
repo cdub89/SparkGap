@@ -4,7 +4,7 @@
 
 Open-source, Linux-native, multi-band skimmer for amateur radio: **CW, RTTY and FT8** on
 several bands at once, with DX-cluster spots on telnet and an uploader for the Reverse Beacon
-Network (RBN).
+Network (RBN). **SSB voice** spotting is in `voice/` too (experimental; it needs a CUDA GPU).
 
 > **Status: beta.** In daily use on a Red Pitaya STEMlab 125-14 at WF8Z skimming 8 bands
 > (80, 40, 30, 20, 17, 15, 12 and 10 m), feeding a local cluster and PSKReporter (FT8).
@@ -25,19 +25,37 @@ against what other RBN skimmers reported at the same time:
   work targets.
 - **Recall.** Against a CW Skimmer node 20 miles away, on the same evenings, SparkGap spots
   1.6 to 1.9 times as many calls and catches about 70% of that node's calls (#43).
+- **RTTY.** One hour of the Makrothen RTTY weekend, five bands, replayed to SparkGap and RTTY
+  Skimmer Server at the same time and judged by at least two RBN skimmers: SparkGap spotted 94
+  stations, all real; RTTY Skimmer Server's CQ-tagged spots were 92 real of 110 on its DX profile
+  and 110 of 116 on its Makrothen profile. Frequencies agreed to a median of 0.00 kHz. Details,
+  both sides' mistakes and what we are doing about the stations only it found are in #91.
+- **SSB (voice).** CQ WW SSB 2026, eight band-hours recorded from a FlexRadio and scored against the
+  DX cluster spots people posted: 347 calls spotted, 248 of them also spotted by a person (almost nobody
+  spots US and Canadian stations in CQ WW, and most of the rest are those); reading the transcripts,
+  about 91% of spots were real. Live into a cluster for Sunday of that weekend: 2083 spots of 412 calls,
+  most within seconds of the station being heard. One GTX 1060 is about a third short of one busy
+  contest band. Details in `voice/README.md`.
 - **Copy on known text.** Character error on three W1AW code-practice clips: 3.1, 3.7 and
   1.9% (`docs/ITILA2.md`; CW Skimmer copies the same audio nearly perfectly).
-- **Cost.** 8 bands at 192 kHz with FT8 and RTTY take about 2.2 cores of a 35 W i5-9500T with
-  `itila_decode_threads: 4` (profile in #59).
+- **Cost.** 8 bands at 192 kHz with CW, FT8 and RTTY use about 1.7 cores of CPU time on a 35 W i5-9500T
+  with `itila_decode_threads: 4` on a weekday afternoon (2.2 before the October CPU work; profile
+  in #59).
 
-These are calibration on our station, not a contest result. The harness to reproduce them is
+The CW, RTTY and FT8 numbers are calibration on our station, not a contest result; the SSB ones are
+from one contest weekend. The harness to reproduce them is
 in `tools/eval/` and `tools/sim/`.
 
 ## What it does
 
 - **Receivers.** HPSDR protocol 1 radios (a Red Pitaya with Pavel Demin's `sdr_receiver_hpsdr`
   firmware, up to 8 receivers at 48 to 192 kHz each), and FlexRadio DAX-IQ through `flex_iq.py`
-  (`skimmer_flex.example.json`).
+  (`skimmer_flex.example.json`). Lost UDP packets are counted from the sequence number and their
+  time kept as silence, so FT8 slots stay on the clock (`FT8 trigger: ... lost=` in the log).
+  A Red Pitaya streams to one client, and any client on the LAN can stop it: with no IQ for
+  `hpsdr_restart_after_s` (default 30 s; 0 = never) the receiver sends the start sequence again and
+  logs `Receiver: no IQ ... sent the start sequence again`, on the multi-band C receiver and the
+  single-band Python one alike.
 - **CW.** A scanner finds every signal in each band and opens one channel on it; each channel
   is decoded by **itila2**, a two-state HMM decoder with its timing fitted from the sender's own
   keying (`docs/ITILA2.md`).
@@ -46,10 +64,20 @@ in `tools/eval/` and `tools/sim/`.
   copies by RBN's call pattern file (`patt3ch.lst`), with lock-on (who owns the frequency) and
   CQ qualifiers (`CQ PA`, `CQ FD`). Callers are never spotted.
 - **RTTY.** RTTY signals are found in each band's RTTY segment and decoded once a minute, with
-  the same repeat rule.
+  the same repeat rule. For a contest weekend, `rtty_contest` (off by default) adds that contest's
+  rules: `"rtty_contest": "makrothen"` makes its words (MAK, MAKRO, MAKROTHEN, MKR) open a CQ group
+  even when the CQ itself was lost, and reads a call followed by a grid square as a caller being
+  sent the exchange. Makrothen is the only contest defined so far (`RTTY_CONTESTS` in `sparkgap.py`).
 - **FT8.** Decoded on each band's FT8 frequency with `decode_ft8` from Karlis Goba's
   [ft8_lib](https://github.com/kgoba/ft8_lib) (MIT) and uploaded to PSKReporter
-  (`pskr_feeder.py`).
+  (`pskr_feeder.py`). Each cycle logs the median time offset (DT) of its decodes and warns when
+  it says the PC clock is off.
+- **SSB (voice), experimental.** Voices are found in the IQ by their filter shape and speech rhythm,
+  transcribed with Whisper (faster-whisper `large-v3-turbo` on a CUDA GPU), and the station calling CQ
+  is spotted on its own telnet port, by spoken versions of the same rules: runner copies, the better of
+  two readings, lock-on. It runs on its own beside the CW skimmer: `voice/live_voice.py` on IQ from
+  `voice/flex_record.py` (FlexRadio DAX-IQ). How it works, how to run it and how it measured:
+  `voice/README.md`.
 - **Outputs.** DX-cluster spots on telnet port 7300 in CW Skimmer Server's format (RTTY lines as
   RTTY Skimmer Server writes them), so loggers, clusters and Aggregator can read them; an
   optional second port for your own use with its own, looser spot rule (see the quick start);
@@ -65,8 +93,11 @@ in `tools/eval/` and `tools/sim/`.
   text, and through each machine's SparkGap server (`sparkgap_server.py`) start, stop and
   settings for its copies (`docs/WEBUI.md`).
 - **Tools.** An all-band IQ recorder (`iq_recorder.py`), a proxy that replays recordings as an
-  HPSDR radio (`hpsdr_proxy.py`), file-mode replay, a band simulator with exact ground truth
-  (`tools/sim/`), and scoring against the RBN archive (`tools/eval/rbn_confirm.py`).
+  HPSDR radio to any number of skimmers at once (`hpsdr_proxy.py`, with `--align` to keep FT8
+  slots on the clock and `--drop` to lose packets on purpose), file-mode replay, a band simulator
+  with exact ground truth (`tools/sim/`), scoring against the RBN archive
+  (`tools/eval/rbn_confirm.py`), and a clip cutter to listen to a decode: frequency and time in,
+  CW audio and the decoder's text out (`tools/listen/cw_clip.py`).
 
 Work in progress is in the [open pull requests](https://github.com/hotairfred/SparkGap/pulls).
 
@@ -156,8 +187,8 @@ Several copies on one radio (one band each, each on its own
 `python3 flex_station.py --config <one of their configs>` before them and stop
 it after the last one. A copy started alone holds the station itself.
 The decoders get silence while the radio is keyed, until 0.1 s after
-its key-up (which comes after the transmitting client's CW delay), so your own transmissions and
-their key clicks are not decoded.
+its key-up (which comes after the transmitting client's CW delay), so
+your own transmissions and their key clicks are not decoded.
 
 **macOS** should work with light Makefile changes (`.dylib` instead of `.so`; on Apple Silicon
 omit `-march=native`). **Windows:** WSL2 with Ubuntu, then the Linux steps. Native builds for
@@ -168,9 +199,56 @@ both are welcome contributions.
 Port 7300 speaks the same telnet format as CW Skimmer Server, so a DX cluster (we use
 GoCluster), a logger or Aggregator can connect to it.
 
+### PSKReporter (FT8) and MQTT
+
+FT8 decodes travel from `sparkgap.py` to `pskr_feeder.py` through an MQTT broker (Mosquitto
+or any other): SparkGap publishes one JSON message per decode on topic `skimmer/ft8/raw`, and
+the feeder batches them to PSKReporter under your call and grid (`pskr_feeder.py --call
+YOUR_CALL --grid YOUR_GRID`). The payload is described at the top of `pskr_feeder.py`
+(`call`, `grid`, `freq_hz`, `snr`, `mode`, `msg`, `ts`). Both read the broker from the
+environment: `MQTT_HOST` (default `localhost`), `MQTT_PORT` (1883), `MQTT_USER` and `MQTT_PASS`;
+`deploy/sparkgap.service` and `deploy/pskr_feeder.service` show where to set them. SparkGap
+connects at its first FT8 decode; if the broker can't be reached then, it logs `FT8 MQTT
+publisher init failed (will not retry)` and runs on without FT8 uploads until it is restarted.
+CW and RTTY spots don't use MQTT.
+
+### RBN
+
 RBN: SparkGap is not yet authorized to connect. The checks a node must make itself before a
 spot reaches RBN (CQ only, repeats, mode codes, beacons, frequency) and what we measured are in
 #49. `docs/rbn-feeding.md` describes `rbn_feeder.py` for when that work is done.
+
+## Sharing one Red Pitaya between computers
+
+A Red Pitaya streams to one client. `hpsdr_proxy.py` takes that stream once and passes it to any number of
+SparkGaps, so a second computer can take some of the bands:
+
+```
+python3 hpsdr_proxy.py --pitaya 192.168.1.54 --port 1025 --owner 192.168.1.76
+```
+
+- **The owner tunes the radio.** Only the client named in `--owner` sets the receivers' frequencies,
+  the sample rate and the number of receivers; the others only listen. Give `IP:PORT` when the owner's
+  computer runs more than one SparkGap: a bare IP makes every client on that computer an owner. Without
+  `--owner`, every client's start sends its own frequencies, sample rate and receiver count to the radio,
+  and the last one wins, so share a radio with `--owner`, or with every client on the same settings. A
+  client's STOP never reaches the radio either way.
+- **A listener lists the owner's bands** (the same receivers on the same frequencies, `max_receivers` the
+  same) and decodes the ones it names with `rx_index`, for example
+  `"bands": [{"center_khz": 14090, "rx_index": 3}, {"center_khz": 18083, "rx_index": 4}]`. A listener that
+  asks for another frequency, or runs another sample rate or receiver count (it would read the IQ frames
+  wrongly), is logged once (`! ... wants RX1 on 7000.0 kHz, the owner has it on 7090.0 kHz`), also when it
+  started before the owner; its tuning never reaches the radio.
+- **Point each SparkGap at the proxy** (`sdr_ip`, `sdr_port`). A SparkGap on the proxy's own computer
+  needs its own `hpsdr_listen_port`: the receivers otherwise bind the port they send to, and take the
+  proxy's packets.
+
+Measured with a 2-receiver replay of a CWT (40 m and 20 m): the owner decoded both bands and a listener on
+another computer decoded only 20 m through the proxy. All 29 of the owner's 20 m calls came out of the
+listener too, at the same frequency (median 0.00 kHz). In a second run, a multi-band listener on the
+proxy's own computer, with its own `hpsdr_listen_port`, spotted all 30 of the owner's calls. A receiver
+tunes only the receivers it decodes, so a listener never retunes the owner's. Not yet run against a live
+Red Pitaya.
 
 ## Replaying and measuring
 

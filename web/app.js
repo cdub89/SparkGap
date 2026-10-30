@@ -1703,7 +1703,6 @@ function copyCards(k, sv, i) {
   const live = run && (!others.length || (others.length === 1 && others[0] === "band"));  // band and receive path: in place
   const rx = run && i.radio ? rxOf(sv, i.name) : null, rs = rx ? { ...rx, ...pend } : {};
   const at = `data-server="${k}" data-name="${esc(i.name)}"`;
-  const btn = (cmd, label, on) => `<button class="btn small" ${at} data-cmd="${cmd}"${on && !busy ? "" : " disabled"}>${label}</button>`;
   const choices = (k2, opts, cur, off = false) => `<div class="seg${k2 in pend ? " pend" : ""}${off ? " off" : ""}" ${at} data-key="${k2}"${off ? ` title="${typeof off === "string" ? off : "not used while call validation is off"}"` : ""}>${opts.map(([v, l]) =>
     `<span data-value="${esc(JSON.stringify(v))}"${v === cur ? ' class="on"' : ""}>${esc(l)}</span>`).join("")}</div>`;
   const onOff = (k2, cur) => choices(k2, [[false, "off"], [true, "on"]], !!cur);
@@ -1712,7 +1711,7 @@ function copyCards(k, sv, i) {
   const known = saved.bands_known && saved.bands_known.length ? saved.bands_known : [];
   const bandOpts = known.includes(saved.band) || saved.band === undefined ? known : [saved.band, ...known];  // a centre in Hz is no band name
   const bandText = b => /^\d+$/.test(String(b)) ? `${(Number(b) / 1000).toFixed(1)} kHz` : String(b);
-  const bands = `<select class="bandsel${"band" in pend ? " pend" : ""}" ${at} data-key="band"${busy ? " disabled" : ""}>${bandOpts
+  const bands = saved.multi_band ? `<span title="several bands: set in its config">${esc(String(saved.band))}</span>` : `<select class="bandsel${"band" in pend ? " pend" : ""}" ${at} data-key="band"${busy ? " disabled" : ""}>${bandOpts
     .map(b => `<option value="${esc(String(b))}"${b === st.band ? " selected" : ""}>${esc(bandText(b))}</option>`).join("")}</select>`;
   const state = busy ? `${busy}...` : run ? "running" : "stopped";
   const err = !run && i.last_error ? `<div class="small err">${esc(i.last_error)}</div>`

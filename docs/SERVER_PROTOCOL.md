@@ -16,9 +16,9 @@ Instances on `"port": "auto"` take the feed ports after the server's, from 7321.
 ## Settings
 
 `<root>/server.json`, written on first run with a new join code and readable by
-its owner only. The root is `--root`, else `$SPARKGAP_ROOT`, else `~/sparkgap`:
-the same layout `tools/sparkgap.sh` uses (`instances`, `config/`, `logs/`,
-`rec/`).
+its owner only. The root is `--root`, else `$SPARKGAP_ROOT`, else `~/sparkgap`,
+laid out as in [SERVER_SETUP.md](SERVER_SETUP.md) (`instances`, `config/`,
+`logs/`, `rec/`).
 
 ```json
 {"bind": "127.0.0.1", "port": 7320, "join_code": "XXXXXX"}
@@ -129,6 +129,6 @@ new line as it is logged: connections, requests and their results.
   busy. Requests run in order, at most 8 waiting. The instance's lock is held
   through the write, the live attempt and any restart.
 
-The server and `tools/sparkgap.sh` take the same locks (the radio's, then the
-instance's) and write the same pid files and logs, so both can be used on one
-machine.
+Each start, stop and settings change takes the radio's lock, then the
+instance's (`logs/station_<radio>.lock`, `logs/<name>.lock`), so a script of
+your own can take the same locks and run beside the server.
