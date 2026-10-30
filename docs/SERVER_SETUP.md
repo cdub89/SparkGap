@@ -59,7 +59,9 @@ Give operators `http://<address>:7320/` and that code.
 ```
 
 - `bind`: the address to listen on. `127.0.0.1` serves only this machine; set
-  the machine's LAN or VPN address so other machines can reach it.
+  the machine's LAN or VPN address so other machines can reach it. A browser
+  on the server's own machine can then also use `localhost` or the machine's
+  name: the server listens on those too.
 - `port`: 7320. The skimmers' own feeds take 7321 to 7339.
 - `join_code`: written at first start. Five wrong codes from one address lock
   that address out for 10 minutes. The code also grants control: anyone with it
@@ -69,6 +71,19 @@ Give operators `http://<address>:7320/` and that code.
 
 For access from outside the LAN, use a VPN rather than opening the port to the
 internet.
+
+**Windows with WSL:** a browser in Windows reaches a server in WSL at
+`http://localhost:7320/`. To use the machine's name or address instead, set
+mirrored networking with host address loopback in `%USERPROFILE%\.wslconfig`,
+then restart WSL (`wsl --shutdown`):
+
+```ini
+[wsl2]
+networkingMode=mirrored
+
+[experimental]
+hostAddressLoopback=true
+```
 
 ## A skimmer's feed: gui_feed
 

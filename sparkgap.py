@@ -71,6 +71,7 @@ def _gui_settings(cfg, sample_rate):
     eff = {
         'callsign': cfg.get('callsign', ''),
         'cw_decoder': cfg.get('cw_decoder', 'itila2'),
+        'itila2_afc': bool(cfg.get('itila2_afc', False)) if cfg.get('cw_decoder', 'itila2') == 'itila2' else None,
         'sample_rate': sample_rate,
         'flex_daxiq_channel': cfg.get('flex_daxiq_channel', 1) if cfg.get('sdr_type') == 'flex' else None,
         'telnet_port': cfg.get('telnet_port', 7300),
@@ -80,6 +81,16 @@ def _gui_settings(cfg, sample_rate):
         'spot_rule_lockon': repeat,
         'spot_rule_cq_qualifiers': repeat,
         'spot_rule_split_runs': repeat and bool(cfg.get('spot_rule_split_runs', False)),
+        'spot_rule_contest_words': repeat and bool(cfg.get('spot_rule_contest_words', False)),
+        'spot_rule_cq_repeats': repeat and bool(cfg.get('spot_rule_cq_repeats', False)),
+        'spot_rule_doubled_calls': repeat and bool(cfg.get('spot_rule_doubled_calls', False)),
+        'spot_rule_split_up': repeat and bool(cfg.get('spot_rule_split_up', False)),
+        'spot_rule_fragments': (cfg.get('spot_rule_fragments') or 'off') if repeat else 'off',
+        'spot_rule_owner_cell': repeat and bool(cfg.get('spot_rule_owner_cell', False)),
+        'spot_rule_owned_two_windows': repeat and bool(cfg.get('spot_rule_owned_two_windows', False)),
+        'itila_window_sec': float(cfg.get('itila_window_sec', 60.0)),
+        'itila_max_bins': int(cfg.get('itila_max_bins', 200)),
+        'itila_decode_threads': int(cfg.get('itila_decode_threads', 1)),
         'spot_validation': validation or 'off',
         'spot_validation_calls': calls or ('none' if validation else 'off'),
         'rbn_known_days': int(cfg.get('rbn_known_days', rbn_known.DAYS))
@@ -471,6 +482,12 @@ def _log_rbn_span(t, centres_khz, rate):
     """The spans the run listens to from t on, one per band."""
     log.info("RBN span: %s %s", _rbn_utc(t), ' '.join(
         '%.1f-%.1f' % (c - rate / 2000, c + rate / 2000) for c in centres_khz))
+
+
+def _decode_span(bmin, bmax, center_khz, sample_rate):
+    """The CW window as decoded: the band plan's segment cut to the IQ span around the centre."""
+    half = sample_rate / 2000.0
+    return (max(bmin, center_khz - half), min(bmax, center_khz + half))
 
 
 def _derive_cw_window(center_khz, exclude_ft8=True, exclude_ft4=False):
@@ -3469,7 +3486,9 @@ class _ItilaScanner:
                                         _ct.c_double(f_khz),
                                         _ct.c_double(self.ev_thresh))
             raw = result.decode('ascii', errors='replace').strip() if result else ''
-            if raw:
+            if not raw:
+                decoded.append(('', None, None, None))   # the GUI shows this path decoded nothing
+            else:
                 dsnr = None       # itila2_snr_decoder: this path's own reading
                 if pows is not None:
                     dsnr = self._sc._lib.itila_sc_snr_from_power(lib.itila_get_mark_power(h), n0, wide)
@@ -3490,7 +3509,12 @@ class _ItilaScanner:
         now = time.time()
         window_key = next(_window_seq)
 
+        texts = any(r for r, _, _, _ in decoded)
         for raw, cost, wpm_est, dsnr in decoded:
+            if not raw:   # a path with nothing decoded: the GUI's line for it, when the other path has text
+                if _gui_feed and texts:
+                    _gui_feed.publish_window(f_khz, '', None, None, None)
+                continue
             if _snr_decoder:
                 st['snr500'] = dsnr      # reported by the spot; st['snr'] (the scanner's) ranks the copies
             log.info("ITILA raw %.1f kHz cost=%.2f: %r", f_khz, cost, raw[:400])
@@ -5324,7 +5348,7 @@ class InstanceManager:
                         log.warning("CW window for %.0f kHz: no band-plan "
                                     "match, using fallback [%.0f, %.0f] kHz",
                                     center_khz, bmin, bmax)
-                self.decode_khz = (bmin, bmax)
+                self.decode_khz = _decode_span(bmin, bmax, center_khz, self.sample_rate)
                 self._itila_scanner = _ItilaScanner(
                     self.sample_rate, center_khz,
                     ev_thresh=self.itila_ev_thresh,
@@ -7655,7 +7679,8 @@ class SparkGap:
                                            station=self.cfg.get('flex_station'),
                                            rxant=self.cfg.get('flex_rxant'),
                                            loopa=self.cfg.get('flex_loopa'),
-                                           loopb=self.cfg.get('flex_loopb'))
+                                           loopb=self.cfg.get('flex_loopb'),
+                                           rfgain=self.cfg.get('flex_rfgain'))
             log.info("Using FlexRadio DAX-IQ receiver at %s", device_ip)
         else:
             # HPSDR Protocol 1 path (Red Pitaya) — supports n_receivers for multi-band
@@ -7814,7 +7839,10 @@ class SparkGap:
     async def _live_change(self, change, reply):
         """A band change from the GUI feed, without a restart: Flex, one band, not recording, no
         per-band settings. The radio moves first; only then are the old band's IQ, decoders and
-        waterfall dropped."""
+        waterfall dropped.  {"rx": {...}} changes our pan's receive path instead (antenna, loops,
+        RF gain), checked against what the radio offers."""
+        if set(change) == {'rx'}:
+            return await self._live_rx(change['rx'], reply)
         band = change.get('band')
         why = None
         if set(change) != {'band'}:
@@ -7850,6 +7878,7 @@ class SparkGap:
         mgr.update_signals([], center_hz / 1000)
         self._band_meta[0] = (name, center_hz, rx_idx)
         self.cfg['bands'] = [name]
+        self.spot_count = 0   # the status page counts the new band from zero, as a restart would
         self._set_telnet_bands()
         if _gui_feed is not None and mgr._spectrum_tap is not None:
             import feed_server
@@ -7858,6 +7887,18 @@ class SparkGap:
         _log_rbn_span(time.time(), [self._corrected_freq_khz(center_hz / 1000.0)], rate)
         log.info("Live change: %s (%.3f kHz) -> %s (%.3f kHz)", old_name, old_hz / 1000.0, name, center_hz / 1000.0)
         return reply(True, "retuned to %s" % name)
+
+    async def _live_rx(self, rx, reply):
+        """Our pan's antenna, loops or RF gain, changed on the radio in place."""
+        if not hasattr(self.receiver, 'set_rx') or not isinstance(rx, dict):
+            return reply(False, "not supported: only a Flex copy changes its receive path live")
+        try:
+            text = await asyncio.to_thread(self.receiver.set_rx, rx)
+        except (ValueError, RuntimeError, OSError) as e:
+            log.info("Live change %s refused: %s", rx, e)
+            return reply(False, str(e).replace("[Flex] ", ""))
+        log.info("Live change: %s", text)
+        return reply(True, text)
 
     def _diag_iq_snapshot(self, signum, frame):
         """SIGUSR1 handler — non-destructive snapshot of FT8 capture buffer

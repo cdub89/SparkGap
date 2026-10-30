@@ -230,6 +230,19 @@ def test_a_stream_the_radio_refuses_to_remove_halts_instead_of_doubling_up(
     assert not any(c == "stream create type=dax_iq daxiq_channel=1" for _, c in radio.log[-6:])
 
 
+def test_an_outage_is_logged_for_rbn_scoring_and_a_halt_leaves_it_open(
+    radio: FakeRadio, caplog: Caplog
+) -> None:
+    _station(radio)
+    a = _channel(MHZ_17M, 1)
+    with caplog.at_level(logging.INFO, logger="sparkgap.flex"):
+        a._recover("No DAX-IQ packets for 10 s", "stream")
+        radio.refuse["stream remove"] = "50000005"
+        a._recover("No DAX-IQ packets for 10 s", "stream")
+    marks = [m.split(":")[0] for r in caplog.records if (m := r.getMessage()).startswith("RBN ")]
+    assert marks == ["RBN down", "RBN up", "RBN down"] and a.state == "halted"
+
+
 def test_a_channel_rebuilds_when_its_station_registers_again(radio: FakeRadio) -> None:
     st = _station(radio)
     a = _channel(MHZ_17M, 1)
@@ -357,6 +370,21 @@ def test_unanswered_pings_are_ridden_out_while_the_connection_lasts(radio: FakeR
     radio.down = 5
     assert all(st._beat() is None for _ in range(5))
     assert st._beat() is None and st._unanswered is None and len(_gui_commands(radio)) == 1
+
+
+def test_a_socket_error_on_a_heartbeat_is_a_loss_the_station_recovers(radio: FakeRadio) -> None:
+    """Fred 10-28: ConnectionAbortedError out of _beat killed the station thread."""
+    st = _station(radio)
+    conn = st.conn
+    assert isinstance(conn, FakeConnection)
+
+    def abort(*_: object, **__: object) -> list[str]:
+        raise ConnectionAbortedError(103, "Software caused connection abort")
+
+    conn.cmd = abort  # pyright: ignore[reportAttributeAccessIssue]
+    why = st._beat()
+    assert why and why.startswith("Control connection error")
+    assert st._recover(why) and st.state == "live"
 
 
 def test_the_station_registers_again_once_the_radio_dropped_it(radio: FakeRadio) -> None:

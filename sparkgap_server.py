@@ -42,6 +42,7 @@ from feed_server import (
     CLOSE_LOCKED_OUT,
     CLOSE_WRONG_CODE,
     CODE_PROTOCOL,
+    FOR_QUERY,
     LOCKOUT_S,
     LOCKOUT_TRIES,
     MAX_CLIENT_MESSAGE,
@@ -50,7 +51,9 @@ from feed_server import (
     OP_PING,
     OP_PONG,
     OP_TEXT,
+    RECOVERING,
     SERVER_PORT,
+    VIEW_QUERY,
     FeedServer,
     ProtocolError,
     accept_key,
@@ -64,7 +67,7 @@ from feed_server import (
     unmask,
     valid_code,
 )
-from seat import Seat, SeatError
+from seat import RX_SETTINGS, Seat, SeatError
 
 log = logging.getLogger("sparkgap.server")
 
@@ -78,6 +81,7 @@ HELP_PATH = "/help"
 STATE_EVERY_S = 2.0
 PING_EVERY_S = 20.0
 MAX_CLIENTS = 16
+MAX_PROXIED = 32  # browser feeds passed through to copies, all copies together
 MAX_QUEUED_OPS = 8
 MAX_PENDING = 32  # connections still sending their request: more are closed at once
 LOG_KEPT = 200  # server log lines kept for the web console
@@ -105,6 +109,20 @@ def load_settings(root: Path) -> dict[str, Any]:
     if not isinstance(cfg, dict) or not valid_code(str(cfg.get("join_code", ""))):
         raise SystemExit(f"{path}: needs a join_code")
     return cfg
+
+
+def own_addresses(bind: str, hostname: str | None = None) -> list[str]:
+    """Loopback addresses also served when `bind` is a network address, so a browser on this
+    machine reaches the server by localhost or by the machine's own name (127.0.1.1 on Ubuntu)."""
+    if bind in ("0.0.0.0", "::", "") or is_loopback(bind):
+        return []
+    found = ["127.0.0.1"]
+    with contextlib.suppress(OSError):
+        for info in socket.getaddrinfo(hostname or socket.gethostname(), None, socket.AF_INET):
+            addr = str(info[4][0])
+            if is_loopback(addr) and addr not in found:
+                found.append(addr)
+    return found
 
 
 class LogRing(logging.Handler):
@@ -160,8 +178,10 @@ class Server:
         self.ops: concurrent.futures.ThreadPoolExecutor = concurrent.futures.ThreadPoolExecutor(1)
         self.queued = 0
         self.pending = 0
+        self.proxied = 0
         self.conns: set[asyncio.StreamWriter] = set()  # every open connection, closed at shutdown
         self.listener: asyncio.Server | None = None
+        self.local_listener: asyncio.Server | None = None  # loopback, for a network bind
         self.busy: dict[str, str] = {}  # instance -> operation in progress or queued
         self.state: dict[str, Any] = {}
         self.ready = threading.Event()  # set once listening (for tests and callers)
@@ -182,6 +202,15 @@ class Server:
             self._broadcast, {"type": "log", "lines": [line]}
         )
         self.port = server.sockets[0].getsockname()[1]
+        local = own_addresses(self.bind)
+        if local:
+            try:
+                self.local_listener = await asyncio.start_server(
+                    self._handle, local, self.port, ssl=self.tls
+                )
+                log.info("Server also on %s for this machine", ", ".join(local))
+            except OSError as e:
+                log.warning("Server: not on %s for this machine: %s", ", ".join(local), e)
         log.info(
             "Server on %s://%s:%d (SparkGap Web at http%s://%s:%d/), root %s",
             "wss" if self.tls else "ws",
@@ -202,8 +231,9 @@ class Server:
         3.12 a cancelled serve_forever waits for open connections, so a browser left connected
         kept the process alive after SIGTERM (Dallas, 2026-10-22).  Aborted, not closed: a close
         first sends what is queued, which a browser that stopped reading never takes (Beelink)."""
-        if self.listener:
-            self.listener.close()
+        for listener in (self.listener, self.local_listener):
+            if listener:
+                listener.close()
         for w in list(self.conns):
             w.transport.abort()
 
@@ -211,8 +241,11 @@ class Server:
         last_ping = time.monotonic()
         while True:
             try:
-                self.state = await asyncio.to_thread(self._snapshot)
-                self._broadcast(self.state)
+                if self.clients:
+                    self.state = await asyncio.to_thread(self._snapshot)
+                    self._broadcast(self.state)
+                else:
+                    self.state = {}  # nobody watching: no reads, nothing stale for the next one
             except Exception:
                 log.exception("Server: state")
             if time.monotonic() - last_ping > PING_EVERY_S:
@@ -272,6 +305,7 @@ class Server:
         except (
             asyncio.TimeoutError,
             asyncio.IncompleteReadError,
+            asyncio.LimitOverrunError,
             ConnectionError,
             ProtocolError,
             OSError,
@@ -321,6 +355,8 @@ class Server:
     def _code_ok(self, host: str, given: str) -> bool | None:
         """True for the right code, False for a wrong one, None while host is locked out."""
         now = time.monotonic()
+        for h in [h for h, m in self.misses.items() if not m or now - m[-1] > LOCKOUT_S]:
+            del self.misses[h]
         misses = self.misses.get(host, collections.deque())
         while misses and now - misses[0] > LOCKOUT_S:
             misses.popleft()
@@ -431,8 +467,10 @@ class Server:
         if self.queued >= MAX_QUEUED_OPS:
             return result(False, "too many requests waiting")
         band_only = cmd == "set" and set(settings) == {"band"}
+        rx_only = cmd == "set" and bool(settings) and set(settings) <= set(RX_SETTINGS)
         self.busy[name] = (
             "changing band" if band_only else
+            "changing the receive path" if rx_only else
             {"set": "restarting"}.get(cmd, cmd + ("ing" if cmd != "stop" else "ping"))
         )
         self.queued += 1
@@ -461,10 +499,11 @@ class Server:
             return self.seat.stop(name)
         if cmd == "restart":
             return self.seat.restart(name)
-        return self.seat.change(name, settings, live=self._live_band)
+        return self.seat.change(name, settings, live=self._live_band, live_rx=self._live_rx)
 
     def _live_band(self, name: str, band: str) -> str | None:
-        """Ask the running copy to move to band in place; its answer, or None to restart it."""
+        """Ask the running copy to move to band in place; its answer, None to restart it, or
+        SeatError while it recovers from a radio outage."""
         target = self._feed_target(name)
         if target is None:
             return None
@@ -473,10 +512,22 @@ class Server:
             log.warning("Server: %s gave no answer to a live band change: restarting it", name)
             return None
         ok, text = answer
+        if not ok and text.startswith(RECOVERING):
+            raise SeatError(f"{name}: {text}; nothing changed")  # a restart would wait the same way
         if not ok:
             log.info("Server: %s did not change band live (%s): restarting it", name, text)
             return None
         return text
+
+    def _live_rx(self, name: str, rx: dict[str, Any]) -> tuple[bool, str] | None:
+        """Ask the running copy to change its pan's receive path; (ok, its answer), or None when
+        it gave none.  A refusal is reported, never followed by a restart: the radio keeps what it
+        has."""
+        target = self._feed_target(name)
+        answer = feed_control(*target, {"rx": rx}) if target else None
+        if answer is None:
+            log.warning("Server: %s gave no answer to a receive path change", name)
+        return answer
 
     def _send_json(self, c: Client, msg: dict[str, Any]) -> None:
         self._send(c, encode_frame(OP_TEXT, json.dumps(msg).encode()))
@@ -507,11 +558,15 @@ class Server:
         name: str,
     ) -> None:
         """The browser's feed for copy `name`: the server opens the copy's feed on this machine
-        with the copy's own join code, then passes frames through unchanged both ways."""
+        with the copy's own join code, view only, then passes frames through unchanged both ways.
+        Settings change only through the server's own commands (its lock and the config write)."""
         protocol = FEED_PROTOCOL if FEED_PROTOCOL in offered else None
         self._accept(writer, headers, protocol)
         if not ok:
             self._refuse(writer, ok)
+            return
+        if self.proxied >= MAX_PROXIED:
+            self._refuse(writer, True, "too many connections")
             return
         target = await asyncio.to_thread(self._feed_target, name)
         if target is None:
@@ -523,7 +578,8 @@ class Server:
         except (OSError, asyncio.TimeoutError):
             self._refuse(writer, True, f"{name}: no answer on its feed port")
             return
-        up_w.write(feed_request(host, port, code))
+        browser = str(writer.get_extra_info("peername")[0]).split("%")[0]  # no IPv6 scope
+        up_w.write(feed_request(host, port, code, view=True, browser=browser))
         try:
             reply = await asyncio.wait_for(up_r.readuntil(b"\r\n\r\n"), 5)
         except (asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
@@ -540,6 +596,7 @@ class Server:
                     await dst.drain()
 
         # either side ending ends both: a half-open copy must not hold the browser's connection
+        self.proxied += 1
         tasks = [
             asyncio.ensure_future(pipe(reader, up_w)),
             asyncio.ensure_future(pipe(up_r, writer)),
@@ -547,6 +604,7 @@ class Server:
         try:
             await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         finally:
+            self.proxied -= 1
             for t in tasks:
                 t.cancel()
             up_w.close()
@@ -569,11 +627,15 @@ class Server:
         return "127.0.0.1", int(st["feed_port"]), st["feed_code"]
 
 
-def feed_request(host: str, port: int, code: str | None) -> bytes:
-    """The opening request for a copy's feed on this machine, with the copy's own join code."""
+def feed_request(
+    host: str, port: int, code: str | None, view: bool = False, browser: str | None = None
+) -> bytes:
+    """The opening request for a copy's feed on this machine, with the copy's own join code;
+    view only (no control messages) for a browser's feed passed through, naming that browser."""
     key = base64.b64encode(secrets.token_bytes(16)).decode()
     req = [
-        "GET /feed HTTP/1.1",
+        f"GET /feed{'?' + VIEW_QUERY if view else ''}"
+        f"{f'&{FOR_QUERY}={browser}' if view and browser else ''} HTTP/1.1",
         f"Host: {host}:{port}",
         "Upgrade: websocket",
         "Connection: Upgrade",

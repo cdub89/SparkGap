@@ -43,3 +43,22 @@ def test_validation_off_is_accepted() -> None:
     eff, _, _ = _gui_settings({"spot_validation": "off", "spot_validation_calls": "rbn"}, 48_000)
     assert eff["spot_validation"] == "off" and eff["spot_validation_calls"] == "off"
     assert _make_spot_rule({"spot_validation": "off"}, None).threshold is None
+
+
+def test_spot_rule_and_decoder_keys_are_reported() -> None:
+    cfg = {"spot_rule_fragments": "any,stray", "spot_rule_owner_cell": True, "itila_window_sec": 30}
+    eff, defaults, _ = _gui_settings(cfg, 48_000)
+    assert eff["spot_rule_fragments"] == "any,stray" and eff["spot_rule_owner_cell"] is True
+    assert eff["spot_rule_owned_two_windows"] is False and "spot_rule_owned_two_windows" in defaults
+    assert eff["itila_window_sec"] == 30.0 and "itila_window_sec" not in defaults
+    assert eff["itila_max_bins"] == 200 and eff["itila_decode_threads"] == 1
+    eff, _, _ = _gui_settings({"spot_rule": "none", "spot_rule_fragments": "any"}, 48_000)
+    assert eff["spot_rule_fragments"] == "off" and eff["spot_rule_contest_words"] is False
+
+
+def test_afc_is_reported_for_itila2() -> None:
+    eff, defaults, _ = _gui_settings({"itila2_afc": True}, 48_000)
+    assert eff["itila2_afc"] is True and "itila2_afc" not in defaults
+    eff, defaults, _ = _gui_settings({}, 48_000)
+    assert eff["itila2_afc"] is False and "itila2_afc" in defaults
+    assert _gui_settings({"cw_decoder": "itila"}, 48_000)[0]["itila2_afc"] is None

@@ -40,7 +40,37 @@ RADIO_RE = re.compile(
 )  # it goes into file names: a host name or address only
 VALIDATION = ("off", "permissive", "normal", "aggressive")
 CALL_SOURCES = ("scp", "rbn", "rbn+skcc")
-RULE_FLAGS = ("spot_rule_split_runs", "spot_rule_contest_words", "spot_rule_cq_repeats")
+# decoder options by config key: on/off ones, and ones with a few values (None: off, key removed)
+OPTION_FLAGS = (
+    "spot_rule_split_runs",
+    "spot_rule_contest_words",
+    "spot_rule_cq_repeats",
+    "spot_rule_doubled_calls",
+    "spot_rule_split_up",
+    "spot_rule_owner_cell",
+    "spot_rule_owned_two_windows",
+    "spot_rule_owner_listed",
+    "spot_rule_la1d",
+    "spot_rule_gluek",
+    "spot_rule_norival",
+    "itila2_snr_decoder",
+)
+OPTION_CHOICES: dict[str, tuple[Any, ...]] = {
+    "spot_rule_fragments": (None, "any", "any,stray", "even", "even,stray"),
+    "spot_rule_takeover_idle_s": (None, 120, 180, 300),
+    "spot_rule_strongest_db": (None, 3, 6, 10),
+    "itila_window_sec": (60, 30, 15, 7.5),
+}
+OPTION_DEFAULTS: dict[str, Any] = {"itila_window_sec": 60}  # where the key is read
+# a Flex copy's receive path: setting -> (the copy's live key, its config key).  The radio's
+# state is the truth: a running copy changes it live first, then its config
+RX_SETTINGS = {
+    "antenna": ("rxant", "flex_rxant"),
+    "loop_a": ("loopa", "flex_loopa"),
+    "loop_b": ("loopb", "flex_loopb"),
+    "rf_gain": ("rfgain", "flex_rfgain"),
+}
+ANTENNA_RE = re.compile(r"^[A-Za-z0-9_]{1,16}$")
 TOP_CALLS = 10
 ERRORS_KEPT = 5
 IQ_TRIMMED_RE = re.compile(r"IQ trimmed before scanner: ([\d.]+s)")
@@ -131,20 +161,94 @@ def proc_started(pid: int) -> float | None:
     return boot + ticks / os.sysconf("SC_CLK_TCK")
 
 
+_CACHE: dict[Path, tuple[tuple[int, int, int], Any]] = {}
+_CACHE_LOCK = threading.Lock()
+
+
+def cached(path: Path, parse: Callable[[str], Any]) -> Any:
+    """parse(path's text), read again only when the file changes (inode, mtime or size: a
+    config write replaces the file): the server asks for each config and band list every 2 s."""
+    st = path.stat()
+    key = (st.st_ino, st.st_mtime_ns, st.st_size)
+    with _CACHE_LOCK:
+        hit = _CACHE.get(path)
+    if hit and hit[0] == key:
+        return hit[1]
+    value = parse(path.read_text(errors="replace"))
+    with _CACHE_LOCK:
+        _CACHE[path] = (key, value)
+    return value
+
+
 def write_config(path: Path, changes: dict[str, Any]) -> None:
-    """Set keys in a JSON config (None removes one), keeping its indentation; one atomic replace."""
+    """Set keys in a JSON config (None removes one), one atomic replace. Each top-level key on a
+    line of its own is edited in place, so the file's own layout, key order and comments-free hand
+    formatting stay; anything else is written whole with its indentation."""
     text = path.read_text()
-    m = re.search(r'\n([ \t]+)"', text)
-    indent: int | str = m.group(1) if m else 2
     cfg = json.loads(text)
+    want = dict(cfg)
     for key, value in changes.items():
         if value is None:
-            cfg.pop(key, None)
+            want.pop(key, None)
         else:
-            cfg[key] = value
+            want[key] = value
+    out = _edit_lines(text, cfg, changes)
+    if out is None or json.loads(out) != want:
+        m = re.search(r'\n([ \t]+)"', text)
+        out = json.dumps(want, indent=m.group(1) if m else 2) + "\n"
     new = path.with_name(path.name + ".new")
-    new.write_text(json.dumps(cfg, indent=indent) + "\n")
+    new.write_text(out)
     os.replace(new, path)
+
+
+def _edit_lines(text: str, cfg: dict[str, Any], changes: dict[str, Any]) -> str | None:
+    """text with each change made on its own line, or None when a key's line can't be found."""
+    m = re.search(r'\n([ \t]+)"', text)
+    if not m:
+        return None
+    indent, lines = m.group(1), text.split("\n")
+    for key, value in changes.items():
+        head = f'{indent}{json.dumps(key)}'
+        at = [
+            n
+            for n, ln in enumerate(lines)
+            if ln.startswith(head) and ln[len(head) :].lstrip().startswith(":")
+        ]
+        if len(at) > 1:
+            return None
+        if at:
+            n = at[0]
+            body = lines[n][len(head):].lstrip()[1:].strip()
+            comma = body.endswith(",")
+            try:
+                if json.loads(body.rstrip(",")) != cfg.get(key):
+                    return None  # the value runs over several lines
+            except ValueError:
+                return None
+            if value is not None:
+                lines[n] = f"{head}: {json.dumps(value)}{',' if comma else ''}"
+                continue
+            del lines[n]
+            if not comma:  # it was the last key: the one before it loses its comma
+                k = n - 1
+                while k >= 0 and not lines[k].strip():
+                    k -= 1
+                if k < 0 or not lines[k].rstrip().endswith(","):
+                    return None
+                lines[k] = lines[k].rstrip()[:-1]
+        elif value is not None:
+            k = len(lines) - 1
+            while k >= 0 and lines[k].strip() != "}":
+                k -= 1
+            j = k - 1
+            while j >= 0 and not lines[j].strip():
+                j -= 1
+            if k < 0 or j < 0:
+                return None
+            if lines[j].strip() != "{" and not lines[j].rstrip().endswith(","):
+                lines[j] = lines[j].rstrip() + ","
+            lines.insert(k, f"{head}: {json.dumps(value)}")
+    return "\n".join(lines)
 
 
 class Seat:
@@ -177,8 +281,11 @@ class Seat:
 
     @staticmethod
     def config(i: Instance) -> dict[str, Any]:
-        cfg: Any = json.loads(i.config.read_text())
-        return cfg if isinstance(cfg, dict) else {}
+        def parse(text: str) -> dict[str, Any]:
+            cfg: Any = json.loads(text)
+            return cfg if isinstance(cfg, dict) else {}
+
+        return dict(cached(i.config, parse))
 
     def band(self, i: Instance) -> str:
         bands = self.config(i).get("bands") or ["?"]
@@ -201,12 +308,14 @@ class Seat:
     @staticmethod
     def bands_known(i: Instance) -> list[str]:
         """Band names the instance's sparkgap.py accepts, from its BANDS line."""
+        def parse(text: str) -> list[str]:
+            m = re.search(r"^BANDS = dict\(zip\((.*)$", text, re.M)
+            return re.findall(r"'(\d+m)'", m.group(1)) if m else []
+
         try:
-            text = (i.code / "sparkgap.py").read_text(errors="replace")
+            return list(cached(i.code / "sparkgap.py", parse))
         except OSError:
             return []
-        m = re.search(r"^BANDS = dict\(zip\((.*)$", text, re.M)
-        return re.findall(r"'(\d+m)'", m.group(1)) if m else []
 
     # ---- process files ----
 
@@ -385,8 +494,12 @@ class Seat:
             "multi_band": self.multi_band(i),
             "validation": cfg.get("spot_validation") or "off",
             "call_source": cfg.get("spot_validation_calls") or "scp",
-            **{k: bool(cfg.get(k, False)) for k in RULE_FLAGS},
+            "afc": bool(cfg.get("itila2_afc", False)),
+            **{k: bool(cfg.get(k, False)) for k in OPTION_FLAGS},
+            **{k: cfg.get(k, OPTION_DEFAULTS.get(k)) for k in OPTION_CHOICES},
             "record": bool(cfg.get("record_wav")),
+            # a Flex copy's receive path as its config sets it at start (None: the radio's own)
+            **{k: cfg.get(c) for k, (_, c) in RX_SETTINGS.items()},
         }
 
     def change(
@@ -394,14 +507,29 @@ class Seat:
         name: str,
         settings: dict[str, Any],
         live: Callable[[str, str], str | None] | None = None,
+        live_rx: Callable[[str, dict[str, Any]], tuple[bool, str] | None] | None = None,
     ) -> str:
         """Check every setting, write them all at once, restart the copy if it runs. A band change
         alone first goes to live(name, band), which moves the running copy in place and returns its
-        answer, or None when it could not (then the copy restarts, onto the band just written)."""
+        answer, None when it could not (then the copy restarts, onto the band just written), or
+        raises SeatError while the copy recovers from a radio outage (nothing written).
+        Receive path settings (RX_SETTINGS) on a running copy go to live_rx(name, change) first; the
+        config is written only when the radio took them, and a refusal changes nothing."""
         i = self.instance(name)
         changes: dict[str, Any] = {}
+        rx: dict[str, Any] = {}
         for key, value in settings.items():
-            if key == "band":
+            if key in RX_SETTINGS:
+                if self.radio(i) is None:
+                    raise SeatError(f"{key} is a FlexRadio setting")
+                if key == "antenna" and not (isinstance(value, str) and ANTENNA_RE.match(value)):
+                    raise SeatError("antenna must be one the radio lists")
+                if key in ("loop_a", "loop_b") and not isinstance(value, bool):
+                    raise SeatError(f"{key} must be true or false")
+                if key == "rf_gain" and (isinstance(value, bool) or not isinstance(value, int)):
+                    raise SeatError("rf_gain must be a whole number of dB")
+                rx[key] = value
+            elif key == "band":
                 if self.multi_band(i):
                     raise SeatError(f"{name} runs {self.band(i)}: set its bands in its config")
                 if value not in self.bands_known(i):
@@ -415,10 +543,19 @@ class Seat:
                 if value not in CALL_SOURCES:
                     raise SeatError(f"call source must be one of: {', '.join(CALL_SOURCES)}")
                 changes["spot_validation_calls"] = value
-            elif key in RULE_FLAGS:
+            elif key in OPTION_FLAGS:
                 if not isinstance(value, bool):
                     raise SeatError(f"{key} must be true or false")
                 changes[key] = value
+            elif key in OPTION_CHOICES:
+                if isinstance(value, bool) or value not in OPTION_CHOICES[key]:
+                    shown = ", ".join("off" if v is None else str(v) for v in OPTION_CHOICES[key])
+                    raise SeatError(f"{key} must be one of: {shown}")
+                changes[key] = value
+            elif key == "afc":
+                if not isinstance(value, bool):
+                    raise SeatError("afc must be true or false")
+                changes["itila2_afc"] = value
             elif key == "record":
                 if not isinstance(value, bool):
                     raise SeatError("record must be true or false")
@@ -434,17 +571,35 @@ class Seat:
                 )
             else:
                 raise SeatError(f"{key} cannot be changed here")
-        if not changes:
+        if not changes and not rx:
             raise SeatError("nothing to change")
         done = f"{name}: {', '.join(f'{k} {v}' for k, v in settings.items())}"
+        rest = {k: v for k, v in settings.items() if k not in rx}
         with self.lock(i):  # the write and its restart as one step: nothing slips in between
+            running = bool(self.pid(name))
+            if rx and running:
+                change = {RX_SETTINGS[k][0]: v for k, v in rx.items()}
+                took = live_rx(name, change) if live_rx else None
+                if took is None:
+                    raise SeatError(f"{name} did not answer; nothing changed")
+                if not took[0]:
+                    raise SeatError(f"{name}: {took[1]}")
+                done = f"{name}: {took[1]}"
+            changes.update({RX_SETTINGS[k][1]: v for k, v in rx.items()})
+            answer = None
+            if running and live is not None and set(rest) == {"band"}:
+                try:
+                    # before the write: a refusal changes nothing
+                    answer = live(name, settings["band"])
+                except SeatError:
+                    if rx:
+                        write_config(i.config, {RX_SETTINGS[k][1]: v for k, v in rx.items()})
+                    raise
             write_config(i.config, changes)
-            if not self.pid(name):
+            if not running or not rest:
                 return done
-            if live is not None and set(settings) == {"band"}:
-                answer = live(name, settings["band"])
-                if answer:
-                    return f"{name}: {answer}"
+            if answer:
+                return f"{name}: {answer}"
             self._stop(i)
             return f"{done}; {self._start(i)}"
 

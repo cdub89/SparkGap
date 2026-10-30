@@ -304,6 +304,28 @@ def test_a_copy_that_cannot_change_band_live_is_restarted_on_it(server: Server, 
         feed.stop()
 
 
+def test_a_recovering_copy_is_neither_moved_nor_restarted(server: Server, seat: Seat) -> None:  # noqa: F811
+    feed = _copy_on_feed(seat, (False, "recovering from a radio outage: try again once it is back"))
+    try:
+        seat.start("dallas2")
+        pid = seat.pid("dallas2")
+        r = _set_band(server, "20m")
+        assert not r["ok"] and "recovering" in r["error"] and "nothing changed" in r["error"]
+        assert seat.pid("dallas2") == pid and seat.band(seat.instance("dallas2")) == "40m"
+    finally:
+        feed.stop()
+
+
+def test_a_browsers_feed_is_opened_view_only() -> None:
+    req = sparkgap_server.feed_request
+    assert req("127.0.0.1", 7321, "ABCDEF", view=True).startswith(b"GET /feed?view ")
+    assert req("127.0.0.1", 7321, "ABCDEF").startswith(b"GET /feed ")
+    assert req("127.0.0.1", 7321, "ABCDEF", view=True, browser="100.1.2.3").startswith(
+        b"GET /feed?view&for=100.1.2.3 "
+    )
+    assert req("127.0.0.1", 7321, "ABCDEF", browser="100.1.2.3").startswith(b"GET /feed ")
+
+
 def test_feed_control_without_a_feed_is_no_answer() -> None:
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -378,3 +400,24 @@ def test_a_feed_bound_off_this_machine_is_not_passed_through(server: Server, sea
                  {"gui_feed": {"bind": "192.0.2.5", "port": "auto", "join_code": "ABCDEF"}})
     seat.start("dallas1")
     assert server._feed_target("dallas1") is None  # pyright: ignore[reportPrivateUsage]
+
+
+def test_a_network_bind_also_serves_loopback(monkeypatch: pytest.MonkeyPatch) -> None:
+    own = sparkgap_server.own_addresses
+    assert own("127.0.0.1") == own("localhost") == own("0.0.0.0") == own("::") == []
+
+    def resolve(host: str, *_: object) -> list[tuple]:
+        assert host == "rednuc"
+        addrs = ("127.0.1.1", "127.0.0.1", "100.64.0.1")
+        return [(socket.AF_INET, 0, 0, "", (a, 0)) for a in addrs]
+
+    monkeypatch.setattr(sparkgap_server.socket, "getaddrinfo", resolve)
+    assert own("100.64.0.1", "rednuc") == ["127.0.0.1", "127.0.1.1"]
+
+
+def test_an_unknown_own_name_still_serves_localhost(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail(*_: object) -> list[tuple]:
+        raise socket.gaierror("no name")
+
+    monkeypatch.setattr(sparkgap_server.socket, "getaddrinfo", fail)
+    assert sparkgap_server.own_addresses("192.168.0.10", "nowhere") == ["127.0.0.1"]
