@@ -6,8 +6,7 @@ reuses) and posts to RBN's id.php and s.php. The two hash fields come from the
 library named by --auth-lib, which is handed out separately and never kept in this repo.
 Without a library of the expected interface the feeder does not post (--dry-run aside).
 
-Differences from rbn_feeder.py: one post per upload tick carrying the spots since the last (one
-spot per tick with an interface 1 library, which hashes single calls only); heartbeat every 300 s;
+Differences from rbn_feeder.py: heartbeat every 300 s;
 SparkGap identifies itself as SparkGap/<short commit>, with the library's version string as
 the Aggregator version.
 
@@ -37,8 +36,7 @@ import rbn_feeder as base
 
 log = logging.getLogger("rbn2_feeder")
 
-AUTH_INTERFACES = (1, 2)  # 2 adds rbn2_auth_batch_hash, for posts of several spots
-MAX_BATCH = 64  # RBN2_AUTH_MAX_BATCH
+AUTH_INTERFACE = 1
 UPLOAD_S = 10.0  # Aggregator's tick when id.php names no serverUploadInterval
 VERSION_LEN = 64
 HASH_LEN = 16
@@ -72,26 +70,18 @@ class Auth:
             raise AuthError(f"cannot load {path}: {e}") from e
         ver.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
         ver.restype = ctypes.c_int
-        for fn in (short, spot):
-            fn.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t]
-            fn.restype = ctypes.c_int
+        short.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t]
+        spot.argtypes = [
+            ctypes.POINTER(ctypes.c_char_p),
+            ctypes.c_size_t,
+            ctypes.c_char_p,
+            ctypes.c_size_t,
+        ]
+        short.restype = spot.restype = ctypes.c_int
         buf = ctypes.create_string_buffer(VERSION_LEN)
         got = ver(buf, VERSION_LEN)
-        if got not in AUTH_INTERFACES:
-            raise AuthError(f"{path} has interface {got}, this feeder takes {AUTH_INTERFACES}")
-        batch = None
-        if got == 2:
-            try:
-                batch = lib.rbn2_auth_batch_hash
-            except AttributeError as e:
-                raise AuthError(f"{path} has interface 2 but no batch hash: {e}") from e
-            batch.argtypes = [
-                ctypes.POINTER(ctypes.c_char_p),
-                ctypes.c_size_t,
-                ctypes.c_char_p,
-                ctypes.c_size_t,
-            ]
-            batch.restype = ctypes.c_int
+        if got != AUTH_INTERFACE:
+            raise AuthError(f"{path} has interface {got}, this feeder takes {AUTH_INTERFACE}")
         try:
             version = buf.value.decode("ascii")
         except UnicodeDecodeError:
@@ -99,8 +89,7 @@ class Auth:
         if not version or not version.isprintable():
             raise AuthError(f"{path} reports no usable version string")
         self.version = version
-        self._short, self._spot, self._batch = short, spot, batch
-        self.max_batch = MAX_BATCH if batch else 1
+        self._short, self._spot = short, spot
 
     def _hash(self, fn: Any, *args: Any) -> str | None:
         out = ctypes.create_string_buffer(HASH_LEN)
@@ -115,17 +104,12 @@ class Auth:
     def short_hash(self, sign_in: str) -> str | None:
         return self._hash(self._short, sign_in.encode("utf-8"))
 
-    def spot_hash(self, call: str) -> str | None:
-        return self._hash(self._spot, call.encode("utf-8"))
-
-    def batch_hash(self, calls: list[str]) -> str | None:
-        """h for a post of these calls, in row order; None past max_batch or when refused."""
-        if not calls or len(calls) > self.max_batch:
+    def spot_hash(self, calls: list[str]) -> str | None:
+        """h for a post of these calls, in row order; None when empty or refused."""
+        if not calls:
             return None
-        if self._batch is None:
-            return self.spot_hash(calls[0])
         arr = (ctypes.c_char_p * len(calls))(*(c.encode("utf-8") for c in calls))
-        return self._hash(self._batch, arr, len(calls))
+        return self._hash(self._spot, arr, len(calls))
 
 
 def sparkgap_version() -> str | None:
@@ -200,7 +184,6 @@ class Session:
             dry_run,
         )
         self.agg = auth.version if auth else "rbn2auth/none"
-        self.max_batch = auth.max_batch if auth else MAX_BATCH
         self.upload_s = UPLOAD_S  # the server's serverUploadInterval once id.php names one
         self.registered = threading.Event()  # set while the last id.php succeeded
         self.ntp = False  # the clock state the last id.php reported
@@ -245,7 +228,7 @@ class Session:
     def spots_body(self, spots: list[dict[str, Any]], now: float) -> dict[str, Any] | None:
         """The s.php body for these spots, or None when their calls can't be hashed (dropped)."""
         calls = [spot["call"] for spot in spots]
-        h = self.auth.batch_hash(calls) if self.auth else ""
+        h = self.auth.spot_hash(calls) if self.auth else ""
         if h is None:
             log.error("auth library refused calls %s: spots dropped", calls)
             return None
@@ -329,11 +312,10 @@ def upload_loop(
     shutdown: threading.Event,
     clock: Callable[[], float],
 ) -> None:
-    """Each upload tick, one post of the spots queued since the last, up to max_batch (the rest
-    wait for the next tick, oldest first)."""
+    """Each upload tick, one post of every spot queued since the last (rbn_feeder.upload_loop)."""
     counts = {"sent": 0, "blacklisted": 0, "dropped": 0, "not signed in": 0}
-    pending: list[dict[str, Any]] = []
     while not shutdown.wait(sess.upload_s):
+        batch: list[dict[str, Any]] = []
         while True:
             try:
                 spot = spots.get_nowait()
@@ -342,20 +324,18 @@ def upload_loop(
             if spot["call"] in blacklist:
                 counts["blacklisted"] += 1
             else:
-                pending.append(spot)
-        if not pending:
+                batch.append(spot)
+        if not batch:
             continue
         if not sess.registered.is_set():  # dropped, not held: no backlog of old spots later
-            counts["not signed in"] += len(pending)
-            pending = []
+            counts["not signed in"] += len(batch)
             continue
-        batch, pending = pending[: sess.max_batch], pending[sess.max_batch :]
         body = sess.spots_body(batch, clock())
         if body is None or (sess.post("s.php", body) is None and not sess.dry_run):
             counts["dropped"] += len(batch)
         else:
             counts["sent"] += len(batch)
-        log.info("%s: %s, %d waiting", " ".join(s["call"] for s in batch), counts, len(pending))
+        log.info("%d spots: %s: %s", len(batch), " ".join(s["call"] for s in batch), counts)
 
 
 def read_local(
@@ -452,7 +432,7 @@ def main() -> None:
             auth = Auth(a.auth_lib)
         except AuthError as e:
             sys.exit(f"rbn2_feeder: {e}")
-        log.info("auth library %s, up to %d spots a post", auth.version, auth.max_batch)
+        log.info("auth library %s", auth.version)
     version = sparkgap_version()
     why = not_ready(auth, version, a.dry_run)
     if why:

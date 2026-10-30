@@ -49,19 +49,16 @@ class FakeLib:
 
             return h
 
-        def batch(calls: Any, n: int, out: Any, _n: int) -> int:
+        def spot(calls: Any, n: int, out: Any, _n: int) -> int:
             got = [calls[i].decode() for i in range(n)]
-            if refuse in got:
+            if not got or refuse in got or "" in got:
                 return -1
-            # the spec: a one-call batch hashes as that call's spot hash
-            out.value = fake_hash("h" if n == 1 else "b", "|".join(got)).encode()
+            out.value = bad_hash if bad_hash is not None else fake_hash("h", "|".join(got)).encode()
             return 0
 
         self.rbn2_auth_version = FakeFn(ver)
         self.rbn2_auth_short_hash = FakeFn(hashed("s"))
-        self.rbn2_auth_spot_hash = FakeFn(hashed("h"))
-        if interface == 2:
-            self.rbn2_auth_batch_hash = FakeFn(batch)
+        self.rbn2_auth_spot_hash = FakeFn(spot)
 
 
 def _auth(**kw: Any) -> f.Auth:
@@ -91,19 +88,18 @@ SPOT = {"freq": 7027.64, "call": "JA0FVU", "cq_flag": "CQ", "snr": 25, "wpm": 30
 def test_the_library_is_set_up_and_reports_its_version() -> None:
     auth = _auth()
     assert auth.version == "rbn2auth/test"
-    assert auth._spot.argtypes == [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t]
+    assert auth._short.argtypes == [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t]
+    assert auth._spot.argtypes == [
+        ctypes.POINTER(ctypes.c_char_p),
+        ctypes.c_size_t,
+        ctypes.c_char_p,
+        ctypes.c_size_t,
+    ]
 
 
 def test_another_interface_is_refused() -> None:
     with pytest.raises(f.AuthError, match="interface 3"):
         _auth(interface=3)
-
-
-def test_interface_2_without_its_batch_hash_is_refused() -> None:
-    lib = FakeLib(interface=2)
-    del lib.rbn2_auth_batch_hash
-    with pytest.raises(f.AuthError, match="batch hash"):
-        f.Auth("librbn2_auth.so", loader=lambda _p: lib)
 
 
 def test_a_missing_library_is_refused() -> None:
@@ -147,10 +143,8 @@ def test_a_session_without_a_library_may_only_dry_run() -> None:
     assert _session(None, dry_run=True).agg == "rbn2auth/none"
 
 
-def test_interface_1_hashes_one_call_a_post() -> None:
+def test_one_spot_is_hashed_as_a_list_of_one() -> None:
     sess = _session(_auth())
-    assert sess.max_batch == 1
-    assert sess.spots_body([SPOT, {**SPOT, "call": "K1ABC"}], 0.0) is None
     body = sess.spots_body([SPOT], 1_761_000_000.0)
     assert body is not None
     assert body["h"] == fake_hash("h", "JA0FVU")
@@ -158,26 +152,18 @@ def test_interface_1_hashes_one_call_a_post() -> None:
     assert body["s"] == [["7027.64", "JA0FVU", "1", "25", "30", "dB", "1", "CQ", "D:"]]
 
 
-def test_interface_2_hashes_the_post_s_calls_in_row_order() -> None:
-    sess = _session(_auth(interface=2))
-    assert sess.max_batch == f.MAX_BATCH
-    assert sess.auth is not None and sess.auth._batch is not None
-    assert sess.auth._batch.argtypes == [
-        ctypes.POINTER(ctypes.c_char_p),
-        ctypes.c_size_t,
-        ctypes.c_char_p,
-        ctypes.c_size_t,
-    ]
-    assert sess.auth.batch_hash(["JA0FVU"]) == sess.auth.spot_hash("JA0FVU")
+def test_one_hash_covers_the_post_s_calls_in_row_order() -> None:
+    sess = _session(_auth())
     body = sess.spots_body([SPOT, {**SPOT, "call": "K1ABC", "freq": 7031.0}], 0.0)
-    assert body is not None and body["h"] == fake_hash("b", "JA0FVU|K1ABC")
+    assert body is not None and body["h"] == fake_hash("h", "JA0FVU|K1ABC")
     assert [r[:2] for r in body["s"]] == [["7027.64", "JA0FVU"], ["7031.00", "K1ABC"]]
-    assert sess.spots_body([SPOT] * (f.MAX_BATCH + 1), 0.0) is None
+    assert sess.auth is not None and sess.auth.spot_hash([]) is None
 
 
 def test_a_refused_call_drops_the_spot() -> None:
     assert _session(_auth(refuse="JA0FVU")).spots_body([SPOT], 0.0) is None
-    assert _session(_auth(interface=2, refuse="JA0FVU")).spots_body([SPOT], 0.0) is None
+    both = [SPOT, {**SPOT, "call": "K1ABC"}]
+    assert _session(_auth(refuse="K1ABC")).spots_body(both, 0.0) is None
 
 
 def test_the_sign_in_names_sparkgap_and_its_commit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -237,27 +223,20 @@ def _run_upload(
     return sent
 
 
-def test_interface_1_sends_one_spot_a_tick() -> None:
+def test_a_tick_s_spots_go_in_one_post() -> None:
     sess = _session(_auth())
     sess.registered.set()
-    sent = _run_upload(sess, ["JA0FVU", "N0CALL", "K1ABC"], {"N0CALL"}, posts=2)  # blacklisted
-    assert [[r[1] for r in b["s"]] for b in sent] == [["JA0FVU"], ["K1ABC"]]
-
-
-def test_interface_2_sends_a_tick_s_spots_in_one_post() -> None:
-    sess = _session(_auth(interface=2))
-    sess.registered.set()
-    sent = _run_upload(sess, ["JA0FVU", "N0CALL", "K1ABC"], {"N0CALL"}, posts=1)
+    sent = _run_upload(sess, ["JA0FVU", "N0CALL", "K1ABC"], {"N0CALL"}, posts=1)  # blacklisted
     assert [[r[1] for r in b["s"]] for b in sent] == [["JA0FVU", "K1ABC"]]
 
 
-def test_a_post_carries_at_most_max_batch_and_the_rest_wait() -> None:
-    sess = _session(_auth(interface=2))
+def test_every_spot_queued_goes_in_one_post() -> None:
+    sess = _session(_auth())
     sess.registered.set()
-    calls = [f"K{i}AA" for i in range(f.MAX_BATCH + 6)]
-    sent = _run_upload(sess, calls, set(), posts=2)
-    assert [len(b["s"]) for b in sent] == [f.MAX_BATCH, 6]
-    assert [r[1] for b in sent for r in b["s"]] == calls
+    calls = [f"K{i}AA" for i in range(70)]
+    sent = _run_upload(sess, calls, set(), posts=1)
+    assert len(sent) == 1 and [r[1] for r in sent[0]["s"]] == calls
+    assert sent[0]["h"] == fake_hash("h", "|".join(calls))
 
 
 def test_the_tick_follows_the_server_s_upload_interval(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -400,6 +379,6 @@ def test_a_dry_run_logs_no_hash_or_fingerprint(caplog: pytest.LogCaptureFixture)
     sess.post("s.php", body)
     logged = caplog.text
     assert sess.auth is not None
-    for secret in ("f" * 32, sess.auth.short_hash(sess.sign_in()), sess.auth.spot_hash("JA0FVU")):
+    for secret in ("f" * 32, sess.auth.short_hash(sess.sign_in()), sess.auth.spot_hash(["JA0FVU"])):
         assert secret and secret not in logged
     assert '"fingerPrint":"<hidden>"' in logged and '"h":"<hidden>"' in logged
