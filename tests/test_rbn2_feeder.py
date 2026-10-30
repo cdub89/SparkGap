@@ -155,7 +155,7 @@ def test_without_a_library_or_a_version_nothing_is_posted() -> None:
 def test_a_session_without_a_library_may_only_dry_run() -> None:
     with pytest.raises(f.AuthError):
         _session(None)
-    assert _session(None, dry_run=True).agg == "rbn2auth/none"
+    assert _session(None, dry_run=True).agg == "6.7"
 
 
 def test_one_spot_is_hashed_as_a_list_of_one() -> None:
@@ -163,7 +163,7 @@ def test_one_spot_is_hashed_as_a_list_of_one() -> None:
     body = sess.spots_body([SPOT], 1_761_000_000.0)
     assert body is not None
     assert body["h"] == fake_hash("h", "JA0FVU")
-    assert body["agg"] == "rbn2auth/1.2" and body["e"] == "N0CALL-1"
+    assert body["agg"] == "6.7" and body["e"] == "N0CALL-1"
     assert body["s"] == [["7027.64", "JA0FVU", "1", "25", "30", "dB", "1", "CQ", "D:"]]
 
 
@@ -188,7 +188,7 @@ def test_the_sign_in_names_sparkgap_and_its_commit(monkeypatch: pytest.MonkeyPat
     assert body is not None
     sign_in = "SparkGap/abc1234 is operated by SparkGap, N0CALL-1"
     assert body["skimSignIn"] == sign_in and body["shortHash"] == fake_hash("s", sign_in)
-    assert body["skimVersion"] == "SparkGap/abc1234" and body["aggVersion"] == "rbn2auth/1.2"
+    assert body["skimVersion"] == "SparkGap 1.2" and body["aggVersion"] == "6.7"
     assert body["justCQ"] == "1" and body["ClockNtp"] is True
     assert body["bandLimits"] == body["mIXEDBandLimits"] == "7000.0-7096.0"
     assert body["cWBandLimits"] == ""

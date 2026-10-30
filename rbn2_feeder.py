@@ -8,8 +8,8 @@ never kept in a git checkout.
 Without a library of the expected version the feeder does not post (--dry-run aside).
 
 Differences from rbn_feeder.py: heartbeat every 300 s;
-SparkGap identifies itself as SparkGap/<short commit>, with the library's version string as
-the Aggregator version.
+SparkGap signs in as SparkGap/<short commit>; skimVersion and aggVersion are SKIM_VERSION and
+AGG_VERSION (diagnostic: RBN may store aggVersion as a number).
 
 Identity and settings come from the seat config; its rbn_upload key ("dry" or "live", off when
 absent) decides whether it posts. sparkgap.sh starts it with its seat.
@@ -43,6 +43,8 @@ log = logging.getLogger("rbn2_feeder")
 
 AUTH_VERSION = "rbn2auth/1.2"  # RBN2_AUTH_VERSION, compared as text
 AUTH_LIB = "librbn2_auth.so"
+SKIM_VERSION = "SparkGap 1.2"  # id.php skimVersion
+AGG_VERSION = "6.7"  # id.php aggVersion and s.php agg, as Aggregator 6.7 sends
 UPLOAD_MODES = ("dry", "live")  # rbn_upload; absent or anything else is off
 VALIDATION = {"permissive": "Permissive", "normal": "Normal", "aggressive": "Aggressive"}
 VALIDATION_OFF = (None, False, "off", "")  # sparkgap.py's off values
@@ -236,7 +238,7 @@ class Session:
             fingerprint,
             dry_run,
         )
-        self.agg = auth.version if auth else "rbn2auth/none"
+        self.agg = AGG_VERSION
         self.upload_s = UPLOAD_S  # the server's serverUploadInterval once id.php names one
         self.registered = threading.Event()  # set while the last id.php succeeded
         self.ntp = False  # the clock state the last id.php reported
@@ -273,7 +275,7 @@ class Session:
             "skimQth": self.qth,
             "skimSignIn": sign_in,
             "skimValLevel": self.validation,
-            "skimVersion": self.version,
+            "skimVersion": SKIM_VERSION,
             "shortHash": short,
             "t": "id",
         }
