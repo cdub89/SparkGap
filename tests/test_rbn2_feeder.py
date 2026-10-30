@@ -2,7 +2,9 @@
 posts on the upload tick, and the sign-in."""
 
 import ctypes
+import os
 import queue
+import signal
 import threading
 import zlib
 from typing import Any
@@ -462,3 +464,29 @@ def test_validation_defaults_to_normal_as_in_sparkgap() -> None:
     assert f.seat_settings(cfg).validation == "Normal"
     with pytest.raises(ValueError, match="spot_validation"):
         f.seat_settings({**SEAT, "spot_validation": "high"})
+
+
+@pytest.mark.parametrize(("sig", "name"), [(signal.SIGTERM, "SIGTERM"), (signal.SIGINT, "Ctrl-C")])
+def test_a_signal_stops_the_feeder_cleanly_and_says_so(
+    sig: signal.Signals, name: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    shutdown, failed = threading.Event(), threading.Event()
+    old_int = signal.signal(signal.SIGINT, signal.default_int_handler)  # as in a feeder process
+    old_term = signal.getsignal(signal.SIGTERM)
+    try:
+        threading.Timer(0.1, os.kill, (os.getpid(), sig)).start()
+        with caplog.at_level("INFO", logger="rbn2_feeder"):
+            assert f.wait_for_stop(shutdown, failed) is True
+    finally:
+        signal.signal(signal.SIGINT, old_int)
+    assert shutdown.is_set() and f"stopped ({name})" in caplog.text
+    assert signal.getsignal(signal.SIGTERM) is old_term  # the old handler is back
+
+
+def test_a_failed_thread_stops_the_feeder_with_an_error(caplog: pytest.LogCaptureFixture) -> None:
+    shutdown, failed = threading.Event(), threading.Event()
+    failed.set()
+    shutdown.set()
+    with caplog.at_level("INFO", logger="rbn2_feeder"):
+        assert f.wait_for_stop(shutdown, failed) is False
+    assert "stopped: a thread failed" in caplog.text

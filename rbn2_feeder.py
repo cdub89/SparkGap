@@ -23,6 +23,7 @@ import http.client
 import json
 import logging
 import queue
+import signal
 import socket
 import string
 import subprocess
@@ -435,6 +436,30 @@ def heartbeat_loop(sess: Session, shutdown: threading.Event) -> None:
         pass
 
 
+def wait_for_stop(shutdown: threading.Event, failed: threading.Event) -> bool:
+    """Runs until Ctrl-C, SIGTERM or a failed thread and logs how it stopped; True when clean."""
+    by: list[str] = []
+
+    def on_sigterm(_signum: int, _frame: Any) -> None:
+        by.append("SIGTERM")
+        shutdown.set()
+
+    old = signal.signal(signal.SIGTERM, on_sigterm)
+    try:
+        while not shutdown.wait(1.0):
+            pass
+    except KeyboardInterrupt:
+        by.append("Ctrl-C")
+        shutdown.set()
+    finally:
+        signal.signal(signal.SIGTERM, old)
+    if failed.is_set():
+        log.error("stopped: a thread failed, see above")
+        return False
+    log.info("stopped (%s)", by[0] if by else "shutdown")
+    return True
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="SparkGap's RBN feeder (librbn2_auth)")
     p.add_argument("--config", required=True, help="the seat config, config/<seat>.local.json")
@@ -515,12 +540,7 @@ def main() -> None:
     ]
     for t in threads:
         t.start()
-    try:
-        while not shutdown.wait(1.0):
-            pass
-    except KeyboardInterrupt:
-        shutdown.set()
-    if failed.is_set():
+    if not wait_for_stop(shutdown, failed):
         sys.exit("rbn2_feeder: a thread failed, see the log")
 
 
