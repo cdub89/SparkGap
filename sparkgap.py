@@ -441,6 +441,38 @@ def band_center_hz(name, sample_rate):
     """Centre for a named band: its lower CW edge plus 0.4 of the IQ span."""
     return BANDS[name] * 1000 + round(sample_rate * (0.5 - BAND_EDGE_MARGIN))
 
+
+def _rbn_utc(t):
+    return time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(t))
+
+
+def _rbn_spotter(cfg):
+    """The spotter ID RBN's archive keeps: callsign plus skimmer_suffix, except the default "-#"."""
+    suffix = cfg.get('skimmer_suffix', '-#') or ''
+    return cfg.get('callsign', '') + ('' if suffix == '-#' else suffix)
+
+
+def _log_rbn_row(callsign, freq_khz, call, snr, wpm, t, tx_mode='CW'):
+    """A spot for RBN as the archive row RBN would store (UTC, 0.1 kHz), for scoring a run before it is on RBN.
+    wpm is the speed column: WPM for CW, baud for RTTY."""
+    band = SpotTracker._band_id_for_freq(freq_khz)
+    log.info("RBN: %s,,,%.1f,%s,%s,,,CQ,%d,%s,%d,%s", callsign.upper(), freq_khz,
+             '%dm' % band if band else '', call, round(snr), _rbn_utc(t), wpm, tx_mode)
+
+
+def _log_rbn_node(callsign, grid):
+    """The node's call and locator, which the archive row has no column for; a grid that is not Maidenhead is left out."""
+    grid = (grid or '').strip()
+    ok = re.fullmatch(r'[A-Ra-r]{2}[0-9]{2}([A-Xa-x]{2})?', grid)
+    log.info("RBN node: %s%s", callsign.upper(), ' ' + grid[:2].upper() + grid[2:4] + grid[4:].lower() if ok else '')
+
+
+def _log_rbn_span(t, centres_khz, rate):
+    """The spans the run listens to from t on, one per band."""
+    log.info("RBN span: %s %s", _rbn_utc(t), ' '.join(
+        '%.1f-%.1f' % (c - rate / 2000, c + rate / 2000) for c in centres_khz))
+
+
 def _derive_cw_window(center_khz, exclude_ft8=True, exclude_ft4=False):
     """Look up the CW window for the IARU R2 band containing center_khz.
 
@@ -2414,6 +2446,8 @@ def _rtty_scan_band_repeat(skimmer, rtty_lib, bn, band_center_khz, fi, fq, n_sam
         w = rule.window_id(int(round(rf_khz * 10)), int(now // 60), now)
         for call, sf in rule.feed(w, rf_khz, _rtty_split_keywords(text), now, snr=snr_db):
             log.info("*** RTTY SPOT: %.1f kHz  %-10s  %+d dB  [%s] ***", sf, call, int(snr_db), text[:50])
+            _log_rbn_row(_rbn_spotter(skimmer.cfg), skimmer._corrected_freq_khz(sf), call, snr_db,
+                         RTTY_SPOT_BAUD, now, 'RTTY')
             skimmer.broadcast(freq_khz=skimmer._corrected_freq_khz(sf), dx_call=call,
                               snr=int(snr_db), wpm=RTTY_SPOT_BAUD, mode='RTTY',
                               comment='CQ')
@@ -7735,6 +7769,9 @@ class SparkGap:
             log.info("SparkGap LIVE: %s (%.3f kHz) rx%d, telnet :%d",
                      name, cal_center_khz, rx_idx,
                      self.cfg.get('telnet_port', 7300))
+        _log_rbn_node(_rbn_spotter(self.cfg), self.cfg.get('grid', ''))
+        _log_rbn_span(time.time(), [self._corrected_freq_khz(c / 1000.0) for _n, c, _r in self._band_meta],
+                      rx_sample_rate)
 
         # SIGUSR1 → snapshot the current IQ buffer for every enabled band
         # to /tmp/diag_<band>_<HHMMSS>.wav for live-vs-replay diagnostics.
@@ -7813,6 +7850,7 @@ class SparkGap:
             import feed_server
             mgr._spectrum_tap = feed_server.SpectrumTap(_gui_feed, rate, center_hz)
             _gui_feed.set_bands([{'name': name, 'center_khz': center_hz / 1000.0, 'span_khz': rate / 1000.0}])
+        _log_rbn_span(time.time(), [self._corrected_freq_khz(center_hz / 1000.0)], rate)
         log.info("Live change: %s (%.3f kHz) -> %s (%.3f kHz)", old_name, old_hz / 1000.0, name, center_hz / 1000.0)
         return reply(True, "retuned to %s" % name)
 
@@ -8332,6 +8370,8 @@ class SparkGap:
                         log.info("*** SPOT: %10.2f  %-12s  %d dB  %d WPM  [%s] ***",
                                  spot['freq_khz'], spot['call'], spot['snr'],
                                  spot_wpm, method)
+                        _log_rbn_row(_rbn_spotter(self.cfg), self._corrected_freq_khz(spot['freq_khz']),
+                                     spot['call'], spot['snr'], spot_wpm, time.time())
                         if self._spot_log:
                             import datetime
                             ts = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
@@ -9155,6 +9195,9 @@ def run_file_mode(args, config):
 
     manager.update_signals(clustered, center_khz)
     del scan_i, scan_q
+    if t0 is not None:
+        _log_rbn_node(_rbn_spotter(config), config.get('grid', ''))
+        _log_rbn_span(t0 + start_sec, [center_khz], file_rate)
 
     # Feed continuous audio chunks — same decoder instances for entire recording
     for t_start in np.arange(start_sec, end_sec, chunk_sec):
@@ -9278,6 +9321,9 @@ def run_file_mode(args, config):
                     log.info("SPOT: %.2f kHz %s %d dB %d WPM [%s]",
                              spot['freq_khz'], spot['call'],
                              spot['snr'], spot.get('wpm', 0), spot['method'])
+                    if t0 is not None:
+                        _log_rbn_row(_rbn_spotter(config), spot['freq_khz'], spot['call'],
+                                     spot['snr'], spot.get('wpm', 0), t0 + _file_audio_t)
 
         # Final collect after all data fed — give decoders a moment to flush
         import time as _time
