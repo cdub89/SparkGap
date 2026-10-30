@@ -29,14 +29,14 @@ class FakeFn:
 class FakeLib:
     def __init__(
         self,
-        interface: int = 1,
+        ret: int = 0,
         refuse: str = "",
-        version: bytes = b"rbn2auth/test",
+        version: bytes = b"rbn2auth/1.2",
         bad_hash: bytes | None = None,
     ) -> None:
         def ver(buf: Any, _n: int) -> int:
             buf.value = version
-            return interface
+            return ret
 
         def hashed(tag: str) -> Any:
             def h(text: bytes, out: Any, _n: int) -> int:
@@ -87,7 +87,7 @@ SPOT = {"freq": 7027.64, "call": "JA0FVU", "cq_flag": "CQ", "snr": 25, "wpm": 30
 
 def test_the_library_is_set_up_and_reports_its_version() -> None:
     auth = _auth()
-    assert auth.version == "rbn2auth/test"
+    assert auth.version == "rbn2auth/1.2"
     assert auth._short.argtypes == [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t]
     assert auth._spot.argtypes == [
         ctypes.POINTER(ctypes.c_char_p),
@@ -97,9 +97,16 @@ def test_the_library_is_set_up_and_reports_its_version() -> None:
     ]
 
 
-def test_another_interface_is_refused() -> None:
-    with pytest.raises(f.AuthError, match="interface 3"):
-        _auth(interface=3)
+def test_another_version_is_refused() -> None:
+    with pytest.raises(f.AuthError, match="version 'rbn2auth/7a2eb2c'"):
+        _auth(version=b"rbn2auth/7a2eb2c", ret=1)  # the one-call library
+    with pytest.raises(f.AuthError, match="version 'rbn2auth/1.3'"):
+        _auth(version=b"rbn2auth/1.3")
+
+
+def test_a_failed_version_call_is_refused() -> None:
+    with pytest.raises(f.AuthError, match="no version"):
+        _auth(ret=-1)
 
 
 def test_a_missing_library_is_refused() -> None:
@@ -148,7 +155,7 @@ def test_one_spot_is_hashed_as_a_list_of_one() -> None:
     body = sess.spots_body([SPOT], 1_761_000_000.0)
     assert body is not None
     assert body["h"] == fake_hash("h", "JA0FVU")
-    assert body["agg"] == "rbn2auth/test" and body["e"] == "N0CALL-1"
+    assert body["agg"] == "rbn2auth/1.2" and body["e"] == "N0CALL-1"
     assert body["s"] == [["7027.64", "JA0FVU", "1", "25", "30", "dB", "1", "CQ", "D:"]]
 
 
@@ -173,7 +180,7 @@ def test_the_sign_in_names_sparkgap_and_its_commit(monkeypatch: pytest.MonkeyPat
     assert body is not None
     sign_in = "SparkGap/abc1234 is operated by SparkGap, N0CALL-1"
     assert body["skimSignIn"] == sign_in and body["shortHash"] == fake_hash("s", sign_in)
-    assert body["skimVersion"] == "SparkGap/abc1234" and body["aggVersion"] == "rbn2auth/test"
+    assert body["skimVersion"] == "SparkGap/abc1234" and body["aggVersion"] == "rbn2auth/1.2"
     assert body["justCQ"] == "1" and body["ClockNtp"] is True
     assert body["bandLimits"] == body["mIXEDBandLimits"] == "7000.0-7096.0"
     assert body["cWBandLimits"] == ""
@@ -370,7 +377,7 @@ def test_a_broken_http_reply_is_a_failed_post(monkeypatch: pytest.MonkeyPatch) -
     assert _session(_auth()).post("s.php", {"t": "s"}) is None
 
 
-def test_a_dry_run_logs_no_hash_or_fingerprint(caplog: pytest.LogCaptureFixture) -> None:
+def test_a_dry_run_logs_no_hash_fingerprint_or_sign_in(caplog: pytest.LogCaptureFixture) -> None:
     sess = _session(_auth(), dry_run=True)
     caplog.set_level("INFO")
     sess.post_id()
@@ -379,6 +386,13 @@ def test_a_dry_run_logs_no_hash_or_fingerprint(caplog: pytest.LogCaptureFixture)
     sess.post("s.php", body)
     logged = caplog.text
     assert sess.auth is not None
-    for secret in ("f" * 32, sess.auth.short_hash(sess.sign_in()), sess.auth.spot_hash(["JA0FVU"])):
+    secrets = (
+        "f" * 32,
+        sess.sign_in(),
+        sess.auth.short_hash(sess.sign_in()),
+        sess.auth.spot_hash(["JA0FVU"]),
+    )
+    for secret in secrets:
         assert secret and secret not in logged
     assert '"fingerPrint":"<hidden>"' in logged and '"h":"<hidden>"' in logged
+    assert '"skimSignIn":"<hidden>"' in logged

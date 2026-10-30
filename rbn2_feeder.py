@@ -4,7 +4,7 @@
 Reads SparkGap's local cluster telnet like rbn_feeder.py (whose spot parsing and band probe it
 reuses) and posts to RBN's id.php and s.php. The two hash fields come from the
 library named by --auth-lib, which is handed out separately and never kept in this repo.
-Without a library of the expected interface the feeder does not post (--dry-run aside).
+Without a library of the expected version the feeder does not post (--dry-run aside).
 
 Differences from rbn_feeder.py: heartbeat every 300 s;
 SparkGap identifies itself as SparkGap/<short commit>, with the library's version string as
@@ -36,7 +36,7 @@ import rbn_feeder as base
 
 log = logging.getLogger("rbn2_feeder")
 
-AUTH_INTERFACE = 1
+AUTH_VERSION = "rbn2auth/1.2"  # RBN2_AUTH_VERSION, compared as text
 UPLOAD_S = 10.0  # Aggregator's tick when id.php names no serverUploadInterval
 VERSION_LEN = 64
 HASH_LEN = 16
@@ -48,11 +48,11 @@ READ_TIMEOUT_S = 60.0
 RECONNECT_S = 5.0
 MODE_CODE = {"CW": "1", "RTTY": "11"}  # Aggregator 6.7's mode table
 CQ_CODE = {"CQ": "1", "DX": "2", "BCN": "3", "BEACON": "3"}
-HIDDEN = ("fingerPrint", "fp", "h", "shortHash")  # never in a log
+HIDDEN = ("fingerPrint", "fp", "h", "shortHash", "skimSignIn")  # never in a log
 
 
 class AuthError(RuntimeError):
-    """The auth library is missing or not the interface this feeder expects."""
+    """The auth library is missing or not the version this feeder expects."""
 
 
 class Auth:
@@ -79,16 +79,12 @@ class Auth:
         ]
         short.restype = spot.restype = ctypes.c_int
         buf = ctypes.create_string_buffer(VERSION_LEN)
-        got = ver(buf, VERSION_LEN)
-        if got != AUTH_INTERFACE:
-            raise AuthError(f"{path} has interface {got}, this feeder takes {AUTH_INTERFACE}")
-        try:
-            version = buf.value.decode("ascii")
-        except UnicodeDecodeError:
-            version = ""
-        if not version or not version.isprintable():
-            raise AuthError(f"{path} reports no usable version string")
-        self.version = version
+        if ver(buf, VERSION_LEN) < 0:
+            raise AuthError(f"{path} reports no version")
+        if buf.value != AUTH_VERSION.encode("ascii"):
+            got = buf.value.decode("ascii", errors="replace")
+            raise AuthError(f"{path} is version {got!r}, this feeder takes {AUTH_VERSION}")
+        self.version = AUTH_VERSION
         self._short, self._spot = short, spot
 
     def _hash(self, fn: Any, *args: Any) -> str | None:
@@ -197,7 +193,7 @@ class Session:
         sign_in = self.sign_in()
         short = self.auth.short_hash(sign_in) if self.auth else ""
         if short is None:
-            log.error("auth library refused the sign-in %r: id.php not sent", sign_in)
+            log.error("auth library refused the sign-in: id.php not sent")
             return None
         self.ntp = ntp_synced()
         return {
@@ -261,7 +257,7 @@ class Session:
         data = json.dumps(body, separators=(",", ":"))
         if self.dry_run:
             shown = {k: "<hidden>" if k in HIDDEN else v for k, v in body.items()}
-            log.info("[DRY] POST %s %s", path, json.dumps(shown, separators=(",", ":"))[:300])
+            log.info("[DRY] POST %s %s", path, json.dumps(shown, separators=(",", ":")))
             return None
         req = urlreq.Request(
             f"{self.url}/{path}",
@@ -456,7 +452,7 @@ def main() -> None:
         fingerprint=fingerprint,
         dry_run=a.dry_run,
     )
-    log.info("signing in as %r", sess.sign_in())
+    log.info("SparkGap version %s, spotter %s", sess.version, sess.call)
 
     spots: queue.Queue[dict[str, Any]] = queue.Queue()
     shutdown, failed = threading.Event(), threading.Event()
