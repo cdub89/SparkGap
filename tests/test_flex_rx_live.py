@@ -6,7 +6,7 @@ import threading
 import pytest
 
 import flex_iq
-from flex_iq import FlexIQReceiver, pan_rx, radio_loops, rfgain_steps
+from flex_iq import FlexIQReceiver, pan_rx, radio_loops, rfgain_steps, slice_letter
 from tests.flex_fake_radio import FakeConnection, FakeRadio, use_fake_radio
 
 Monkey = pytest.MonkeyPatch
@@ -38,6 +38,19 @@ def test_pan_rx_reads_only_our_pan() -> None:
         "rfgain": 16,
         "ant_list": ["ANT1", "ANT2", "RX_A"],
     }
+
+
+def test_slice_letter_reads_only_our_slice() -> None:
+    # 2026-10-28 FLEX-6600: SparkGap's slice 1 is B; the operator's slice 2 is A on its own client
+    lines = [
+        "S29C9D542|slice 1 in_use=1 client_handle=0x65C5BDA1 index_letter=B rxant=RX_B",
+        "S29C9D542|slice 2 in_use=1 client_handle=0x45166B5D index_letter=A rxant=RX_B",
+        "S29C9D542|slice 12 in_use=1 index_letter=C",
+    ]
+    assert slice_letter(lines, 1) == "B"
+    assert slice_letter(lines, 2) == "A"
+    assert slice_letter(lines, 0) is None
+    assert slice_letter(["S0|slice 1 rxant=ANT1"], 1) is None
 
 
 def test_rfgain_steps_from_the_reply() -> None:
