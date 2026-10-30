@@ -8,11 +8,10 @@ never kept in a git checkout.
 Without a library of the expected version the feeder does not post (--dry-run aside).
 
 Differences from rbn_feeder.py: heartbeat every 300 s;
-SparkGap signs in as SparkGap/<short commit>; skimVersion and aggVersion are SKIM_VERSION and
-AGG_VERSION (diagnostic: RBN may store aggVersion as a number).
+SparkGap signs in as SKIM_VERSION; RBN lists it as skimmer SKIM_VERSION, Aggregator AGG_VERSION.
 
-Identity and settings come from the seat config; its rbn_upload key ("dry" or "live", off when
-absent) decides whether it posts. sparkgap.sh starts it with its seat.
+Identity and settings come from the SparkGap config; its rbn_upload key ("dry" or "live", off
+when absent) decides whether it posts.
 
 usage: rbn2_feeder.py --config config/<seat>.local.json [--dry-run]
 """
@@ -43,8 +42,8 @@ log = logging.getLogger("rbn2_feeder")
 
 AUTH_VERSION = "rbn2auth/1.2"  # RBN2_AUTH_VERSION, compared as text
 AUTH_LIB = "librbn2_auth.so"
-SKIM_VERSION = "SparkGap 1.2"  # id.php skimVersion
-AGG_VERSION = "6.7"  # id.php aggVersion and s.php agg, as Aggregator 6.7 sends
+SKIM_VERSION = "SparkGap 1.2"  # skimVersion and sign-in: names SparkGap in RBN's node list
+AGG_VERSION = "6.7"  # id.php aggVersion and s.php agg: RBN's interim value for direct feeders
 UPLOAD_MODES = ("dry", "live")  # rbn_upload; absent or anything else is off
 VALIDATION = {"permissive": "Permissive", "normal": "Normal", "aggressive": "Aggressive"}
 VALIDATION_OFF = (None, False, "off", "")  # sparkgap.py's off values
@@ -125,22 +124,6 @@ class Auth:
         return self._hash(self._spot, arr, len(calls))
 
 
-def sparkgap_version() -> str | None:
-    """SparkGap/<short commit> of the checkout this file runs from; None outside git."""
-    try:
-        out = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=Path(__file__).resolve().parent,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    commit = out.stdout.strip()
-    return f"SparkGap/{commit}" if out.returncode == 0 and commit else None
-
-
 def ntp_synced() -> bool:
     """The system clock is NTP-synchronised (timedatectl); False when that can't be read."""
     try:
@@ -193,18 +176,16 @@ def seat_settings(cfg: dict[str, Any]) -> Seat:
 
 
 def auth_lib_path() -> Path:
-    """The run root's librbn2_auth.so: ~/sparkgap/ for a seat in ~/sparkgap/<name>/."""
+    """librbn2_auth.so in the folder above this checkout, never inside it."""
     return Path(__file__).resolve().parent.parent / AUTH_LIB
 
 
-def not_ready(auth: Auth | None, version: str | None, dry_run: bool) -> str | None:
+def not_ready(auth: Auth | None, dry_run: bool) -> str | None:
     """Why the feeder must not post, or None. A dry run posts nothing, so it always may run."""
     if dry_run:
         return None
     if auth is None:
         return f"no {auth_lib_path()}: RBN would drop these spots"
-    if version is None:
-        return "no SparkGap version (not a git checkout): the sign-in must name the commit"
     return None
 
 
@@ -485,8 +466,7 @@ def main() -> None:
         except AuthError as e:
             sys.exit(f"rbn2_feeder: {e}")
         log.info("auth library %s from %s", auth.version, lib)
-    version = sparkgap_version()
-    why = not_ready(auth, version, dry_run)
+    why = not_ready(auth, dry_run)
     if why:
         sys.exit(f"rbn2_feeder: not posting: {why}")
 
@@ -504,7 +484,7 @@ def main() -> None:
         port=seat.port,
         bands=bands,
         auth=auth,
-        version=version or "SparkGap/unknown",
+        version=SKIM_VERSION,
         fingerprint=fingerprint,
         dry_run=dry_run,
     )

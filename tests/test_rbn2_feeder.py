@@ -76,7 +76,7 @@ def _session(auth: f.Auth | None, dry_run: bool = False) -> f.Session:
         port=7300,
         bands=[(7000.0, 7096.0)],
         auth=auth,
-        version="SparkGap/abc1234",
+        version=f.SKIM_VERSION,
         fingerprint="f" * 32,
         dry_run=dry_run,
     )
@@ -142,14 +142,13 @@ def test_the_library_is_looked_for_in_the_run_root() -> None:
     from pathlib import Path
 
     assert f.auth_lib_path() == Path(f.__file__).resolve().parent.parent / "librbn2_auth.so"
-    assert str(f.auth_lib_path()) in (f.not_ready(None, "SparkGap/abc1234", dry_run=False) or "")
+    assert str(f.auth_lib_path()) in (f.not_ready(None, dry_run=False) or "")
 
 
-def test_without_a_library_or_a_version_nothing_is_posted() -> None:
-    assert f.not_ready(None, "SparkGap/abc1234", dry_run=False)
-    assert f.not_ready(_auth(), None, dry_run=False)
-    assert f.not_ready(_auth(), "SparkGap/abc1234", dry_run=False) is None
-    assert f.not_ready(None, None, dry_run=True) is None
+def test_without_a_library_nothing_is_posted() -> None:
+    assert f.not_ready(None, dry_run=False)
+    assert f.not_ready(_auth(), dry_run=False) is None
+    assert f.not_ready(None, dry_run=True) is None
 
 
 def test_a_session_without_a_library_may_only_dry_run() -> None:
@@ -181,12 +180,12 @@ def test_a_refused_call_drops_the_spot() -> None:
     assert _session(_auth(refuse="K1ABC")).spots_body(both, 0.0) is None
 
 
-def test_the_sign_in_names_sparkgap_and_its_commit(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_sign_in_names_sparkgap(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(f, "ntp_synced", lambda: True)
     sess = _session(_auth())
     body = sess.id_body()
     assert body is not None
-    sign_in = "SparkGap/abc1234 is operated by SparkGap, N0CALL-1"
+    sign_in = "SparkGap 1.2 is operated by SparkGap, N0CALL-1"
     assert body["skimSignIn"] == sign_in and body["shortHash"] == fake_hash("s", sign_in)
     assert body["skimVersion"] == "SparkGap 1.2" and body["aggVersion"] == "6.7"
     assert body["justCQ"] == "1" and body["ClockNtp"] is True
@@ -197,7 +196,7 @@ def test_the_sign_in_names_sparkgap_and_its_commit(monkeypatch: pytest.MonkeyPat
 
 
 def test_a_refused_sign_in_sends_no_id_and_no_spots(monkeypatch: pytest.MonkeyPatch) -> None:
-    sess = _session(_auth(refuse="SparkGap/abc1234 is operated by SparkGap, N0CALL-1"))
+    sess = _session(_auth(refuse="SparkGap 1.2 is operated by SparkGap, N0CALL-1"))
     posts: list[str] = []
     monkeypatch.setattr(sess, "post", lambda path, body: posts.append(path) or {})
     assert sess.post_id() is False and posts == [] and not sess.registered.is_set()
@@ -303,7 +302,7 @@ def test_a_reply_that_is_not_json_text_counts_as_sent(monkeypatch: pytest.Monkey
 
 
 SPOT_LINE = (
-    b"DX de WX7V-5-#:  14025.00  K7WP         CW   21 dB 27 WPM  CQ"
+    b"DX de N0CALL-1-#:  14025.00  K7WP         CW   21 dB 27 WPM  CQ"
     b"                  SG  1945Z\a\r\n"
 )
 
@@ -343,8 +342,8 @@ def _read(replies: list[Any]) -> tuple[list[dict[str, Any]], int]:
         connects.append(addr)
         return sock
 
-    f.read_local("127.0.0.1", 7300, "WX7V-5", spots, shutdown, connect)  # type: ignore[arg-type]
-    assert sock.sent == b"WX7V-5\n"
+    f.read_local("127.0.0.1", 7300, "N0CALL-1", spots, shutdown, connect)  # type: ignore[arg-type]
+    assert sock.sent == b"N0CALL-1\n"
     return [spots.get() for _ in range(spots.qsize())], len(connects)
 
 
@@ -364,7 +363,7 @@ def test_eof_reconnects_and_reads_on(monkeypatch: pytest.MonkeyPatch) -> None:
     shutdown = threading.Event()
     spots: queue.Queue[dict[str, Any]] = queue.Queue()
     socks = [FakeSock([b""], threading.Event()), FakeSock([SPOT_LINE], shutdown)]
-    f.read_local("127.0.0.1", 7300, "WX7V-5", spots, shutdown, lambda a, timeout: socks.pop(0))  # type: ignore[arg-type]
+    f.read_local("127.0.0.1", 7300, "N0CALL-1", spots, shutdown, lambda a, timeout: socks.pop(0))  # type: ignore[arg-type]
     assert not socks
     assert spots.get_nowait()["call"] == "K7WP"
 
