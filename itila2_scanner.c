@@ -693,7 +693,7 @@ static double fir_dot(const double *dl, int pos, const double *h, int len)
 
 /* Stages 2 and 3 for one 12 kHz sample of a bin: FIR2 (100/200 Hz paths) to 2 kHz, Hann and
  * channel filter, envelope, FIR3 to 200 Hz.  Returns 1 when the envelope buffer was full. */
-static int bin_push_12k(const ItilaSc *sc, ScBin *b, double s1_i, double s1_q)
+HOT_CLONES static int bin_push_12k(const ItilaSc *sc, ScBin *b, double s1_i, double s1_q)
 {
     /* Stage 2: push into FIR2 delay lines (100 Hz + 200 Hz paths), decimate 6:1 */
     int pos2_100 = b->dl2_count % FIR_S2_100_LEN;
