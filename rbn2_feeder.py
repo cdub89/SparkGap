@@ -11,7 +11,10 @@ Differences from rbn_feeder.py: heartbeat every 300 s;
 SparkGap identifies itself as SparkGap/<short commit>, with the library's version string as
 the Aggregator version.
 
-usage: rbn2_feeder.py --call N0CALL-1 --grid FN31pr [--dry-run]
+Identity and settings come from the seat config; its rbn_upload key ("dry" or "live", off when
+absent) decides whether it posts. sparkgap.sh starts it with its seat.
+
+usage: rbn2_feeder.py --config config/<seat>.local.json [--dry-run]
 """
 
 import argparse
@@ -28,6 +31,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib import error as urlerror
@@ -39,6 +43,9 @@ log = logging.getLogger("rbn2_feeder")
 
 AUTH_VERSION = "rbn2auth/1.2"  # RBN2_AUTH_VERSION, compared as text
 AUTH_LIB = "librbn2_auth.so"
+UPLOAD_MODES = ("dry", "live")  # rbn_upload; absent or anything else is off
+VALIDATION = {"permissive": "Permissive", "normal": "Normal", "aggressive": "Aggressive"}
+VALIDATION_OFF = (None, False, "off", "")  # sparkgap.py's off values
 UPLOAD_S = 10.0  # Aggregator's tick when id.php names no serverUploadInterval
 VERSION_LEN = 64
 HASH_LEN = 16
@@ -144,6 +151,43 @@ def ntp_synced() -> bool:
     except (OSError, subprocess.TimeoutExpired):
         return False
     return out.stdout.strip() == "yes"
+
+
+@dataclass
+class Seat:
+    """What the feeder takes from a seat config."""
+
+    call: str
+    grid: str
+    name: str
+    qth: str
+    validation: str
+    host: str
+    port: int
+    mode: str  # "dry" or "live"
+
+
+def seat_settings(cfg: dict[str, Any]) -> Seat:
+    """The feeder's settings from a seat config; ValueError says why it can't feed."""
+    mode = cfg.get("rbn_upload")
+    if mode not in UPLOAD_MODES:
+        raise ValueError(f"rbn_upload is {mode!r}: off")
+    call, grid = cfg.get("callsign"), cfg.get("grid")
+    if not call or not grid:
+        raise ValueError("callsign and grid must both be set")
+    level = cfg.get("spot_validation", "normal")  # sparkgap.py's default
+    if level not in VALIDATION and level not in VALIDATION_OFF:
+        raise ValueError(f"spot_validation is {level!r}: not a level sparkgap.py knows")
+    return Seat(
+        call=call,
+        grid=grid,
+        name=cfg.get("op_name") or "",
+        qth=cfg.get("qth") or "",
+        validation="Off" if level in VALIDATION_OFF else VALIDATION[level],
+        host=cfg.get("telnet_host") or "127.0.0.1",
+        port=int(cfg.get("telnet_port", 7300)),
+        mode=mode,
+    )
 
 
 def auth_lib_path() -> Path:
@@ -410,21 +454,10 @@ def heartbeat_loop(sess: Session, shutdown: threading.Event) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description="SparkGap's RBN feeder (librbn2_auth)")
-    p.add_argument("--call", required=True, help="the node's spotter ID, e.g. N0CALL-1")
-    p.add_argument("--name", default="SparkGap", help="operator name for the sign-in")
-    p.add_argument("--grid", required=True, help="the node's locator, e.g. FN31pr")
-    p.add_argument("--qth", default="")
-    p.add_argument(
-        "--validation",
-        default="Normal",
-        choices=["Permissive", "Normal", "Aggressive"],
-        help="the spot_validation level SparkGap runs with",
-    )
-    p.add_argument("--local-host", default="127.0.0.1")
-    p.add_argument("--local-port", type=int, default=7300)
+    p.add_argument("--config", required=True, help="the seat config, config/<seat>.local.json")
     p.add_argument("--rbn-url", default=base.DEFAULT_RBN_URL)
     p.add_argument("--blacklist", default="blacklist.txt")
-    p.add_argument("--dry-run", action="store_true", help="log what would be posted; post nothing")
+    p.add_argument("--dry-run", action="store_true", help="post nothing, whatever rbn_upload says")
     p.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     a = p.parse_args()
     logging.basicConfig(
@@ -432,6 +465,15 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
     )
+
+    try:
+        cfg = json.loads(Path(a.config).read_text())
+        if a.dry_run:
+            cfg["rbn_upload"] = "dry"
+        seat = seat_settings(cfg)
+    except (OSError, ValueError) as e:
+        sys.exit(f"rbn2_feeder: {a.config}: {e}")
+    dry_run = seat.mode == "dry"
 
     auth = None
     lib = auth_lib_path()
@@ -442,36 +484,37 @@ def main() -> None:
             sys.exit(f"rbn2_feeder: {e}")
         log.info("auth library %s from %s", auth.version, lib)
     version = sparkgap_version()
-    why = not_ready(auth, version, a.dry_run)
+    why = not_ready(auth, version, dry_run)
     if why:
         sys.exit(f"rbn2_feeder: not posting: {why}")
 
-    bands = base.fetch_bands_from_skimmer(a.local_host, a.local_port, a.call)
+    bands = base.fetch_bands_from_skimmer(seat.host, seat.port, seat.call)
     if not bands:
         log.warning("no band info from the skimmer's SETT: empty bandLimits")
-    fingerprint = hashlib.md5(f"{a.call}@{socket.gethostname()}".encode()).hexdigest()
+    fingerprint = hashlib.md5(f"{seat.call}@{socket.gethostname()}".encode()).hexdigest()
     sess = Session(
         url=a.rbn_url,
-        call=a.call,
-        name=a.name,
-        grid=a.grid,
-        qth=a.qth,
-        validation=a.validation,
-        port=a.local_port,
+        call=seat.call,
+        name=seat.name,
+        grid=seat.grid,
+        qth=seat.qth,
+        validation=seat.validation,
+        port=seat.port,
         bands=bands,
         auth=auth,
         version=version or "SparkGap/unknown",
         fingerprint=fingerprint,
-        dry_run=a.dry_run,
+        dry_run=dry_run,
     )
-    log.info("SparkGap version %s, spotter %s", sess.version, sess.call)
+    mode = "dry run" if dry_run else "LIVE"
+    log.info("SparkGap version %s, spotter %s, %s", sess.version, sess.call, mode)
 
     spots: queue.Queue[dict[str, Any]] = queue.Queue()
     shutdown, failed = threading.Event(), threading.Event()
     threads = [
         threading.Thread(
             target=worker(read_local, shutdown, failed),
-            args=(a.local_host, a.local_port, a.call, spots, shutdown),
+            args=(seat.host, seat.port, seat.call, spots, shutdown),
             name="read_local",
             daemon=True,
         ),

@@ -416,3 +416,50 @@ def test_a_dry_run_logs_no_hash_fingerprint_or_sign_in(caplog: pytest.LogCapture
         assert secret and secret not in logged
     assert '"fingerPrint":"<hidden>"' in logged and '"h":"<hidden>"' in logged
     assert '"skimSignIn":"<hidden>"' in logged
+
+
+SEAT = {
+    "callsign": "N0CALL-2",
+    "grid": "FN31pr",
+    "op_name": "Op",
+    "qth": "Town",
+    "spot_validation": "permissive",
+    "telnet_port": 7302,
+    "rbn_upload": "dry",
+}
+
+
+def test_the_seat_config_gives_the_feeder_its_settings() -> None:
+    seat = f.seat_settings(SEAT)
+    assert (seat.call, seat.grid, seat.name, seat.qth) == ("N0CALL-2", "FN31pr", "Op", "Town")
+    assert (seat.validation, seat.port, seat.mode) == ("Permissive", 7302, "dry")
+    assert seat.host == "127.0.0.1"
+    assert f.seat_settings({**SEAT, "rbn_upload": "live"}).mode == "live"
+
+
+@pytest.mark.parametrize("mode", [None, "off", "on", True])
+def test_upload_is_off_unless_the_config_says_dry_or_live(mode: Any) -> None:
+    cfg = {k: v for k, v in SEAT.items() if k != "rbn_upload"}
+    with pytest.raises(ValueError, match="off"):
+        f.seat_settings(cfg if mode is None else {**cfg, "rbn_upload": mode})
+
+
+@pytest.mark.parametrize("key", ["callsign", "grid"])
+def test_a_seat_without_a_call_or_grid_does_not_feed(key: str) -> None:
+    with pytest.raises(ValueError, match="callsign and grid"):
+        f.seat_settings({**SEAT, key: ""})
+
+
+@pytest.mark.parametrize(
+    ("level", "sent"),
+    [("normal", "Normal"), ("off", "Off"), (False, "Off"), (None, "Off"), ("", "Off")],
+)
+def test_the_validation_level_is_sparkgap_s_own(level: Any, sent: str) -> None:
+    assert f.seat_settings({**SEAT, "spot_validation": level}).validation == sent
+
+
+def test_validation_defaults_to_normal_as_in_sparkgap() -> None:
+    cfg = {k: v for k, v in SEAT.items() if k != "spot_validation"}
+    assert f.seat_settings(cfg).validation == "Normal"
+    with pytest.raises(ValueError, match="spot_validation"):
+        f.seat_settings({**SEAT, "spot_validation": "high"})

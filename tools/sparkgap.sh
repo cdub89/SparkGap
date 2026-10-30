@@ -7,6 +7,7 @@ TEMPLATE=$R/config/template.json   # what add copies
 REC_MIN_GB=5                  # rec on refuses below this much free space in rec/
 START_WAIT_S=45   # longest a copy takes to reach the radio and go live
 STOP_WAIT_S=30
+FEED_WAIT_S=20    # longest the RBN feeder takes to read its config, library and the copy's bands
 CPU_SAMPLE_S=2    # status measures each copy's CPU over this long
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then BOLD=$'\e[1m' GREEN=$'\e[32m' CYAN=$'\e[36m' YELLOW=$'\e[33m' RED=$'\e[31m' OFF=$'\e[0m'; else BOLD= GREEN= CYAN= YELLOW= RED= OFF=; fi
 
@@ -26,6 +27,10 @@ sparkgap.sh: run the SparkGap instances on this machine.
   sparkgap.sh restart [name ...]   stop, then start
   sparkgap.sh band <name> <band>   set the band in its config; restarts it if it was running
   sparkgap.sh rec <name> on|off    record IQ to rec/ or stop recording; restarts it if it was running
+  sparkgap.sh rbn <name> off|dry|live
+                                   its RBN feeder (rbn2_feeder.py, config rbn_upload): dry logs what it
+                                   would post, live posts; starts and stops with the instance, and this
+                                   restarts only the feeder; log logs/rbn2_<name>_<UTC>.log
   sparkgap.sh add <name> <band>    a new instance: name = letters and the DAX-IQ channel (lake4);
                                    a worktree of code/ in <name>/, config/template.json copied to
                                    config/<name>.local.json with that channel, the band and the first
@@ -101,6 +106,13 @@ errors_in() { grep -E '^[0-9:]+ ERROR |^[A-Za-z_.]*(Error|Exception): ' "$1"; }
 radio() {  # the Flex radio an instance uses (its sdr_ip), empty for any other receiver
   python3 -c "import json,sys; c=json.load(open(sys.argv[1])); print(c.get('sdr_ip') or '' if c.get('sdr_type') == 'flex' else '')" "$(cfg "$1")"
 }
+fpid() {  # the feeder's pid, only while that process is rbn2_feeder.py (a reused pid is not it)
+  local p; p=$(cat "$R/logs/rbn2_$1.pid" 2>/dev/null) && kill -0 "$p" 2>/dev/null &&
+    tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q 'rbn2_feeder\.py --config' && echo "$p"
+}
+upload_mode() {  # the instance's rbn_upload: dry, live, or off for anything else
+  python3 -c "import json,sys; v=json.load(open(sys.argv[1])).get('rbn_upload'); print(v if v in ('dry', 'live') else 'off')" "$(cfg "$1")"
+}
 spid() { local p; p=$(cat "$R/logs/station_$1.pid" 2>/dev/null) && kill -0 "$p" 2>/dev/null && echo "$p"; }
 
 locked() {  # run "$@" holding instance $2's radio lock, then its own (the server takes the same, in this order)
@@ -137,9 +149,61 @@ station_down() {  # stop the station of instance $1's radio once no other runnin
 }
 
 start() { locked start_flex "$1"; }
-start_flex() { station_up "$1" && start_copy "$1"; }
+start_flex() { station_up "$1" && start_copy "$1" && feeder_up "$1"; }
 stop() { locked stop_flex "$1"; }
-stop_flex() { stop_copy "$1" && station_down "$1"; }
+stop_flex() { feeder_down "$1" && stop_copy "$1" && station_down "$1"; }  # a feeder that won't stop keeps its seat up
+
+feeder_up() {  # the instance's RBN feeder, when its rbn_upload is dry or live
+  local i=$1 m p t log
+  m=$(upload_mode "$i"); [ "$m" = off ] && return 0
+  if p=$(fpid "$i"); then echo "$i: rbn feeder already running (pid $p)"; return; fi
+  t=$(date -u +%Y%m%d_%H%M%SZ); log="$R/logs/rbn2_${i}_$t.log"
+  (cd "$(dir "$i")" && exec setsid bash -c 'echo $$ > "$1"; exec "$2" rbn2_feeder.py --config "$3" > "$4" 2>&1' \
+     _ "$R/logs/rbn2_$i.pid" "$(field "$i" 4)" "$(cfg "$i")" "$log" < /dev/null > /dev/null 2>&1 8>&- 9>&- &)
+  for _ in $(seq 1 "$FEED_WAIT_S"); do
+    sleep 1
+    grep -q "SparkGap version" "$log" 2>/dev/null && { echo "$i: rbn feeder $m (pid $(fpid "$i")), log $log"; return; }
+    fpid "$i" >/dev/null || break
+  done
+  if fpid "$i" >/dev/null; then echo "$i: rbn feeder running but not started after ${FEED_WAIT_S} s, see $log"; return 1; fi
+  echo "$i: rbn feeder failed to start: $(grep -E 'rbn2_feeder:|ERROR' "$log" | tail -1)"; echo "   log $log"
+  rm -f "$R/logs/rbn2_$i.pid"; return 1
+}
+
+feeder_down() {
+  local i=$1 p
+  p=$(fpid "$i") || { rm -f "$R/logs/rbn2_$i.pid"; return 0; }
+  kill -INT "$p"
+  for _ in $(seq 1 "$STOP_WAIT_S"); do kill -0 "$p" 2>/dev/null || break; sleep 1; done
+  if kill -0 "$p" 2>/dev/null; then echo "$i: rbn feeder still running after ${STOP_WAIT_S} s (pid $p)"; return 1; fi
+  rm -f "$R/logs/rbn2_$i.pid"; echo "$i: rbn feeder stopped"
+}
+
+set_feed() {  # rbn_upload, then the feeder alone follows it; the instance keeps running
+  feeder_down "$1" || return
+  if [ "$2" = off ]; then setcfg "$1" rbn_upload null; else setcfg "$1" rbn_upload "\"$2\""; fi || return
+  if pid "$1" > /dev/null; then feeder_up "$1"; fi
+}
+
+feeder_status() {
+  local i=$1 m p log
+  m=$(upload_mode "$i"); log=$(ls -t "$R"/logs/rbn2_"$i"_*.log 2>/dev/null | head -1)
+  if p=$(fpid "$i") && [ -z "$log" ]; then
+    echo "   rbn upload $m, ${GREEN}running$OFF, pid $p, log missing"
+  elif [ -n "$p" ]; then
+    local sent posts errs warns
+    sent=$(grep -oE "'sent': [0-9]+" "$log" | tail -1 | tr -dc 0-9)
+    posts=$(grep -cE ' INFO [0-9]+ spots: ' "$log")
+    errs=$(grep -c ' ERROR ' "$log"); [ "$errs" -gt 0 ] && errs="$RED$errs$OFF"
+    warns=$(grep -c ' WARNING ' "$log"); [ "$warns" -gt 0 ] && warns="$YELLOW$warns$OFF"
+    echo "   rbn upload $m, ${GREEN}running$OFF, pid $p, posts $posts, spots ${sent:-0}, errors $errs, warnings $warns"
+    echo "   rbn log $log"
+  elif [ "$m" != off ]; then
+    echo "   rbn upload $m, ${RED}not running$OFF${log:+, last log $log}"
+  else
+    echo "   rbn upload off"
+  fi
+}
 
 start_copy() {
   local i=$1 p t log
@@ -212,6 +276,7 @@ if rec:
     rec = f"on, {sys.argv[2] if low else ''}{gb} GB free{' (rec on needs ' + sys.argv[5] + ')' + sys.argv[3] if low else ''}"
 print(f"   telnet {c.get('telnet_port', 7300)}, recording {rec or 'off'}")
 PY
+  feeder_status "$i"
   [ -n "$log" ] || return 0
   spots=$(grep -c 'SPOT:' "$log")
   local line trim errs warns recon
@@ -521,7 +586,7 @@ PY
 cmd=$1; shift
 case $cmd in help|-h|--help) usage; exit 0 ;; esac
 case $cmd in
-  status|start|stop|restart|band|rec|update|add|remove|rename|init|migrate|template) ;;
+  status|start|stop|restart|band|rec|rbn|update|add|remove|rename|init|migrate|template) ;;
   *) echo "sparkgap.sh: unknown command '$cmd'" >&2; echo >&2; usage >&2; exit 2 ;;
 esac
 for a in "$@"; do [[ $a == -h || $a == --help ]] && { cmd_usage "$cmd"; exit 0; }; done
@@ -540,6 +605,10 @@ case $cmd in
     [ "$2" = off ] || [ "$(free_gb)" -ge "$REC_MIN_GB" ] || die "only $(free_gb) GB free in $R/rec (rec on needs $REC_MIN_GB)"
     echo "$1: recording $2 ($(df -h --output=avail "$R/rec" | tail -1 | tr -d ' ') free in rec/)"
     if [ "$2" = on ]; then locked set_restart "$1" record_wav "\"$R/rec/${1}_{band}_{ts}.wav\""; else locked set_restart "$1" record_wav null; fi ;;
+  rbn)
+    [ $# -eq 2 ] && [[ $2 == off || $2 == dry || $2 == live ]] || { cmd_usage rbn; exit 2; }
+    dir "$1" > /dev/null
+    echo "$1: rbn upload $2"; locked set_feed "$1" "$2" ;;
   update) [ $# -eq 0 ] || { cmd_usage update; exit 2; }; update ;;
   add) [ $# -eq 2 ] || { cmd_usage add; exit 2; }; add "$1" "$2" ;;
   remove) [ $# -eq 1 ] || { cmd_usage remove; exit 2; }; remove "$1" ;;
