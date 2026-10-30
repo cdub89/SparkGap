@@ -2009,6 +2009,30 @@ def _select_afc(on):
         log.info("ITILA scanner: bins follow the keyed tone (itila2_afc)")
     return _afc
 
+_bin_liveness = False   # config itila2_bin_liveness: a window that copies a known runner keeps its bin
+
+
+def _select_bin_liveness(on):
+    """Config key itila2_bin_liveness (default off): mark the scanner bin live (itila_sc_mark_evidence)
+    when a decoded window has an SCP call next to CQ/TEST.  The scanner evicts any bin with no evidence
+    for 300 s, and on the spot-rule paths nothing else marks it, so without this every bin, a steady
+    runner's too, is evicted and respawned every 5 minutes (its audio until the respawn is lost and its
+    decoders start over).  A bare decode is not evidence: noise windows score low costs too (4df58f5)."""
+    global _bin_liveness
+    _bin_liveness = bool(on)
+    if _bin_liveness:
+        log.info("ITILA bins: a known CQ call keeps its bin (itila2_bin_liveness)")
+    return _bin_liveness
+
+
+def _copies_known_runner(raw, valid_calls):
+    """True when `raw` has a call next to CQ/TEST that is in valid_calls (MASTER.SCP + add_calls)."""
+    if not valid_calls:
+        return False
+    call = _itila_extract_cq_call(raw, valid_calls)
+    return bool(call) and call in valid_calls
+
+
 _SPOT_RULES = ('off', 'repeat')
 _spot_rule_on = False
 _window_seq = itertools.count(1)   # window keys for spot_rule; never reused, unlike id(bin state)
@@ -3540,6 +3564,8 @@ class _ItilaScanner:
                 st['last_cq_time'] = now
 
             if _spot_rule_on:
+                if _bin_liveness and self._sc and _copies_known_runner(raw, self.valid_calls):
+                    self._sc._lib.itila_sc_mark_evidence(self._sc._h, _ct.c_double(f_hz))
                 _emit_window(st, f_khz, raw, wpm, window_key)
                 continue
 
@@ -3637,6 +3663,8 @@ class _ItilaScanner:
                 st['last_cq_time'] = now
 
             if _spot_rule_on:
+                if _bin_liveness and self._sc and _copies_known_runner(raw, self.valid_calls):
+                    self._sc._lib.itila_sc_mark_evidence(self._sc._h, _ct.c_double(f_hz))
                 _emit_window(st, f_khz, raw, wpm, self._c_batch)
                 continue
 
@@ -7568,6 +7596,7 @@ class SparkGap:
                                    scp_bypass_threshold=int(self.cfg.get('scp_bypass_threshold', 0)),
                                    gate_config=gate_config,
                                    recent_band_config=self.cfg.get('recent_band_floor'))
+        _select_bin_liveness(self.cfg.get('itila2_bin_liveness', False))
         _select_decode_threads(self.cfg.get('itila_decode_threads', 1))
         _select_snr_decoder(self.cfg.get('itila2_snr_decoder', False))
         _select_afc(self.cfg.get('itila2_afc', False))
@@ -8265,6 +8294,11 @@ class SparkGap:
                     if CQ_PATTERNS.search(raw):
                         st['last_cq_time'] = now
                     if _spot_rule_on:
+                        if _bin_liveness and _copies_known_runner(raw, self.tracker.valid_calls):
+                            for m in self.managers:          # the bin is in its own band's scanner only
+                                isc = m._itila_scanner
+                                if isc and isc._sc:
+                                    isc._sc._lib.itila_sc_mark_evidence(isc._sc._h, _ct.c_double(f_hz))
                         _emit_window(st, f_khz, raw, wpm, self._poll_batch)
                         continue
                     call = _itila_extract_cq_call(raw, self.tracker.valid_calls)
@@ -9078,6 +9112,7 @@ def run_file_mode(args, config):
     tracker = SpotTracker(calls, blacklist, respot_interval=0, add_calls=add_calls,
                           scp_bypass_threshold=int(config.get('scp_bypass_threshold', 0)),
                           gate_config=gate_config)
+    _select_bin_liveness(config.get('itila2_bin_liveness', False))
     _select_decode_threads(config.get('itila_decode_threads', 1))
     _select_snr_decoder(config.get('itila2_snr_decoder', False))
     _select_afc(config.get('itila2_afc', False))
