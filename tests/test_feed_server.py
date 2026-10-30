@@ -33,6 +33,7 @@ from feed_server import (
     OP_PING,
     OP_PONG,
     OP_TEXT,
+    DB_PER_UNIT,
     PROTOCOL,
     SPECTRUM_HEADER,
     SPECTRUM_ROWS_HZ,
@@ -336,8 +337,8 @@ def test_tap_floor_follows_edge_rolloff() -> None:
 
 
 
-def test_tap_sends_empty_rows_while_the_radio_is_keyed() -> None:
-    # a keyed Flex: the IQ carries the transmitter; those rows go out empty and the floor holds
+def test_tap_draws_silence_empty_and_the_floor_holds() -> None:
+    # a keyed Flex sends zeros: those rows go out empty, and the noise after them is drawn at the floor
     f = FeedServer({"bind": "127.0.0.1", "port": 0}, HELLO)
     tap = SpectrumTap(f, 96_000, 7_048_000.0)
     rows: list[np.ndarray] = []
@@ -347,16 +348,17 @@ def test_tap_sends_empty_rows_while_the_radio_is_keyed() -> None:
 
     f.publish_spectrum = grab  # type: ignore[method-assign]
     rng = np.random.default_rng(3)
-    noise = lambda k: rng.normal(size=tap.nfft) * k + 1j * rng.normal(size=tap.nfft) * k  # noqa: E731
-    tap.tx = lambda utc: 10.0 <= utc < 20.0
+    noise = lambda: rng.normal(size=tap.nfft) + 1j * rng.normal(size=tap.nfft)  # noqa: E731
     for _ in range(20):
-        tap.row(noise(1), 0.0)
+        tap.row(noise(), 0.0)
     floor = None if tap.floor is None else tap.floor.copy()
-    tap.row(noise(1000), 15.0)                        # the transmitter, 60 dB up
+    for _ in range(5):
+        tap.row(np.zeros(tap.nfft, np.complex64), 0.0)
     assert rows[-1].max() == 0 and len(rows[-1]) == len(rows[0])
     assert floor is not None and tap.floor is not None and np.array_equal(tap.floor, floor)
-    tap.row(noise(1), 25.0)
-    assert 0 < np.mean(rows[-1] == 0) < 1               # after key-up: the band as before
+    tap.row(noise(), 0.0)
+    assert np.median(rows[-1]) * DB_PER_UNIT < 3  # the band as before, not a full-width flash
+
 
 def test_tap_idle_without_clients() -> None:
     f = FeedServer({"bind": "127.0.0.1", "port": 0}, HELLO)
