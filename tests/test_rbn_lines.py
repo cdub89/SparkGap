@@ -27,6 +27,21 @@ def test_a_spot_is_one_archive_row(caplog: Caplog) -> None:
                    "date": "2026-10-21 12:35:54", "speed": "30", "tx_mode": "CW"}
 
 
+def test_an_rtty_spot_is_a_row_with_its_baud(caplog: Caplog) -> None:
+    with caplog.at_level(logging.INFO, logger="sparkgap"):
+        sparkgap._log_rbn_row("n0call", 14083.0, "K1ABC", 26, sparkgap.RTTY_SPOT_BAUD, T, "RTTY")
+    (row,) = _lines(caplog, "RBN: ")
+    got = dict(zip(COLUMNS, next(csv.reader([row]), []), strict=True))
+    assert (got["band"], got["mode"], got["speed"], got["tx_mode"]) == ("20m", "CQ", "45", "RTTY")
+
+
+def test_the_spotter_keeps_a_node_suffix_but_not_the_default() -> None:
+    assert sparkgap._rbn_spotter({"callsign": "WF8Z", "skimmer_suffix": "-1"}) == "WF8Z-1"
+    assert sparkgap._rbn_spotter({"callsign": "WF8Z", "skimmer_suffix": "-#"}) == "WF8Z"
+    assert sparkgap._rbn_spotter({"callsign": "WF8Z"}) == "WF8Z"
+    assert sparkgap._rbn_spotter({"callsign": "WX7V-2", "skimmer_suffix": ""}) == "WX7V-2"
+
+
 def test_a_span_line_holds_every_band(caplog: Caplog) -> None:
     with caplog.at_level(logging.INFO, logger="sparkgap"):
         sparkgap._log_rbn_span(T, [7038.4], 96_000)
