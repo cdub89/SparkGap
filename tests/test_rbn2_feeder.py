@@ -459,9 +459,9 @@ def test_the_validation_level_is_sparkgap_s_own(level: Any, sent: str) -> None:
     assert f.seat_settings({**SEAT, "spot_validation": level}).validation == sent
 
 
-def test_validation_defaults_to_normal_as_in_sparkgap() -> None:
+def test_validation_absent_is_off_as_in_sparkgap() -> None:
     cfg = {k: v for k, v in SEAT.items() if k != "spot_validation"}
-    assert f.seat_settings(cfg).validation == "Normal"
+    assert f.seat_settings(cfg).validation == "Off"
     with pytest.raises(ValueError, match="spot_validation"):
         f.seat_settings({**SEAT, "spot_validation": "high"})
 
@@ -490,3 +490,10 @@ def test_a_failed_thread_stops_the_feeder_with_an_error(caplog: pytest.LogCaptur
     with caplog.at_level("INFO", logger="rbn2_feeder"):
         assert f.wait_for_stop(shutdown, failed) is False
     assert "stopped: a thread failed" in caplog.text
+
+
+def test_the_spotter_keeps_a_node_suffix_but_not_the_default() -> None:
+    assert f.seat_settings({**SEAT, "callsign": "WF8Z", "skimmer_suffix": "-1"}).call == "WF8Z-1"
+    assert f.seat_settings({**SEAT, "callsign": "WF8Z", "skimmer_suffix": "-#"}).call == "WF8Z"
+    assert f.seat_settings({**SEAT, "callsign": "WF8Z"}).call == "WF8Z"
+    assert f.seat_settings({**SEAT, "skimmer_suffix": ""}).call == "N0CALL-2"

@@ -153,15 +153,21 @@ class Seat:
     mode: str  # "dry" or "live"
 
 
+def spotter_id(cfg: dict[str, Any]) -> str:
+    """callsign plus skimmer_suffix, except the default "-#": the run log's RBN row spotter."""
+    suffix = cfg.get("skimmer_suffix", "-#") or ""
+    return (cfg.get("callsign") or "") + ("" if suffix == "-#" else suffix)
+
+
 def seat_settings(cfg: dict[str, Any]) -> Seat:
     """The feeder's settings from a seat config; ValueError says why it can't feed."""
     mode = cfg.get("rbn_upload")
     if mode not in UPLOAD_MODES:
         raise ValueError(f"rbn_upload is {mode!r}: off")
-    call, grid = cfg.get("callsign"), cfg.get("grid")
+    call, grid = spotter_id(cfg), cfg.get("grid")
     if not call or not grid:
         raise ValueError("callsign and grid must both be set")
-    level = cfg.get("spot_validation", "normal")  # sparkgap.py's default
+    level = cfg.get("spot_validation")  # absent is off, as in sparkgap.py
     if level not in VALIDATION and level not in VALIDATION_OFF:
         raise ValueError(f"spot_validation is {level!r}: not a level sparkgap.py knows")
     return Seat(
@@ -464,7 +470,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description="SparkGap's RBN feeder (librbn2_auth)")
     p.add_argument("--config", required=True, help="the seat config, config/<seat>.local.json")
     p.add_argument("--rbn-url", default=base.DEFAULT_RBN_URL)
-    p.add_argument("--blacklist", default="blacklist.txt")
+    p.add_argument("--blacklist", default=str(Path(__file__).resolve().parent / "blacklist.txt"))
     p.add_argument("--dry-run", action="store_true", help="post nothing, whatever rbn_upload says")
     p.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     a = p.parse_args()
