@@ -2012,25 +2012,42 @@ def _select_afc(on):
 _bin_liveness = False   # config itila2_bin_liveness: a window that copies a known runner keeps its bin
 
 
-def _select_bin_liveness(on):
+_liveness_listed = None   # the seat's spot_validation_calls list (rbn, rbn+skcc): known calls for liveness too
+
+
+def _select_bin_liveness(on, listed=None):
     """Config key itila2_bin_liveness (default off): mark the scanner bin live (itila_sc_mark_evidence)
     when a decoded window has an SCP call next to CQ/TEST.  The scanner evicts any bin with no evidence
     for 300 s, and on the spot-rule paths nothing else marks it, so without this every bin, a steady
     runner's too, is evicted and respawned every 5 minutes (its audio until the respawn is lost and its
     decoders start over).  A bare decode is not evidence: noise windows score low costs too (4df58f5)."""
-    global _bin_liveness
+    global _bin_liveness, _liveness_listed
     _bin_liveness = bool(on)
+    _liveness_listed = listed if _bin_liveness else None
     if _bin_liveness:
-        log.info("ITILA bins: a known CQ call keeps its bin (itila2_bin_liveness)")
+        log.info("ITILA bins: a known CQ call keeps its bin (itila2_bin_liveness)%s",
+                 " (MASTER.SCP, add_calls and the spot_validation_calls list)" if listed else "")
     return _bin_liveness
 
 
+def _liveness_list(config, tracker):
+    """The seat's spot_validation_calls list for bin liveness, when liveness is on and a list is set."""
+    if not config.get('itila2_bin_liveness') or not config.get('spot_validation_calls'):
+        return None
+    return _validation_list(config, tracker, config.get('spot_validation_calls'))
+
+
 def _copies_known_runner(raw, valid_calls):
-    """True when `raw` has a call next to CQ/TEST that is in valid_calls (MASTER.SCP + add_calls)."""
-    if not valid_calls:
+    """True when `raw` has a call next to CQ/TEST that is known: in valid_calls (MASTER.SCP + add_calls),
+    by itself or by its base call (W1AW/8 as W1AW), or on the seat's spot_validation_calls list."""
+    if not valid_calls and not _liveness_listed:
         return False
     call = _itila_extract_cq_call(raw, valid_calls)
-    return bool(call) and call in valid_calls
+    if not call:
+        return False
+    if valid_calls and (call in valid_calls or max(call.split('/'), key=len) in valid_calls):
+        return True
+    return bool(_liveness_listed and _liveness_listed(call))
 
 
 _SPOT_RULES = ('off', 'repeat')
@@ -7596,7 +7613,7 @@ class SparkGap:
                                    scp_bypass_threshold=int(self.cfg.get('scp_bypass_threshold', 0)),
                                    gate_config=gate_config,
                                    recent_band_config=self.cfg.get('recent_band_floor'))
-        _select_bin_liveness(self.cfg.get('itila2_bin_liveness', False))
+        _select_bin_liveness(self.cfg.get('itila2_bin_liveness', False), _liveness_list(self.cfg, self.tracker))
         _select_decode_threads(self.cfg.get('itila_decode_threads', 1))
         _select_snr_decoder(self.cfg.get('itila2_snr_decoder', False))
         _select_afc(self.cfg.get('itila2_afc', False))
@@ -9112,7 +9129,7 @@ def run_file_mode(args, config):
     tracker = SpotTracker(calls, blacklist, respot_interval=0, add_calls=add_calls,
                           scp_bypass_threshold=int(config.get('scp_bypass_threshold', 0)),
                           gate_config=gate_config)
-    _select_bin_liveness(config.get('itila2_bin_liveness', False))
+    _select_bin_liveness(config.get('itila2_bin_liveness', False), _liveness_list(config, tracker))
     _select_decode_threads(config.get('itila_decode_threads', 1))
     _select_snr_decoder(config.get('itila2_snr_decoder', False))
     _select_afc(config.get('itila2_afc', False))
