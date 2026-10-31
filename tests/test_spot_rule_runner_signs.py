@@ -31,7 +31,7 @@ def _feed(rule: RepeatSpotRule, texts: tuple[str, ...],
 def test_runner_and_worked_stations_of_one_window() -> None:
     assert runner_signs_of("JH7ME 5NN OH7ME 5NN KH8A UP E") == ({"KH8A"}, {"JH7ME", "OH7ME"})
     assert runner_signs_of("E 3I1EIX 5NN TU UP KH8A UP") == ({"KH8A"}, {"3I1EIX"})
-    assert runner_signs_of("TU KH8A") == ({"KH8A"}, set())
+    assert runner_signs_of("TU KH8A") == (set(), set())   # TU <call>: a contest's next caller
 
 
 def test_no_runner_sign_without_up_or_tu_before_the_call() -> None:
@@ -46,13 +46,13 @@ def test_split_dx_that_never_sends_cq_is_spotted_with_runner_signs_only() -> Non
     assert spots == [("KH8A", FREQ)]
 
 
-def test_one_window_of_runner_signs_is_not_enough() -> None:
+def test_one_window_of_runner_signs_is_not_enough_for_tier_two() -> None:
     rule = RepeatSpotRule(_tier2, runner_signs=True)
     assert _feed(rule, ("JH7ME 5NN OH7ME 5NN KH8A UP E", "E E T", "E I")) == []
 
 
 def test_a_station_sent_a_report_is_never_the_runner() -> None:
-    texts = ("JH7ME 5NN TU UP KH8A UP", "TU JH7ME", "TU JH7ME", "TU JH7ME")
+    texts = ("JH7ME 5NN TU UP KH8A UP", "JH7ME UP", "JH7ME UP", "JH7ME UP")
     spots = _feed(RepeatSpotRule(_tier2, runner_signs=True), texts)
     assert all(call != "JH7ME" for call, _ in spots)
 
@@ -66,8 +66,15 @@ def test_runner_signs_at_another_frequency_do_not_add_up() -> None:
 
 
 def test_cq_runners_spot_as_before() -> None:
-    texts = ("CQ CWT K0TQ", "TU K0TQ UP", "CQ CWT K0TQ")
+    texts = ("CQ CWT K0TQ", "TU KK4E KK4E", "CQ CWT K0TQ", "TU KK4E KK4E")
     off = _feed(RepeatSpotRule(_tier2, lockon=True, cq_groups=True), texts, 14030.0)
     rule = RepeatSpotRule(_tier2, lockon=True, cq_groups=True, runner_signs=True)
     on = _feed(rule, texts, 14030.0)
     assert on == off == [("K0TQ", 14030.0)]
+
+
+def test_two_windows_of_runner_signs_spot_a_rare_runner() -> None:
+    """The 11:54Z CW Skimmer file: KH8A sends his own call in only two windows in 13 minutes."""
+    texts = ("E KH8A UP ET I U II", "I K3RA 5NN TU UP NE1Q 5NN K1ZZ TU UP",
+             "AP EH N N /E KH8A UP E EEE E E EE R6FS 5NN TU")
+    assert _feed(RepeatSpotRule(_tier2, runner_signs=True), texts) == [("KH8A", FREQ)]

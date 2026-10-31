@@ -51,9 +51,10 @@ first clean CQ. Needs cq_groups. Whether CW Skimmer counts this way, and whether
 is open (hotairfred/SparkGap#43); on 7 recordings it added 101 calls, 89 confirmed.
 
 Runner signs (runner_signs; off by default; cdub89/SparkGap#37): split DX often never sends CQ
-(JH7ME 5NN TU UP KH8A UP). A call sent as the runner (KH8A UP, TU KH8A) near one frequency in
-two or more windows counts as a copy in each such window from the second on, as a CQ group
-would; a call sent a report there (JH7ME 5NN) never does. It adds copies only: it owns nothing.
+(JH7ME 5NN TU UP KH8A UP). A call followed by UP counts as a copy, as a CQ group would, so it
+spots on tier(call) such windows; a call sent a report near that frequency (JH7ME 5NN) never
+counts. TU <call> is no sign (in a contest the next caller follows TU at once). It adds copies
+only: it owns nothing.
 """
 
 import re
@@ -331,9 +332,10 @@ def _split_signoff(toks: list[str], i: int) -> int | None:
 
 
 def runner_signs_of(text: str, gluek: bool = False) -> tuple[set[str], set[str]]:
-    """Runner signs of one decoded text (runner_signs): the calls sent as a frequency's runner,
-    KH8A UP or TU KH8A, and the calls sent a report, JH7ME 5NN, which are the stations being
-    worked and never the runner. A DX working split never sends CQ: JH7ME 5NN TU UP KH8A UP."""
+    """Runner signs of one decoded text (runner_signs): the calls sent as a split runner, KH8A UP,
+    and the calls sent a report, JH7ME 5NN, which are the stations being worked and never the
+    runner. A DX working split never sends CQ: JH7ME 5NN TU UP KH8A UP. TU <call> is no sign:
+    in a contest the next caller follows the runner's TU at once (TU KK4E KK4E)."""
     toks = tokens(text, gluek)
     runners: set[str] = set()
     worked: set[str] = set()
@@ -343,7 +345,7 @@ def runner_signs_of(text: str, gluek: bool = False) -> tuple[set[str], set[str]]
         nxt = toks[i + 1] if i + 1 < len(toks) else ""
         if _RST_RE.match(nxt):
             worked.add(t)
-        elif nxt == "UP" or (i > 0 and toks[i - 1] == "TU"):
+        elif nxt == "UP":
             runners.add(t)
     return runners - worked, worked
 
@@ -520,8 +522,7 @@ class RepeatSpotRule:
         self.gluek = gluek                      # tokens(): CALL+K reads as CALL K, see tokens()
         self.norival = norival                  # score(): no rival penalty for a listed call from an unlisted rival
         self.strongest_db = strongest_db        # a copy this many dB stronger elsewhere in the band: no spot here
-        self.runner_signs = runner_signs        # KH8A UP in two windows: KH8A runs here, see _runner_copies()
-        self._signs: deque[tuple[float, int, str, float]] = deque()   # runner_signs: (time, window, call, freq)
+        self.runner_signs = runner_signs        # KH8A UP: KH8A runs here, see _runner_copies()
         self._worked: deque[tuple[float, str, float]] = deque()       # runner_signs: (time, call, freq)
         self._owners: list[list] = []                           # lock-on: [call, freq_khz, last seen]
         self._copies: deque[_Copy] = deque()                    # oldest first
@@ -727,26 +728,19 @@ class RepeatSpotRule:
 
     def _runner_copies(self, window: int, freq_khz: float, text: str, now: float,
                        calls: list[str]) -> list[str]:
-        """runner_signs: calls this window counts as copies of without a CQ: a call with runner
-        signs near freq_khz in this and at least one earlier window, never sent a report there."""
+        """runner_signs: calls this window counts as copies of without a CQ: a call sent as the
+        runner (KH8A UP), never sent a report near freq_khz. The tier or the validation score
+        still needs more than one window."""
         runners, worked = runner_signs_of(text, self.gluek)
         self._worked.extend((now, c, freq_khz) for c in worked)
-        self._signs.extend((now, window, c, freq_khz) for c in runners)
-        out = []
-        for c in runners:
-            if c in calls or any(w == c and abs(f - freq_khz) <= NEAR_KHZ for _, w, f in self._worked):
-                continue
-            if len({w for _, w, s, f in self._signs if s == c and abs(f - freq_khz) <= NEAR_KHZ}) >= 2:
-                out.append(c)
-        return out
+        return [c for c in runners if c not in calls
+                and not any(w == c and abs(f - freq_khz) <= NEAR_KHZ for _, w, f in self._worked)]
 
     def _expire(self, now: float) -> None:
         cutoff = now - REPEAT_S
         while self._copies and self._copies[0].time < cutoff:
             c = self._copies.popleft()
             self._seen.discard((c.window, c.call, c.nth))
-        while self._signs and self._signs[0][0] < cutoff:
-            self._signs.popleft()
         while self._worked and self._worked[0][0] < cutoff:
             self._worked.popleft()
         if now - self._pruned >= 60.0:
