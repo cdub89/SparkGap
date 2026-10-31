@@ -49,6 +49,11 @@ Doubled calls (doubled; off by default): a call sent twice inside one CQ group
 (CQ K8TLJ K8TLJ, CQ CQ DE K8TLJ K8TLJ K) counts as two copies, so a common call spots on its
 first clean CQ. Needs cq_groups. Whether CW Skimmer counts this way, and whether RBN wants it,
 is open (hotairfred/SparkGap#43); on 7 recordings it added 101 calls, 89 confirmed.
+
+Runner signs (runner_signs; off by default; cdub89/SparkGap#37): split DX often never sends CQ
+(JH7ME 5NN TU UP KH8A UP). A call sent as the runner (KH8A UP, TU KH8A) near one frequency in
+two or more windows counts as a copy in each such window from the second on, as a CQ group
+would; a call sent a report there (JH7ME 5NN) never does. It adds copies only: it owns nothing.
 """
 
 import re
@@ -325,6 +330,24 @@ def _split_signoff(toks: list[str], i: int) -> int | None:
     return None
 
 
+def runner_signs_of(text: str, gluek: bool = False) -> tuple[set[str], set[str]]:
+    """Runner signs of one decoded text (runner_signs): the calls sent as a frequency's runner,
+    KH8A UP or TU KH8A, and the calls sent a report, JH7ME 5NN, which are the stations being
+    worked and never the runner. A DX working split never sends CQ: JH7ME 5NN TU UP KH8A UP."""
+    toks = tokens(text, gluek)
+    runners: set[str] = set()
+    worked: set[str] = set()
+    for i, t in enumerate(toks):
+        if CALL_RE.match(t) is None:
+            continue
+        nxt = toks[i + 1] if i + 1 < len(toks) else ""
+        if _RST_RE.match(nxt):
+            worked.add(t)
+        elif nxt == "UP" or (i > 0 and toks[i - 1] == "TU"):
+            runners.add(t)
+    return runners - worked, worked
+
+
 def runner_groups(text: str, every: bool = False, qualifiers: bool = False,
                   doubled: bool = False, split_up: bool = False, contest_words: bool = False,
                   cq_repeats: bool = False, stray: bool = False, words: frozenset[str] | None = None,
@@ -459,7 +482,7 @@ class RepeatSpotRule:
                  owned_two_windows: bool = False, lock_idle_s: float = LOCK_IDLE_S,
                  owner_listed: bool = False, la1d: bool = False, gluek: bool = False,
                  norival: bool = False, strongest_db: float | None = None,
-                 takeover_idle_s: float | None = None) -> None:
+                 takeover_idle_s: float | None = None, runner_signs: bool = False) -> None:
         if validation is not None and validation not in VALIDATION:
             raise ValueError(f"validation must be one of {list(VALIDATION)}, got {validation!r}")
         if listed_by not in _WEIGHTS_LISTED:
@@ -497,6 +520,9 @@ class RepeatSpotRule:
         self.gluek = gluek                      # tokens(): CALL+K reads as CALL K, see tokens()
         self.norival = norival                  # score(): no rival penalty for a listed call from an unlisted rival
         self.strongest_db = strongest_db        # a copy this many dB stronger elsewhere in the band: no spot here
+        self.runner_signs = runner_signs        # KH8A UP in two windows: KH8A runs here, see _runner_copies()
+        self._signs: deque[tuple[float, int, str, float]] = deque()   # runner_signs: (time, window, call, freq)
+        self._worked: deque[tuple[float, str, float]] = deque()       # runner_signs: (time, call, freq)
         self._owners: list[list] = []                           # lock-on: [call, freq_khz, last seen]
         self._copies: deque[_Copy] = deque()                    # oldest first
         self._seen: set[tuple[int, str, int]] = set()           # (window, call, nth) in _copies
@@ -534,6 +560,8 @@ class RepeatSpotRule:
                                    contest_words=self.contest_words, cq_repeats=self.cq_repeats,
                                    stray=self.stray, words=self.words, grid=self.grid,
                                    la1d=self.la1d, gluek=self.gluek))
+        if self.runner_signs:
+            calls = calls + self._runner_copies(window, freq_khz, text, now, calls)
         for call, n in Counter(calls).items():
             new = 0
             for nth in range(n):
@@ -697,11 +725,30 @@ class RepeatSpotRule:
                 self._own(owner, freq_khz, now)
         return calls
 
+    def _runner_copies(self, window: int, freq_khz: float, text: str, now: float,
+                       calls: list[str]) -> list[str]:
+        """runner_signs: calls this window counts as copies of without a CQ: a call with runner
+        signs near freq_khz in this and at least one earlier window, never sent a report there."""
+        runners, worked = runner_signs_of(text, self.gluek)
+        self._worked.extend((now, c, freq_khz) for c in worked)
+        self._signs.extend((now, window, c, freq_khz) for c in runners)
+        out = []
+        for c in runners:
+            if c in calls or any(w == c and abs(f - freq_khz) <= NEAR_KHZ for _, w, f in self._worked):
+                continue
+            if len({w for _, w, s, f in self._signs if s == c and abs(f - freq_khz) <= NEAR_KHZ}) >= 2:
+                out.append(c)
+        return out
+
     def _expire(self, now: float) -> None:
         cutoff = now - REPEAT_S
         while self._copies and self._copies[0].time < cutoff:
             c = self._copies.popleft()
             self._seen.discard((c.window, c.call, c.nth))
+        while self._signs and self._signs[0][0] < cutoff:
+            self._signs.popleft()
+        while self._worked and self._worked[0][0] < cutoff:
+            self._worked.popleft()
         if now - self._pruned >= 60.0:
             self._pruned = now
             self._last_spot = {k: v for k, v in self._last_spot.items() if v[0] >= cutoff}

@@ -85,6 +85,7 @@ def _gui_settings(cfg, sample_rate):
         'spot_rule_cq_repeats': repeat and bool(cfg.get('spot_rule_cq_repeats', False)),
         'spot_rule_doubled_calls': repeat and bool(cfg.get('spot_rule_doubled_calls', False)),
         'spot_rule_split_up': repeat and bool(cfg.get('spot_rule_split_up', False)),
+        'spot_rule_runner_signs': repeat and bool(cfg.get('spot_rule_runner_signs', False)),
         'spot_rule_fragments': (cfg.get('spot_rule_fragments') or 'off') if repeat else 'off',
         'spot_rule_owner_cell': repeat and bool(cfg.get('spot_rule_owner_cell', False)),
         'spot_rule_owned_two_windows': repeat and bool(cfg.get('spot_rule_owned_two_windows', False)),
@@ -2195,7 +2196,8 @@ def _make_spot_rule(config, tracker, local=None):
         takeover_idle_s=(float(config['spot_rule_takeover_idle_s'])
                          if config.get('spot_rule_takeover_idle_s') is not None else None),
         owner_cell=bool(config.get('spot_rule_owner_cell', False)),
-        owned_two_windows=bool(config.get('spot_rule_owned_two_windows', False)))
+        owned_two_windows=bool(config.get('spot_rule_owned_two_windows', False)),
+        runner_signs=bool(config.get('spot_rule_runner_signs', False)))   # cdub89/SparkGap#37
 
 def _get_itila_lib():
     global _itila_lib
