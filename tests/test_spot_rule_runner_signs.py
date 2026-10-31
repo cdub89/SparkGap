@@ -96,3 +96,10 @@ def test_a_station_calling_on_the_dx_frequency_never_anchors() -> None:
     texts = ("JH7ME 5NN TU UP KH8A UP", "VE3EJ VE3EJ", "VE3EJ VE3EJ", "VE3EJ")
     spots = _feed(RepeatSpotRule(_tier2, runner_signs=True), texts)
     assert all(call != "VE3EJ" for call, _ in spots)
+
+
+def test_a_bare_up_before_a_call_is_no_runner_sign() -> None:
+    """20m CWT 10-06: noise read as UP in front of a caller sending his call twice."""
+    assert runner_signs_of("WV OY E W9G? G U? UP E KD2SC") == (set(), set())
+    texts = ("KD2SC KD2SC E KD2SC I", "WV OY E W9G? G U? UP E KD2SC", "KD2SC KD2SC W")
+    assert _feed(RepeatSpotRule(_tier2, runner_signs=True), texts, 14020.5) == []

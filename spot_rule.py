@@ -51,7 +51,7 @@ first clean CQ. Needs cq_groups. Whether CW Skimmer counts this way, and whether
 is open (hotairfred/SparkGap#43); on 7 recordings it added 101 calls, 89 confirmed.
 
 Runner signs (runner_signs; off by default; cdub89/SparkGap#37): split DX often never sends CQ
-(JH7ME 5NN TU UP KH8A UP). KH8A UP or UP KH8A makes KH8A the split runner of that frequency
+(JH7ME 5NN TU UP KH8A UP). KH8A UP or TU UP KH8A makes KH8A the split runner of that frequency
 for REPEAT_S; each window there holding KH8A whole counts as a copy, as a CQ group would, even
 with its UP garbled (KH8A TP), so it spots on tier(call) such windows. A call sent a report
 near that frequency (JH7ME 5NN) never counts, and a station calling on the DX's frequency never
@@ -89,7 +89,7 @@ _STOP_WORDS = frozenset({"TU", "DE", "CQ", "TEST", "CWT", "SST", "MST", "QRZ", "
 _PROSIGNS = frozenset({"K", "AR", "KN", "BK", "SK", "TU", "EE", "DX", "UP", "NA", "GM", "GE", "GA",
                        "GN", "ES", "HW", "CL", "OK", "RR", "UR", "OP", "VY", "FB", "HI"})
 STRAY_MAX = 2                 # letters after a call that may be the rest of it
-UP_NOISE_MAX = 2              # runner_signs: stray letters allowed between UP and the call after it
+UP_NOISE_MAX = 2              # runner_signs: stray letters allowed between TU UP and the call after it
 _NOISE_LETTERS = frozenset("ETIS?")                          # la1d: noise between CQ and the call
 _SIGNOFF = frozenset({"K", "AR", "KN", "SK", "BK", "TU"})    # la1d: ends the search for the sender
 
@@ -336,7 +336,8 @@ def _split_signoff(toks: list[str], i: int) -> int | None:
 
 def runner_signs_of(text: str, gluek: bool = False) -> tuple[set[str], set[str]]:
     """Runner signs of one decoded text (runner_signs): the calls sent as a split runner, KH8A UP
-    or UP KH8A (a stray letter between allowed: TU UP E KH8A), and the calls sent a report,
+    or TU UP KH8A (stray letters after UP allowed: TU UP E KH8A; a bare UP before a call is
+    noise as often as not: G U? UP E KD2SC), and the calls sent a report,
     JH7ME 5NN, which are the stations being worked and never the runner. A DX working split
     never sends CQ: JH7ME 5NN TU UP KH8A UP. TU <call> is no sign: in a contest the next caller
     follows the runner's TU at once (TU KK4E KK4E)."""
@@ -347,10 +348,10 @@ def runner_signs_of(text: str, gluek: bool = False) -> tuple[set[str], set[str]]
         if CALL_RE.match(t) is None:
             continue
         nxt = toks[i + 1] if i + 1 < len(toks) else ""
-        before = [x for x in toks[max(0, i - 1 - UP_NOISE_MAX):i] if x not in _NOISE_LETTERS]
+        before = [x for x in toks[max(0, i - 2 - UP_NOISE_MAX):i] if x not in _NOISE_LETTERS]
         if _RST_RE.match(nxt):
             worked.add(t)
-        elif nxt == "UP" or (before and before[-1] == "UP"):
+        elif nxt == "UP" or before[-2:] == ["TU", "UP"]:
             runners.add(t)
     return runners - worked, worked
 
