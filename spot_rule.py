@@ -51,10 +51,12 @@ first clean CQ. Needs cq_groups. Whether CW Skimmer counts this way, and whether
 is open (hotairfred/SparkGap#43); on 7 recordings it added 101 calls, 89 confirmed.
 
 Runner signs (runner_signs; off by default; cdub89/SparkGap#37): split DX often never sends CQ
-(JH7ME 5NN TU UP KH8A UP). A call followed by UP counts as a copy, as a CQ group would, so it
-spots on tier(call) such windows; a call sent a report near that frequency (JH7ME 5NN) never
-counts. TU <call> is no sign (in a contest the next caller follows TU at once). It adds copies
-only: it owns nothing.
+(JH7ME 5NN TU UP KH8A UP). KH8A UP or UP KH8A makes KH8A the split runner of that frequency
+for REPEAT_S; each window there holding KH8A whole counts as a copy, as a CQ group would, even
+with its UP garbled (KH8A TP), so it spots on tier(call) such windows. A call sent a report
+near that frequency (JH7ME 5NN) never counts, and a station calling on the DX's frequency never
+gets a runner sign. TU <call> is no sign (in a contest the next caller follows TU at once). It
+adds copies only: it owns nothing.
 """
 
 import re
@@ -87,6 +89,7 @@ _STOP_WORDS = frozenset({"TU", "DE", "CQ", "TEST", "CWT", "SST", "MST", "QRZ", "
 _PROSIGNS = frozenset({"K", "AR", "KN", "BK", "SK", "TU", "EE", "DX", "UP", "NA", "GM", "GE", "GA",
                        "GN", "ES", "HW", "CL", "OK", "RR", "UR", "OP", "VY", "FB", "HI"})
 STRAY_MAX = 2                 # letters after a call that may be the rest of it
+UP_NOISE_MAX = 2              # runner_signs: stray letters allowed between UP and the call after it
 _NOISE_LETTERS = frozenset("ETIS?")                          # la1d: noise between CQ and the call
 _SIGNOFF = frozenset({"K", "AR", "KN", "SK", "BK", "TU"})    # la1d: ends the search for the sender
 
@@ -332,10 +335,11 @@ def _split_signoff(toks: list[str], i: int) -> int | None:
 
 
 def runner_signs_of(text: str, gluek: bool = False) -> tuple[set[str], set[str]]:
-    """Runner signs of one decoded text (runner_signs): the calls sent as a split runner, KH8A UP,
-    and the calls sent a report, JH7ME 5NN, which are the stations being worked and never the
-    runner. A DX working split never sends CQ: JH7ME 5NN TU UP KH8A UP. TU <call> is no sign:
-    in a contest the next caller follows the runner's TU at once (TU KK4E KK4E)."""
+    """Runner signs of one decoded text (runner_signs): the calls sent as a split runner, KH8A UP
+    or UP KH8A (a stray letter between allowed: TU UP E KH8A), and the calls sent a report,
+    JH7ME 5NN, which are the stations being worked and never the runner. A DX working split
+    never sends CQ: JH7ME 5NN TU UP KH8A UP. TU <call> is no sign: in a contest the next caller
+    follows the runner's TU at once (TU KK4E KK4E)."""
     toks = tokens(text, gluek)
     runners: set[str] = set()
     worked: set[str] = set()
@@ -343,9 +347,10 @@ def runner_signs_of(text: str, gluek: bool = False) -> tuple[set[str], set[str]]
         if CALL_RE.match(t) is None:
             continue
         nxt = toks[i + 1] if i + 1 < len(toks) else ""
+        before = [x for x in toks[max(0, i - 1 - UP_NOISE_MAX):i] if x not in _NOISE_LETTERS]
         if _RST_RE.match(nxt):
             worked.add(t)
-        elif nxt == "UP":
+        elif nxt == "UP" or (before and before[-1] == "UP"):
             runners.add(t)
     return runners - worked, worked
 
@@ -524,6 +529,7 @@ class RepeatSpotRule:
         self.strongest_db = strongest_db        # a copy this many dB stronger elsewhere in the band: no spot here
         self.runner_signs = runner_signs        # KH8A UP: KH8A runs here, see _runner_copies()
         self._worked: deque[tuple[float, str, float]] = deque()       # runner_signs: (time, call, freq)
+        self._runners: deque[tuple[float, str, float]] = deque()      # runner_signs: (time, call, freq)
         self._owners: list[list] = []                           # lock-on: [call, freq_khz, last seen]
         self._copies: deque[_Copy] = deque()                    # oldest first
         self._seen: set[tuple[int, str, int]] = set()           # (window, call, nth) in _copies
@@ -728,13 +734,20 @@ class RepeatSpotRule:
 
     def _runner_copies(self, window: int, freq_khz: float, text: str, now: float,
                        calls: list[str]) -> list[str]:
-        """runner_signs: calls this window counts as copies of without a CQ: a call sent as the
-        runner (KH8A UP), never sent a report near freq_khz. The tier or the validation score
-        still needs more than one window."""
+        """runner_signs: calls this window counts as copies of without a CQ. A runner sign (KH8A UP)
+        makes the call the split runner near freq_khz for REPEAT_S; every window there holding
+        the call whole then counts, even with its UP garbled (KH8A TP). A call sent a report
+        near freq_khz never counts. The tier or the validation score still needs more windows."""
         runners, worked = runner_signs_of(text, self.gluek)
         self._worked.extend((now, c, freq_khz) for c in worked)
-        return [c for c in runners if c not in calls
-                and not any(w == c and abs(f - freq_khz) <= NEAR_KHZ for _, w, f in self._worked)]
+        self._runners.extend((now, c, freq_khz) for c in runners)
+        near = {c for _, c, f in self._runners if abs(f - freq_khz) <= NEAR_KHZ}
+        out: list[str] = []
+        for c in tokens(text, self.gluek):
+            if (c in near and c not in calls and c not in out
+                    and not any(w == c and abs(f - freq_khz) <= NEAR_KHZ for _, w, f in self._worked)):
+                out.append(c)
+        return out
 
     def _expire(self, now: float) -> None:
         cutoff = now - REPEAT_S
@@ -743,6 +756,8 @@ class RepeatSpotRule:
             self._seen.discard((c.window, c.call, c.nth))
         while self._worked and self._worked[0][0] < cutoff:
             self._worked.popleft()
+        while self._runners and self._runners[0][0] < cutoff:
+            self._runners.popleft()
         if now - self._pruned >= 60.0:
             self._pruned = now
             self._last_spot = {k: v for k, v in self._last_spot.items() if v[0] >= cutoff}

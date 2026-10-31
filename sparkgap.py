@@ -7698,8 +7698,9 @@ class SparkGap:
         _select_bin_liveness(self.cfg.get('itila2_bin_liveness', False), _liveness_list(self.cfg, self.tracker))
         if _select_spot_rule(_spot_rule_name(self.cfg)):
             self.tracker.spot_rule = _make_spot_rule(self.cfg, self.tracker)
-            log.info("Spot rule: lock-on, CQ groups, CQ qualifiers%s",
-                     ", split runs" if self.tracker.spot_rule.split_runs else "")
+            log.info("Spot rule: lock-on, CQ groups, CQ qualifiers%s%s",
+                     ", split runs" if self.tracker.spot_rule.split_runs else "",
+                     ", runner signs" if self.tracker.spot_rule.runner_signs else "")
         # If the gate is configured (peers listed), start the peer-tee
         # threads regardless of whether the gate is currently on. The
         # support map is cheap to maintain and we want it warm if the
@@ -9219,8 +9220,9 @@ def run_file_mode(args, config):
     if _select_spot_rule(_spot_rule_name(config)):
         _trk = tracker
         _trk.spot_rule = _make_spot_rule(config, tracker)
-        log.info("Spot rule: lock-on, CQ groups, CQ qualifiers%s",
-                 ", split runs" if _trk.spot_rule.split_runs else "")
+        log.info("Spot rule: lock-on, CQ groups, CQ qualifiers%s%s",
+                 ", split runs" if _trk.spot_rule.split_runs else "",
+                 ", runner signs" if _trk.spot_rule.runner_signs else "")
         audio_now = [args.start_min * 60]
         _trk.clock = lambda: audio_now[0]      # repeats counted in audio time, as live
 

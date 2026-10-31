@@ -34,8 +34,9 @@ def test_runner_and_worked_stations_of_one_window() -> None:
     assert runner_signs_of("TU KH8A") == (set(), set())   # TU <call>: a contest's next caller
 
 
-def test_no_runner_sign_without_up_or_tu_before_the_call() -> None:
-    assert runner_signs_of("KG5M 5NE E TU UP E E KH8A") == (set(), set())
+def test_runner_sign_needs_up_next_to_the_call() -> None:
+    assert runner_signs_of("KG5M 5NE E TU UP E E KH8A") == ({"KH8A"}, set())
+    assert runner_signs_of("KH8A TP V BZO 5? TU S F") == (set(), set())
     assert runner_signs_of("CQ CWT K0TQ") == (set(), set())
 
 
@@ -78,3 +79,20 @@ def test_two_windows_of_runner_signs_spot_a_rare_runner() -> None:
     texts = ("E KH8A UP ET I U II", "I K3RA 5NN TU UP NE1Q 5NN K1ZZ TU UP",
              "AP EH N N /E KH8A UP E EEE E E EE R6FS 5NN TU")
     assert _feed(RepeatSpotRule(_tier2, runner_signs=True), texts) == [("KH8A", FREQ)]
+
+
+def test_up_before_the_call_with_a_stray_letter_is_a_runner_sign() -> None:
+    assert runner_signs_of("HNN TU UP E KH8A UAN") == ({"KH8A"}, set())
+
+
+def test_an_anchored_runner_counts_with_its_up_garbled() -> None:
+    """Lake2 live, 13:05 to 13:16Z, digital QRM on 7002: the UP after KH8A rarely survives."""
+    texts = ("HNN TU UP E KH8A UAN", "KH8A IEER IETA9K I NN I T RM9C S NN",
+             "KH8A TP V BZO 5? TU S F")
+    assert _feed(RepeatSpotRule(_tier2, runner_signs=True), texts) == [("KH8A", FREQ)]
+
+
+def test_a_station_calling_on_the_dx_frequency_never_anchors() -> None:
+    texts = ("JH7ME 5NN TU UP KH8A UP", "VE3EJ VE3EJ", "VE3EJ VE3EJ", "VE3EJ")
+    spots = _feed(RepeatSpotRule(_tier2, runner_signs=True), texts)
+    assert all(call != "VE3EJ" for call, _ in spots)
