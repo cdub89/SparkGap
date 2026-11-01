@@ -1,5 +1,5 @@
-"""itila2_parallel_decode keeps memory flat: the decode pool's threads live with their scanner and each
-thread's decoder scratch is freed when it exits (cdub89/SparkGap#35)."""
+"""itila2_parallel_decode keeps memory flat: the decode pool's threads live with their scanner and
+each thread's decoder scratch is freed when it exits (cdub89/SparkGap#35)."""
 
 from pathlib import Path
 
@@ -7,7 +7,7 @@ import pytest
 
 from tests.test_itila2_parallel_decode import DEC, SC, _run
 
-GROWTH_MB_MAX = 4.0   # over four runs after warm-up; the leak this guards against grew 13 MB per run
+GROWTH_MB_MAX = 4.0   # over four runs after warm-up; the leak guarded against grew 13 MB per run
 
 
 def _rss_mb() -> float:
@@ -17,7 +17,8 @@ def _rss_mb() -> float:
     raise AssertionError("no VmRSS")
 
 
-@pytest.mark.skipif(not (Path(DEC).exists() and Path(SC).exists()), reason="libitila2 libraries not built")
+@pytest.mark.skipif(not (Path(DEC).exists() and Path(SC).exists()),
+                    reason="libitila2 libraries not built")
 def test_repeated_scanners_with_parallel_decode_do_not_grow() -> None:
     for _ in range(2):          # warm-up: the C library's per-thread arenas settle
         _run(4, True)

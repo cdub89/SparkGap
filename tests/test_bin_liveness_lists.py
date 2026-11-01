@@ -1,5 +1,5 @@
-"""Bin liveness counts more calls as known: a portable call by its base call, and calls on the seat's
-spot_validation_calls list (rbn, rbn+skcc) beside MASTER.SCP and add_calls."""
+"""Bin liveness counts more calls as known: a portable call by its base call, and calls on the
+seat's spot_validation_calls list (rbn, rbn+skcc) beside MASTER.SCP and add_calls."""
 
 import pytest
 
