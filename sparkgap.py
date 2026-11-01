@@ -87,6 +87,7 @@ def _gui_settings(cfg, sample_rate):
         'spot_rule_split_up': repeat and bool(cfg.get('spot_rule_split_up', False)),
         'spot_rule_runner_signs': repeat and bool(cfg.get('spot_rule_runner_signs', False)),
         'spot_rule_window_join': repeat and bool(cfg.get('spot_rule_window_join', False)),
+        'spot_rule_de_rejoin': repeat and bool(cfg.get('spot_rule_de_rejoin', False)),
         'spot_rule_fragments': (cfg.get('spot_rule_fragments') or 'off') if repeat else 'off',
         'spot_rule_owner_cell': repeat and bool(cfg.get('spot_rule_owner_cell', False)),
         'spot_rule_owned_two_windows': repeat and bool(cfg.get('spot_rule_owned_two_windows', False)),
@@ -2214,7 +2215,8 @@ def _make_spot_rule(config, tracker, local=None):
         owner_cell=bool(config.get('spot_rule_owner_cell', False)),
         owned_two_windows=bool(config.get('spot_rule_owned_two_windows', False)),
         runner_signs=bool(config.get('spot_rule_runner_signs', False)),   # cdub89/SparkGap#37
-        window_join=bool(config.get('spot_rule_window_join', False)))   # cdub89/SparkGap#37
+        window_join=bool(config.get('spot_rule_window_join', False)),   # cdub89/SparkGap#37
+        de_rejoin=bool(config.get('spot_rule_de_rejoin', False)))   # cdub89/SparkGap#37
 
 def _get_itila_lib():
     global _itila_lib
@@ -7716,8 +7718,9 @@ class SparkGap:
                              self.cfg.get('spot_rule_runner_signs', False))
         if _select_spot_rule(_spot_rule_name(self.cfg)):
             self.tracker.spot_rule = _make_spot_rule(self.cfg, self.tracker)
-            log.info("Spot rule: lock-on, CQ groups, CQ qualifiers%s%s%s",
+            log.info("Spot rule: lock-on, CQ groups, CQ qualifiers%s%s%s%s",
                      ", split runs" if self.tracker.spot_rule.split_runs else "",
+                     ", DE rejoin" if self.tracker.spot_rule.de_rejoin else "",
                      ", runner signs" if self.tracker.spot_rule.runner_signs else "",
                      ", window join" if self.tracker.spot_rule.window_join else "")
         # If the gate is configured (peers listed), start the peer-tee
@@ -9240,8 +9243,9 @@ def run_file_mode(args, config):
     if _select_spot_rule(_spot_rule_name(config)):
         _trk = tracker
         _trk.spot_rule = _make_spot_rule(config, tracker)
-        log.info("Spot rule: lock-on, CQ groups, CQ qualifiers%s%s%s",
+        log.info("Spot rule: lock-on, CQ groups, CQ qualifiers%s%s%s%s",
                  ", split runs" if _trk.spot_rule.split_runs else "",
+                 ", DE rejoin" if _trk.spot_rule.de_rejoin else "",
                  ", runner signs" if _trk.spot_rule.runner_signs else "",
                  ", window join" if _trk.spot_rule.window_join else "")
         audio_now = [args.start_min * 60]
