@@ -214,12 +214,14 @@ class Session:
         version: str,
         fingerprint: str,
         dry_run: bool,
+        bands_of: Callable[[], list[tuple[float, float]]] | None = None,
     ) -> None:
         if auth is None and not dry_run:
             raise AuthError("no auth library: a session without one may only dry-run")
         self.url = url.rstrip("/")
         self.call, self.name, self.grid, self.qth = call, name, grid, qth
         self.validation, self.port, self.bands = validation, port, bands
+        self.bands_of = bands_of  # read again before each id.php: a seat changes band while it runs
         self.auth, self.version, self.fingerprint, self.dry_run = (
             auth,
             version,
@@ -326,7 +328,17 @@ class Session:
         return got if isinstance(got, dict) else {}
 
     def post_id(self) -> bool:
-        """Sign in (or heartbeat); spots go out only while the last one succeeded."""
+        """Sign in (or heartbeat); spots go out only while the last one succeeded. The band list
+        is read from the skimmer again first (cdub89/SparkGap#33 O1): a live band change moves
+        the node's bandLimits, and RBN learns it at the next id.php, not at a restart."""
+        if self.bands_of is not None:
+            bands = self.bands_of()
+            if bands and bands != self.bands:
+                log.info("bands now %s (were %s)", bands, self.bands)
+                self.bands = bands
+            elif not bands and self.bands:
+                log.warning("no band info from the skimmer's SETT: bandLimits kept as %s",
+                            self.bands)
         body = self.id_body()
         resp = self.post("id.php", body) if body is not None else None
         ok = body is not None and (resp is not None or self.dry_run)
@@ -518,6 +530,7 @@ def main() -> None:
         version=SKIM_VERSION,
         fingerprint=fingerprint,
         dry_run=dry_run,
+        bands_of=lambda: base.fetch_bands_from_skimmer(seat.host, seat.port, seat.call),
     )
     mode = "dry run" if dry_run else "LIVE"
     log.info("SparkGap version %s, spotter %s, %s", sess.version, sess.call, mode)
