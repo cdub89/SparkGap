@@ -2025,20 +2025,26 @@ _liveness_listed = None   # the seat's spot_validation_calls list (rbn, rbn+skcc
 _liveness_runner_signs = False   # spot_rule_runner_signs: a split runner's sign keeps its bin too (cdub89/SparkGap#37)
 
 
+LIVENESS_NOISE_HOLD_S = 120.0   # itila2_bin_liveness: a bin never marked live is dropped at this age (cdub89/SparkGap#38 SR5)
+
 def _select_bin_liveness(on, listed=None, runner_signs=False):
     """Config key itila2_bin_liveness (default off): mark the scanner bin live (itila_sc_mark_evidence)
     when a decoded window has an SCP call next to CQ/TEST or right after DE.  The scanner evicts any bin with no evidence
     for 300 s, and on the spot-rule paths nothing else marks it, so without this every bin, a steady
     runner's too, is evicted and respawned every 5 minutes (its audio until the respawn is lost and its
-    decoders start over).  A bare decode is not evidence: noise windows score low costs too (4df58f5)."""
+    decoders start over).  A bare decode is not evidence: noise windows score low costs too (4df58f5).
+    With liveness a bin never marked live is dropped at LIVENESS_NOISE_HOLD_S (noise); a marked bin
+    keeps 300 s from its last mark."""
     global _bin_liveness, _liveness_listed, _liveness_runner_signs
     _bin_liveness = bool(on)
     _liveness_listed = listed if _bin_liveness else None
     _liveness_runner_signs = _bin_liveness and bool(runner_signs)
     if _bin_liveness:
-        log.info("ITILA bins: a known CQ call or a known call after DE keeps its bin (itila2_bin_liveness)%s%s",
+        log.info("ITILA bins: a known CQ call or a known call after DE keeps its bin (itila2_bin_liveness)%s%s; "
+                 "a bin never marked live is dropped at %.0f s",
                  " (MASTER.SCP, add_calls and the spot_validation_calls list)" if listed else "",
-                 "; so does a split runner's sign (KH8A UP, TU UP)" if _liveness_runner_signs else "")
+                 "; so does a split runner's sign (KH8A UP, TU UP)" if _liveness_runner_signs else "",
+                 LIVENESS_NOISE_HOLD_S)
     return _bin_liveness
 
 
@@ -3089,6 +3095,14 @@ def _get_itila_scanner(sample_rate, center_hz, max_bins, min_snr,
                 lib.itila_sc_set_spawn_guard(_ct.c_void_p(h), 1)
             else:
                 log.warning("itila2_spawn_guard: %s has no itila_sc_set_spawn_guard; off", _scanner_lib_path)
+        if _bin_liveness:
+            if hasattr(lib, 'itila_sc_set_hold'):
+                lib.itila_sc_set_hold.restype = _ct.c_double
+                lib.itila_sc_set_hold.argtypes = [_ct.c_void_p, _ct.c_double]
+                lib.itila_sc_set_hold(_ct.c_void_p(h), LIVENESS_NOISE_HOLD_S)
+            else:
+                log.warning("itila2_bin_liveness: %s has no itila_sc_set_hold; bins never marked live held 300 s",
+                            _scanner_lib_path)
         return _ItilaSc(lib, _ct.c_void_p(h))
     except OSError:
         log.warning("%s not found", _scanner_lib_path)

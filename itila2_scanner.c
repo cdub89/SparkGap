@@ -126,6 +126,7 @@ static const double WIDE_TAPS[SC_WIDE_LEN] = {
 #define SC_PREROLL_SEC 1.0   /* IQ replayed into a new bin */
 #define SC_MAX_EXCL    64    /* exclusion zones (RTTY tones) at once */
 #define SC_MAX_THREADS 16    /* itila_sc_set_threads cap */
+#define SC_LIVE_HOLD_S 300.0 /* a bin marked live is dropped this long after its last mark */
 
 /* Stage 1 to 12 kHz: firwin(N, fc, window=('kaiser', beta), fs=rate), as in hotairfred/SparkGap#8.
  * 192k: 32 taps, fc 5000, beta 3.0; 96k: 17 taps, fc 5000, beta 3.0; 48k: 9 taps, fc 4000, beta 2.5.
@@ -347,6 +348,7 @@ struct ItilaSc {
 
     int     afc;           /* itila2_afc (itila_sc_set_afc) */
     int     spawn_guard;   /* itila2_spawn_guard (itila_sc_set_spawn_guard) */
+    double  hold_s;        /* itila_sc_set_hold (itila2_bin_liveness): a bin never marked live is dropped at this age */
     double  afc_decay;     /* per 200 Hz step decay of the key-down peak power */
     double  afc_rise;      /* per 200 Hz step rise of the noise floor */
 
@@ -597,8 +599,8 @@ HOT_CLONES static void run_scan(ItilaSc *sc, const double *seg_i, const double *
             int64_t age      = sc->total_samples - sc->bins[b].created_sample;
             int64_t since_ev = sc->total_samples - sc->bins[b].last_evidence;
             int stale    = 0;
-            if (sc->bins[b].last_evidence == 0 && age > 300 * rate_12k) stale = 1;
-            else if (sc->bins[b].last_evidence > 0 && since_ev > 300 * rate_12k) stale = 1;
+            if (sc->bins[b].last_evidence == 0 && age > (int64_t)(sc->hold_s * rate_12k)) stale = 1;
+            else if (sc->bins[b].last_evidence > 0 && since_ev > (int64_t)(SC_LIVE_HOLD_S * rate_12k)) stale = 1;
             if (!stale && sc_excluded(sc, sc->bins[b].f_hz)) { stale = 1; sc->excl_released++; }
             if (stale) {
                 bin_free_decoders(sc, &sc->bins[b]);
@@ -701,12 +703,12 @@ HOT_CLONES static void run_scan(ItilaSc *sc, const double *seg_i, const double *
                  * total_samples counts in 12kHz units (n/SC_DEC1) */
                 int rate_12k = sc->sample_rate / sc->dec1;
                 if (sc->bins[b].last_evidence == 0 &&
-                    age > 300 * rate_12k) {
+                    age > (int64_t)(sc->hold_s * rate_12k)) {
                     if (age > oldest_age) { oldest_age = age; evicted = b; }
                 }
                 /* Had evidence but silent for >300s */
                 else if (sc->bins[b].last_evidence > 0 &&
-                         since_ev > 300 * rate_12k) {
+                         since_ev > (int64_t)(SC_LIVE_HOLD_S * rate_12k)) {
                     if (age > oldest_age) { oldest_age = age; evicted = b; }
                 }
             }
@@ -1142,6 +1144,18 @@ int itila_sc_set_afc(ItilaSc *sc, int on)
     return r;
 }
 
+/* itila_sc_set_hold (set with itila2_bin_liveness): the age at which a bin never marked live (itila_sc_mark_evidence) is
+ * dropped; default 300. A marked bin keeps SC_LIVE_HOLD_S from its last mark. Returns the hold. */
+double itila_sc_set_hold(ItilaSc *sc, double sec)
+{
+    if (!sc) return 0.0;
+    pthread_mutex_lock(&sc->lock);
+    if (sec > 0.0) sc->hold_s = sec;
+    double r = sc->hold_s;
+    pthread_mutex_unlock(&sc->lock);
+    return r;
+}
+
 /* itila2_spawn_guard on or off; returns the new state. */
 int itila_sc_set_spawn_guard(ItilaSc *sc, int on)
 {
@@ -1273,6 +1287,7 @@ ItilaSc *itila_sc_create(int sample_rate, double center_hz,
 
     ItilaSc *sc = (ItilaSc *)calloc(1, sizeof(ItilaSc));
     if (!sc) return NULL;
+    sc->hold_s = 300.0;                        /* no liveness: every bin keeps 300 s */
     pthread_mutex_init(&sc->lock, NULL);       /* before anything that can fail into itila_sc_free */
     pthread_mutex_init(&sc->pool_lock, NULL);
     pthread_cond_init(&sc->pool_go, NULL);
