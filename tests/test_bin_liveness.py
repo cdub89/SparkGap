@@ -73,22 +73,29 @@ def test_no_call_set_is_never_evidence() -> None:
     assert not sparkgap._copies_known_runner("CQ TEST W1AW W1AW", set())
 
 
-def _bin_life(liveness: bool, secs: int = 400) -> list:
+def _bin_life(liveness: bool, secs: int = 400, hold: float | None = None) -> list:
     """Feed one steady CQ for `secs`, decode through decode_ready, mark evidence as the spot-rule paths
-    do with itila2_bin_liveness; return the times (s) the bin disappeared."""
+    do with itila2_bin_liveness; return the times (s) the bin disappeared or was spawned again."""
     sc, dec = _libs()
     sc.itila_sc_list_bins.restype = ctypes.c_int
     sc.itila_sc_list_bins.argtypes = [vp, D, ctypes.c_int]
     sc.itila_sc_mark_evidence.argtypes = [vp, ctypes.c_double]
+    sc.itila_sc_list_bin_ages.restype = ctypes.c_int
+    sc.itila_sc_list_bin_ages.argtypes = [vp, ctypes.POINTER(ctypes.c_int), ctypes.c_int]
     fs, win, block = 48_000, 6000, 4800
     rng = np.random.default_rng(1)
     h = sc.itila_sc_create(fs, 7030000.0, 50, 12.0, win, 4096, 50.0, 7006000.0, 7054000.0, None, 0, None)
     cast = lambda f: ctypes.cast(f, vp)  # noqa: E731
     sc.itila_sc_set_decoder(h, cast(dec.itila_create), cast(dec.itila_feed), cast(dec.itila_free),
                             cast(dec.itila_get_wpm), 1.5)
+    if hold is not None:
+        sc.itila_sc_set_hold.restype = ctypes.c_double
+        sc.itila_sc_set_hold.argtypes = [vp, ctypes.c_double]
+        assert sc.itila_sc_set_hold(h, hold) == hold
     buf = ctypes.create_string_buffer(REC * 64)
     fl = (ctypes.c_double * 64)()
-    gone, had = [], False
+    ages = (ctypes.c_int * 64)()
+    gone, had, age = [], False, 0
     chunk = 60 * fs
     try:
         for c0 in range(0, secs * fs, chunk):
@@ -106,10 +113,12 @@ def _bin_life(liveness: bool, secs: int = 400) -> list:
                     if liveness and sparkgap._copies_known_runner(raw, KNOWN):
                         sc.itila_sc_mark_evidence(h, f)
                 n = sc.itila_sc_list_bins(h, fl, 64)
-                here = any(abs(fl[j] - 7035000.0) < 100 for j in range(n))
-                if had and not here:
+                sc.itila_sc_list_bin_ages(h, ages, 64)   # same order as list_bins
+                mine = [ages[j] for j in range(n) if abs(fl[j] - 7035000.0) < 100]
+                here = bool(mine)
+                if had and (not here or mine[0] < age):  # gone, or a new bin in its place
                     gone.append((c0 + b + block) / fs)
-                had = here
+                had, age = here, (mine[0] if mine else 0)
     finally:
         sc.itila_sc_free(h)
     return gone
@@ -119,3 +128,10 @@ def _bin_life(liveness: bool, secs: int = 400) -> list:
 def test_a_steady_runner_keeps_its_bin_only_with_liveness() -> None:
     assert _bin_life(False)[:1] == [pytest.approx(300, abs=2)]   # today: evicted at 300 s
     assert _bin_life(True) == []                                  # with liveness: never
+
+
+@pytest.mark.skipif(not (os.path.exists(DEC) and os.path.exists(SC)), reason="libitila2 libraries not built")
+def test_the_hold_sets_when_a_bin_with_no_evidence_is_dropped() -> None:
+    """itila_sc_set_hold, set with itila2_bin_liveness (cdub89/SparkGap#38 SR5): a bin never marked live goes at the hold; a marked bin stays."""
+    assert _bin_life(False, secs=200, hold=120)[:1] == [pytest.approx(120, abs=2)]
+    assert _bin_life(True, secs=300, hold=120) == []
