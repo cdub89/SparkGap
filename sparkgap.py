@@ -1974,6 +1974,12 @@ def _select_cw_decoder(name):
     log.info("CW decoder: %s (%s, %s)", name, _itila_lib_path, _scanner_lib_path)
     return _itila_lib_path
 
+def _skim_bandwidth_khz(cfg):
+    """Width each band is advertised with (SETT, the RBN band list): skim_bandwidth_khz, else the
+    receiver's span. A fixed 96 understated a 192 kHz receiver by half (7042-7138 for 7000-7180)."""
+    bw = cfg.get('skim_bandwidth_khz')
+    return float(bw) if bw else float(cfg.get('sample_rate', 48000)) / 1000.0
+
 def _set_known_calls(config):
     """Config itila_known_calls (a file, one call per line) and itila_known_bonus (log units, 0 =
     off): itila2 favours calls heard on the air lately over callsign-shaped pieces of them."""
@@ -7947,8 +7953,9 @@ class SparkGap:
 
     def _set_telnet_bands(self):
         # Advertise band ranges in SETT response so Aggregator knows
-        # what we cover. Range = center ± half scan bandwidth (kHz).
-        half_bw_khz = float(self.cfg.get('skim_bandwidth_khz', 96)) / 2.0
+        # what we cover. Range = center ± half scan bandwidth (kHz); skim_bandwidth_khz unset is
+        # the receiver's span (sample_rate): 96 kHz on DAX-IQ 96k, 192 kHz on a 192k HPSDR receiver.
+        half_bw_khz = _skim_bandwidth_khz(self.cfg) / 2.0
         self.telnet.bands = [
             (round(center_hz / 1000.0 - half_bw_khz, 1),
              round(center_hz / 1000.0 + half_bw_khz, 1))
