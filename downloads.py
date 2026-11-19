@@ -35,7 +35,10 @@ FAILED = (OSError, http.client.HTTPException, ValueError, sqlite3.Error)
 def fetch(url: str, user_agent: str, timeout_s: float = FETCH_TIMEOUT_S) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": user_agent})
     with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-        return resp.read()
+        data = resp.read()
+    if not data:
+        raise ValueError("empty download")  # never let a zero-length reply replace a copy
+    return data
 
 
 def write_atomic(path: Path, data: bytes, check: Check | None = None) -> int | None:
@@ -148,7 +151,10 @@ def refresh(path: Path, url: str, check: Check, what: str, user_agent: str,
     records = None
     if due:
         try:
-            records = write_atomic(path, (get or (lambda: fetch(url, user_agent)))(), check)
+            data = (get or (lambda: fetch(url, user_agent)))()
+            if not data:
+                raise ValueError("empty download")
+            records = write_atomic(path, data, check)
             log.info("downloads: %s from %s", path, url)
         except FAILED as e:                      # offline, refused, truncated or the wrong file
             error = f"{type(e).__name__}: {e}"

@@ -70,9 +70,10 @@ The left side lists each server's radios. Under each radio:
 
 Below the radios, **Server** holds the join code, Setup, RBN upload, the
 server's log, and **Downloads**: each file SparkGap fetched (the RBN auth
-library, SCP.DB, the SKCC roster, the RBN known calls), its record count, when
-it downloaded, where it is, and the last failed fetch. A failed fetch keeps the
-previous copy. `sparkgap.sh status` lists the same.
+library, SCP.DB, the SKCC roster, the RBN known calls, RBN's `patt3ch.lst`
+and beacon list), its record count, when it downloaded, where it is, and the
+last failed fetch. A failed or empty fetch keeps the previous copy.
+`sparkgap.sh status` lists the same.
 
 ![The Server pane](web-server.png)
 
