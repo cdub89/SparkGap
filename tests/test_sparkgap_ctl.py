@@ -289,3 +289,7 @@ def test_status_lists_downloads_with_records_and_the_last_failure() -> None:
 
 def test_status_without_downloads_has_no_block() -> None:
     assert "━━ Downloads ━━" not in ctl.render(SNAP)
+
+
+def test_a_download_with_no_copy_says_so() -> None:
+    assert ctl.download_records({"records": None, "what": "patterns", "downloaded": None}) == "no copy"
