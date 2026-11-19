@@ -792,3 +792,19 @@ def test_nodes_the_all_band_recorder_cannot_feed_keep_record_wav(
     monkeypatch.setattr(seat, "pid", lambda name: 4242)
     seat.change("dallas1", {"record": True}, live_record=_live)
     assert seat.config(i)["record_wav"] and "record_iq_dir" not in seat.config(i)
+
+
+def test_the_snapshot_lists_downloads_from_the_run_root_and_each_rbn_known_dir(seat: Seat) -> None:
+    import downloads
+    lib = seat.root / "librbn2_auth.so"
+    lib.write_bytes(b"x")
+    downloads.note(lib, "https://example.invalid/lib", None, "rbn2auth/1.2", None)
+    elsewhere = seat.root / "code" / "rbn_known"  # a copy without rbn_known_dir: relative to its code
+    elsewhere.mkdir()
+    (elsewhere / "SCP.DB").write_bytes(b"x")
+    downloads.note(elsewhere / "SCP.DB", "https://example.invalid/scp", 41_203, "calls", None)
+    got = {e["name"]: e["records"] for e in seat.snapshot()["downloads"]}
+    assert got == {"librbn2_auth.so": None, "SCP.DB": 41_203}
+    i = seat.instances()[0]
+    i.config.write_text(json.dumps({**json.loads(i.config.read_text()), "rbn_known_dir": 17}))
+    assert {e["name"] for e in seat.snapshot()["downloads"]} >= {"librbn2_auth.so"}

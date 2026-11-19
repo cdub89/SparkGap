@@ -3,8 +3,8 @@
 
 Reads SparkGap's local cluster telnet like rbn_feeder.py (whose spot parsing and band probe it
 reuses) and posts to RBN's id.php and s.php. The two hash fields come from the
-library librbn2_auth.so in the run root (the folder above this file's), handed out separately and
-never kept in a git checkout.
+library librbn2_auth.so in the run root (the folder above this file's), never kept in a git
+checkout: a live feeder downloads it from AUTH_URL when it is missing or not the AUTH_SHA256 build.
 Without a library of the expected version the feeder does not post (--dry-run aside).
 
 Differences from rbn_feeder.py: heartbeat every 300 s;
@@ -26,6 +26,7 @@ import http.client
 import json
 import logging
 import math
+import platform
 import queue
 import signal
 import socket
@@ -41,6 +42,7 @@ from typing import Any
 from urllib import error as urlerror
 from urllib import request as urlreq
 
+import downloads
 import rbn_feeder as base
 from process_link import ProcessLink
 from spot_rule2 import BEACON_KHZ, NCDXF, NCDXF_KHZ
@@ -49,6 +51,9 @@ log = logging.getLogger("rbn2_feeder")
 
 AUTH_VERSION = "rbn2auth/1.2"  # RBN2_AUTH_VERSION, compared as text
 AUTH_LIB = "librbn2_auth.so"
+AUTH_URL = "https://downloads.wx7v.net/rbn/librbn2_auth.so"  # a new version gets a new URL
+AUTH_SHA256 = "bfad62727e95bee613d785329f2ed39a0d7006c70e58aed8139587d5ef75c504"  # AUTH_URL's build
+AUTH_MACHINES = ("x86_64", "AMD64")  # what the library is built for
 SKIM_VERSION = "SparkGap 1.2"  # skimVersion and sign-in: names SparkGap in RBN's node list
 AGG_VERSION = "6.7"  # id.php aggVersion and s.php agg, as other direct feeders send
 UPLOAD_MODES = ("dry", "live")  # rbn_upload; absent or anything else is off
@@ -288,6 +293,26 @@ class Respot:
 def auth_lib_path() -> Path:
     """librbn2_auth.so in the folder above this checkout, never inside it."""
     return Path(__file__).resolve().parent.parent / AUTH_LIB
+
+
+def _auth_check(path: Path) -> None:
+    """The pinned build or nothing: a download that is not it is never kept."""
+    got = hashlib.sha256(path.read_bytes()).hexdigest()
+    if got != AUTH_SHA256:
+        raise ValueError(f"SHA-256 {got[:12]}... is not the pinned {AUTH_SHA256[:12]}...")
+
+
+def fetch_auth_lib(path: Path, get: Callable[[], bytes] | None = None,
+                   machine: str | None = None) -> None:
+    """Download the auth library when it is missing or not the pinned build; a failed download
+    keeps the copy there (the version check then decides)."""
+    machine = machine or platform.machine()
+    if machine not in AUTH_MACHINES:
+        log.warning("auth library: built for x86_64 only, none for %s", machine)
+        return
+    downloads.refresh(path, AUTH_URL, _auth_check, AUTH_VERSION, "SparkGap rbn2_feeder",
+                      current=lambda p: hashlib.sha256(p.read_bytes()).hexdigest() == AUTH_SHA256,
+                      get=get)
 
 
 def not_ready(auth: Auth | None, dry_run: bool) -> str | None:
@@ -728,6 +753,8 @@ def main() -> None:
 
     auth = None
     lib = auth_lib_path()
+    if not dry_run:
+        fetch_auth_lib(lib)
     if lib.exists():
         try:
             auth = Auth(str(lib))
