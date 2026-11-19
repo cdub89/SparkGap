@@ -238,6 +238,20 @@ def test_a_stopped_station_is_a_radio_not_connected() -> None:
     assert ctl.render(snap)[0].startswith("━━ Radio: Not connected Lake ━━")
 
 
+def test_a_radio_not_connected_hides_its_stopped_receivers() -> None:
+    lake4 = SNAP["instances"][1]
+    snap = {**SNAP, "instances": [lake4, {**lake4, "name": "Lake-5"}],
+            "stations": [{"radio": "Lake", "state": "stopped"}]}
+    lines = ctl.render(snap)
+    assert lines[4] == "   2 receivers, shown when the radio is connected"
+    assert not any("Lake-4" in x or "last error" in x for x in lines)
+
+
+def test_a_radio_not_connected_still_shows_a_running_receiver() -> None:
+    snap = {**SNAP, "stations": [{"radio": "Lake", "state": "stopped"}]}
+    assert any("Lake-1" in x for x in ctl.render(snap))
+
+
 def test_a_recording_receiver_says_so() -> None:
     lake1 = {**SNAP["instances"][0], "settings": {"record": True}}
     snap = {**SNAP, "instances": [lake1, *SNAP["instances"][1:]]}

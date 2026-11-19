@@ -369,8 +369,12 @@ def render(snap: dict[str, Any], names: list[str] | None = None, color: bool = F
         procs = [i for i in mine if i.get("receiver_list")]
         lines = radio_lines(r, stations.get(r["name"]), running, paint,
                             skimmer_text(procs[0], now, paint) if len(procs) == 1 else "")
-        rows = receiver_block(mine, now, paint) if mine else [
-            "   no receivers yet: add them in SparkGap Web"]
+        if not mine:
+            rows = ["   no receivers yet: add them in SparkGap Web"]
+        elif not running and connection(stations.get(r["name"])) == "Not connected":
+            rows = [f"   {len(mine)} receiver{'s' if len(mine) > 1 else ''}, shown when the radio is connected"]
+        else:
+            rows = receiver_block(mine, now, paint)
         out += [*lines, "", *rows, ""]
         shown.update(i["name"] for i in mine)
     rest = [i for i in inst if i["name"] not in shown]
