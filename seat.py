@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import downloads
 import radios
 
 START_WAIT_S = 45  # longest a copy takes to reach the radio and go live
@@ -1299,6 +1300,18 @@ class Seat:
             "rx_settings": list(caps.rx_settings),
         }
 
+    def download_folders(self) -> list[Path]:
+        """Where this machine's downloads land: the run root (the RBN auth library), and each
+        copy's rbn_known_dir (SCP.DB, the SKCC roster, the RBN archive days)."""
+        out = [self.root, self.root / "rbn_known"]
+        for i in self.instances():
+            try:
+                d = Path(self.config(i).get("rbn_known_dir") or "rbn_known")
+            except (OSError, ValueError, TypeError):  # a config that does not read, or not a path
+                continue
+            out.append(d if d.is_absolute() else i.code / d)
+        return out
+
     def snapshot(self) -> dict[str, Any]:
         instances = self.instances()
         stations = sorted({r for i in instances if (r := self.radio(i))})
@@ -1311,4 +1324,5 @@ class Seat:
             "bands": bands_in(CODE),  # what an added receiver can run
             "default_settings": self.default_settings(),
             "removed": self.removed_settings({i.name for i in instances}),
+            "downloads": downloads.listed(self.download_folders()),
         }

@@ -2063,6 +2063,20 @@ async function srvApply(sv, radio) {
   renderSettings();
 }
 
+// what this machine has downloaded, as sparkgap.sh status lists it: file, records, when, where, last failure
+const utcShort = t => (t ? new Date(t * 1000).toISOString().replace(/^\d{4}-(\d\d-\d\d)T(\d\d:\d\d).*/, "$1 $2Z") : "");
+function downloadRecords(e) {
+  return e.records !== null && e.records !== undefined ? `${Number(e.records).toLocaleString("en-US")} ${e.what || ""}`.trim() : String(e.what || "");
+}
+function downloadsHtml(seat) {
+  const list = (seat && seat.downloads) || [];
+  if (!list.length) return "";
+  const rows = list.map(e => setupRow(esc(e.name || ""), `<span class="mono">${esc(downloadRecords(e))}</span>`,
+    esc([e.downloaded ? `downloaded ${utcShort(e.downloaded)}` : "", e.path || ""].filter(Boolean).join(" · "))
+    + (e.error ? `<br><span class="bad">last fetch failed ${esc(utcShort(e.checked))} (${esc(e.error)}); ${e.downloaded ? `using the copy from ${esc(utcShort(e.downloaded))}` : "no copy"}</span>` : ""))).join("");
+  return `<section class="psection"><div class="psec"><span class="psectitle">Downloads</span><span class="muted">a failed fetch keeps the previous copy</span></div><div class="form">${rows}</div></section>`;
+}
+
 function serverPaneHtml(k, sv) {
   const a = sv.link, host = `${(a.hello && a.hello.host) || sv.address}${a.hello && a.hello.build ? ` (${a.hello.build})` : ""}`;
   const lines = (a.log || []).map(l => `<div class="cl ${l.level === "ERROR" || l.level === "CRITICAL" ? "bad" : l.level === "WARNING" ? "warn" : ""}">`
@@ -2072,6 +2086,7 @@ function serverPaneHtml(k, sv) {
     + `<button class="btn small" data-act="editserver" data-server="${k}">Edit</button><button class="btn small" data-act="removeserver" data-server="${k}">Remove</button></div>`
     + sec(`<div class="psec"><span class="psectitle">Join code</span></div>${joinCodeRow(sv)}`)
     + sec(addRadioHtml(k, sv))
+    + downloadsHtml(a.seat)
     + sec(`<div class="psec"><span class="psectitle">Log</span></div><div class="console mono" data-console="r${k}">${lines || '<div class="cl faint">nothing logged yet</div>'}</div>`);
 }
 

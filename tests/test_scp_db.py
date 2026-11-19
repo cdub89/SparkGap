@@ -46,7 +46,7 @@ def test_refresh_daily_and_offline(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     tiny = _db(tmp_path / "tiny.db", ["K1ABC"])                             # fewer than MIN_CALLS
     monkeypatch.setattr(scp_db, "MIN_CALLS", 2)
     assert scp_db.refresh(cache, fetch=lambda: tiny, now=lambda: 2e10) == {"K1ABC", "W1AW"}
-    assert sorted(p.name for p in cache.iterdir()) == ["SCP.DB"]     # no temp file left behind
+    assert not list(cache.glob("*.tmp"))                         # no temp file left behind
 
 
 def test_refresh_without_download_or_cache_is_empty(tmp_path: Path) -> None:

@@ -6,13 +6,12 @@ SparkGap starts, at most once a day, into the cache directory; offline, the cach
 """
 
 import logging
-import os
 import sqlite3
-import tempfile
 import time
-import urllib.request
 from collections.abc import Callable
 from pathlib import Path
+
+import downloads
 
 SCP_URL = "https://www.supercheckpartial.com/SCP.DB"
 FILE_NAME = "SCP.DB"
@@ -35,37 +34,23 @@ def calls(path: Path) -> frozenset[str]:
 
 
 def _fetch() -> bytes:
-    req = urllib.request.Request(SCP_URL, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT_S) as resp:
-        return resp.read()
+    return downloads.fetch(SCP_URL, USER_AGENT, FETCH_TIMEOUT_S)
 
 
-def _write(path: Path, data: bytes) -> None:
-    """Write through a temp file of this writer's own, and keep it only when it reads as SCP.DB."""
-    fd, name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".tmp")
-    tmp = Path(name)
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-        n = len(calls(tmp))
-        if n < MIN_CALLS:
-            raise ValueError(f"{n} calls")
-        tmp.replace(path)                 # a crash or a bad download never replaces the cache
-    finally:
-        tmp.unlink(missing_ok=True)
+def _check(path: Path) -> int:
+    """SCP.DB's call count; fewer than MIN_CALLS is not SCP.DB."""
+    n = len(calls(path))
+    if n < MIN_CALLS:
+        raise ValueError(f"{n} calls")
+    return n
 
 
 def refresh(cache_dir: Path, fetch: Callable[[], bytes] | None = None,
             now: Callable[[], float] = time.time) -> frozenset[str]:
     """SCP calls, from SCP.DB fetched at most once a day; the cache when offline; else empty."""
-    fetch = fetch or _fetch
-    cache_dir.mkdir(parents=True, exist_ok=True)
     path = cache_dir / FILE_NAME
-    if not path.exists() or now() - path.stat().st_mtime > MAX_AGE_S:
-        try:
-            _write(path, fetch())
-        except Exception as e:                   # offline, refused, truncated or not SCP.DB
-            log.warning("scp_db: no SCP.DB download (%r); using the cache", e)
+    downloads.refresh(path, SCP_URL, _check, "calls", USER_AGENT, max_age_s=MAX_AGE_S,
+                      get=fetch or _fetch, now=now)
     try:
         found = calls(path) if path.exists() else frozenset()
     except sqlite3.Error as e:

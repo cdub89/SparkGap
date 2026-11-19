@@ -347,6 +347,31 @@ def feeder_text(f: dict[str, Any] | None, mode: str, paint: Paint) -> str:
     return paint("signed in", "32") if f.get("registered") else paint("not signed in", "31")
 
 
+def utc_short(t: float | None) -> str:
+    return time.strftime("%m-%d %H:%MZ", time.gmtime(t)) if t else ""
+
+
+def download_records(e: dict[str, Any]) -> str:
+    """A download's record count and what it counts (the library: its version), as the web says."""
+    n = e.get("records")
+    return f"{n:,} {e.get('what') or ''}".rstrip() if n is not None else str(e.get("what") or "")
+
+
+def download_lines(entries: list[dict[str, Any]], paint: Paint) -> list[str]:
+    """What this machine has downloaded: file, records, when, where; and each last failure."""
+    head = ["file", "records", "downloaded", "location"]
+    rows = [head, *([str(e.get("name") or ""), download_records(e), utc_short(e.get("downloaded")),
+                     str(e.get("path") or "")] for e in entries)]
+    out = [paint("━━ Downloads ━━", "1"),
+           *table(rows, [[paint(h, "34") for h in head], *([paint(r[0], "1"), *r[1:]] for r in rows[1:])])]
+    for e in entries:
+        if e.get("error"):
+            copy = f"using the copy from {utc_short(e['downloaded'])}" if e.get("downloaded") else "no copy"
+            out.append("     " + paint(f"{e.get('name')}: last fetch failed {utc_short(e.get('checked'))} "
+                                       f"({e['error']}); {copy}", "31"))
+    return out
+
+
 def render(snap: dict[str, Any], names: list[str] | None = None, color: bool = False) -> list[str]:
     """The machine's radios, each with its node, feeder and receivers (one row each); receivers
     with no radio file after them.  Named receivers: each one's full detail."""
@@ -385,7 +410,10 @@ def render(snap: dict[str, Any], names: list[str] | None = None, color: bool = F
             mode = str((i.get("settings") or {}).get("rbn_upload", "off"))
             out.append(f"   {i['name']}: {paint('feeder', '34')} "
                        + feeder_text(feeders.get(i["name"]), mode, paint))
-    return out[:-1] if out and out[-1] == "" else out
+    out = out[:-1] if out and out[-1] == "" else out
+    if snap.get("downloads"):
+        out += ["", *download_lines(snap["downloads"], paint)]
+    return out
 
 
 def receiver_of(snap: dict[str, Any], name: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
