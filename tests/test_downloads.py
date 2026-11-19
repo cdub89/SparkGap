@@ -67,6 +67,14 @@ def test_a_failed_fetch_keeps_the_previous_copy_and_says_why(
     assert not list(tmp_path.glob("*.tmp"))
 
 
+def test_an_empty_download_never_replaces_a_copy_whatever_the_check(tmp_path: Path) -> None:
+    path = tmp_path / "list.txt"
+    path.write_text("LIST\nA\n")
+    ok = downloads.refresh(path, URL, lambda p: 0, "lines", "test", get=lambda: b"",
+                           current=lambda p: False)
+    assert ok and path.read_text() == "LIST\nA\n" and "empty" in str(_entry(path)["error"])
+
+
 def test_no_copy_and_no_download_is_no_file(tmp_path: Path) -> None:
     path = tmp_path / "list.txt"
     ok, _ = _refresh(path, OSError("offline"))
