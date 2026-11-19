@@ -354,6 +354,8 @@ def utc_short(t: float | None) -> str:
 def download_records(e: dict[str, Any]) -> str:
     """A download's record count and what it counts (the library: its version), as the web says."""
     n = e.get("records")
+    if not e.get("downloaded"):
+        return "no copy"
     return f"{n:,} {e.get('what') or ''}".rstrip() if n is not None else str(e.get("what") or "")
 
 

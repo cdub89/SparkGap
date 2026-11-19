@@ -808,3 +808,46 @@ def test_the_snapshot_lists_downloads_from_the_run_root_and_each_rbn_known_dir(s
     i = seat.instances()[0]
     i.config.write_text(json.dumps({**json.loads(i.config.read_text()), "rbn_known_dir": 17}))
     assert {e["name"] for e in seat.snapshot()["downloads"]} >= {"librbn2_auth.so"}
+
+
+def test_retry_fetches_a_failed_download_with_the_codes_own_fetcher(seat: Seat, monkeypatch) -> None:
+    import downloads
+    import seat as seat_mod
+    folder = seat.root / "rbn_known"
+    folder.mkdir(exist_ok=True)
+    got: list[Path] = []
+
+    def scp(d: Path) -> None:
+        got.append(d)
+        (d / "SCP.DB").write_bytes(b"x")
+        downloads.note(d / "SCP.DB", "https://example.invalid/scp", 41_203, "calls", None)
+
+    monkeypatch.setattr(seat_mod, "retry_fetchers", lambda: {"SCP.DB": scp})
+    assert seat.retry_download(str(folder / "SCP.DB")) == "SCP.DB: downloaded, 41203; read at the next start"
+    assert got == [folder.resolve()]
+    assert next(e for e in seat.snapshot()["downloads"] if e["name"] == "SCP.DB")["retry"] is True
+
+
+def test_retry_refuses_what_it_does_not_download(seat: Seat, tmp_path: Path) -> None:
+    from seat import RETRYABLE, retry_fetchers
+    assert set(retry_fetchers()) == set(RETRYABLE)
+    with pytest.raises(SeatError, match="not in a download folder"):
+        seat.retry_download(str(tmp_path / "elsewhere" / "SCP.DB"))
+    with pytest.raises(SeatError, match="next start"):
+        seat.retry_download(str(seat.root / "rbn_known" / "rbn_known.txt"))
+    with pytest.raises(SeatError, match="run root only"):
+        seat.retry_download(str(seat.root / "rbn_known" / "librbn2_auth.so"))
+
+
+def test_a_failed_retry_says_why(seat: Seat, monkeypatch) -> None:
+    import downloads
+    import seat as seat_mod
+    folder = seat.root / "rbn_known"
+    folder.mkdir(exist_ok=True)
+
+    def offline(d: Path) -> None:
+        downloads.note(d / "bcn.csv", "https://example.invalid/bcn", None, "beacons", "HTTPError: 502")
+
+    monkeypatch.setattr(seat_mod, "retry_fetchers", lambda: {"bcn.csv": offline})
+    with pytest.raises(SeatError, match="502"):
+        seat.retry_download(str(folder / "bcn.csv"))

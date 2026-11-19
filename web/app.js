@@ -1493,6 +1493,22 @@ function seg(el, labels, current, onPick) {
   });
 }
 
+// the Radios view, rebuilt every state message: only a pane whose HTML changed is replaced, and the
+// dialog keeps its scroll, so a pane being read or scrolled stays still
+function showPanes(box, html) {
+  if (html === box.shownHtml) return;
+  const dlg = box.closest(".dialog"), top = dlg ? dlg.scrollTop : 0;
+  const t = document.createElement("template");
+  t.innerHTML = html;
+  const old = box.firstElementChild, neu = t.content.firstElementChild;
+  if (old && neu && old.className === "panes" && neu.className === "panes" && old.children.length === neu.children.length) {
+    const was = [...old.children], now = [...neu.children];
+    now.forEach((n, i) => { if (was[i].outerHTML !== n.outerHTML) was[i].replaceWith(n); });
+  } else box.replaceChildren(...t.content.childNodes);
+  box.shownHtml = html;
+  if (dlg) dlg.scrollTop = top;
+}
+
 function renderSettings() {
   if ($("modal").hidden) return;
   if (app.pressed) { app.renderDue = true; return; }  // rebuilt between press and release, a click is lost
@@ -1510,7 +1526,7 @@ function renderSettings() {
   // the log keeps its place: at the bottom it follows new lines, scrolled up it stays
   const was = {};
   for (const c of box.querySelectorAll("[data-console]")) was[c.dataset.console] = c.scrollHeight - c.scrollTop - c.clientHeight < 4 ? -1 : c.scrollTop;
-  box.innerHTML = radiosHtml();
+  showPanes(box, radiosHtml());
   for (const c of box.querySelectorAll("[data-console]")) {
     const at = was[c.dataset.console];
     c.scrollTop = at === undefined || at < 0 ? c.scrollHeight : at;
@@ -2066,15 +2082,18 @@ async function srvApply(sv, radio) {
 // what this machine has downloaded, as sparkgap.sh status lists it: file, records, when, where, last failure
 const utcShort = t => (t ? new Date(t * 1000).toISOString().replace(/^\d{4}-(\d\d-\d\d)T(\d\d:\d\d).*/, "$1 $2Z") : "");
 function downloadRecords(e) {
+  if (!e.downloaded) return "no copy";
   return e.records !== null && e.records !== undefined ? `${Number(e.records).toLocaleString("en-US")} ${e.what || ""}`.trim() : String(e.what || "");
 }
-function downloadsHtml(seat) {
+function downloadsHtml(seat, k) {
   const list = (seat && seat.downloads) || [];
   if (!list.length) return "";
-  const rows = list.map(e => setupRow(esc(e.name || ""), `<span class="mono">${esc(downloadRecords(e))}</span>`,
-    esc([e.downloaded ? `downloaded ${utcShort(e.downloaded)}` : "", e.path || ""].filter(Boolean).join(" · "))
-    + (e.error ? `<br><span class="bad">last fetch failed ${esc(utcShort(e.checked))} (${esc(e.error)}); ${e.downloaded ? `using the copy from ${esc(utcShort(e.downloaded))}` : "no copy"}</span>` : ""))).join("");
-  return `<section class="psection"><div class="psec"><span class="psectitle">Downloads</span><span class="muted">a failed fetch keeps the previous copy</span></div><div class="form">${rows}</div></section>`;
+  const folders = [...new Set(list.map(e => String(e.path || "").replace(/[^/]*$/, "")))];
+  const rows = folders.map(f => `<div class="dlfolder mono">${esc(f)}</div>` + list.filter(e => String(e.path || "").replace(/[^/]*$/, "") === f).map(e =>
+    `<div class="dlrow mono"><span>${esc(e.name || "")}</span><span>${esc(downloadRecords(e))}</span><span class="muted">${esc(utcShort(e.downloaded))}</span></div>`
+    + (e.error ? `<div class="dlfail"><span class="bad">failed ${esc(utcShort(e.checked))}: ${esc(e.error)}; ${e.downloaded ? `using the copy from ${esc(utcShort(e.downloaded))}` : "no copy"}</span>`
+      + (e.retry ? ` <button class="btn small" data-act="dlretry" data-server="${k}" data-path="${esc(e.path)}">Retry</button>` : "") + `</div>` : "")).join("")).join("");
+  return `<section class="psection"><div class="psec"><span class="psectitle">Downloads</span><span class="muted">a failed fetch keeps the previous copy; receivers read a new one at their next start</span></div><div class="dlist">${rows}</div></section>`;
 }
 
 function serverPaneHtml(k, sv) {
@@ -2086,7 +2105,7 @@ function serverPaneHtml(k, sv) {
     + `<button class="btn small" data-act="editserver" data-server="${k}">Edit</button><button class="btn small" data-act="removeserver" data-server="${k}">Remove</button></div>`
     + sec(`<div class="psec"><span class="psectitle">Join code</span></div>${joinCodeRow(sv)}`)
     + sec(addRadioHtml(k, sv))
-    + downloadsHtml(a.seat)
+    + downloadsHtml(a.seat, k)
     + sec(`<div class="psec"><span class="psectitle">Log</span></div><div class="console mono" data-console="r${k}">${lines || '<div class="cl faint">nothing logged yet</div>'}</div>`);
 }
 
@@ -2431,6 +2450,12 @@ function bindInput() {
       else if (sp.dataset.act === "srvapply") { srvApply(sv, sp.dataset.radio); return; }
       else { if (document.activeElement) document.activeElement.blur(); delete (app.srvPending || {})[`${sv.address}|${sp.dataset.radio}`]; }
       renderSettings();
+      return;
+    }
+    const dr = e.target.closest('[data-act="dlretry"]');
+    if (dr) {  // a failed download fetched again now, by the server
+      const link = app.servers[Number(dr.dataset.server)] && app.servers[Number(dr.dataset.server)].link;
+      if (link) { dr.disabled = true; dr.textContent = "Retrying..."; seatRequest(link, "download", "downloads", { path: dr.dataset.path }); }
       return;
     }
     const su = e.target.closest('[data-act="setupfind"], [data-act="setupremove"]');
