@@ -536,10 +536,20 @@ CW_SKIP_HOLD_SEC = 1e8       # an exclusion zone that never lapses
 BANDS = dict(zip(('160m', '80m', '40m', '30m', '20m', '17m', '15m', '12m', '10m', '6m'),
                  (row[0] for row in CW_BAND_PLAN_R2)))
 BAND_EDGE_MARGIN = 0.10
+# Named receivers with a centre of their own, kHz (cdub89/SparkGap#57): 10m-beacons covers 28129-28300 at
+# 192 kHz, where RBN's beacon list puts almost every HF beacon; plain 10m stops at 28154.
+BAND_CENTRES_KHZ = {'10m-beacons': 28225}
+
+
+def band_known(name):
+    """A band name SparkGap accepts: a band of the plan or a named receiver."""
+    return isinstance(name, str) and (name in BANDS or name in BAND_CENTRES_KHZ)
 
 
 def band_center_hz(name, sample_rate):
-    """Centre for a named band: its lower CW edge plus 0.4 of the IQ span."""
+    """Centre for a named band: its lower CW edge plus 0.4 of the IQ span, or its own centre."""
+    if name in BAND_CENTRES_KHZ:
+        return BAND_CENTRES_KHZ[name] * 1000
     return BANDS[name] * 1000 + round(sample_rate * (0.5 - BAND_EDGE_MARGIN))
 
 
@@ -8653,7 +8663,7 @@ class SparkGap:
                 raise ValueError(f"Band dict must have center_khz or center_hz: {band_entry}")
             name = band_entry.get('name', str(int(hz // 1000)))
             return name, hz
-        if isinstance(band_entry, str) and band_entry in BANDS:
+        if band_known(band_entry):
             return band_entry, band_center_hz(band_entry, sample_rate)
         return str(band_entry), int(band_entry)
 
@@ -9015,7 +9025,7 @@ class SparkGap:
             why = "only the band can be changed live"
         elif len(self._band_meta) != 1:
             why = "not supported with more than one band"
-        elif not isinstance(band, str) or band not in BANDS:
+        elif not band_known(band):
             why = "unknown band %r" % (band,)
         elif self.cfg.get('per_band_min_snr') or self.cfg.get('pfb_scanner_bands'):
             why = "not supported with per-band settings"

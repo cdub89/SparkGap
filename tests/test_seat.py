@@ -792,3 +792,18 @@ def test_nodes_the_all_band_recorder_cannot_feed_keep_record_wav(
     monkeypatch.setattr(seat, "pid", lambda name: 4242)
     seat.change("dallas1", {"record": True}, live_record=_live)
     assert seat.config(i)["record_wav"] and "record_iq_dir" not in seat.config(i)
+
+
+def test_bands_are_read_by_name_with_named_receivers(tmp_path: Path) -> None:
+    # cdub89/SparkGap#57: a named receiver is offered beside the band plan's names
+    from seat import band_name, bands_in
+    (tmp_path / "sparkgap.py").write_text(BANDS_LINE + "BAND_CENTRES_KHZ = {'10m-beacons': 28225}\n")
+    assert bands_in(tmp_path) == ["40m", "20m", "17m", "10m-beacons"]
+    assert band_name({"name": "10m beacons", "center_khz": 28225}) == "10m beacons"
+    assert band_name({"center_khz": 50290}) == "50290" and band_name("40m") == "40m"
+
+
+def test_a_band_given_by_its_centre_is_labelled_by_name(seat: Seat) -> None:
+    i = seat.instance("dallas1")
+    write_config(i.config, {"bands": ["40m", {"name": "6m digital", "center_khz": 50290}]})
+    assert seat.band(i) == "40m+6m digital"
