@@ -4,9 +4,9 @@ checked in this order; a call not spotted is dropped by the first gate that is f
   S Buffer             each signal (decoder bin) keeps its last 256 decoded characters, one
                        continuous text, first in first out; the buffer ends with its bin
   1 Shape              prefix (@, @@, #@ or #@@), 1 to 4 digits, 1 to 6 letters
-  2 Not banned         the call is not on the banned list or in the Bad Calls file, and is in
-                       SCP or the known-call list when the node checks it (spot_rule_scp; a
-                       beacon need not be)
+  2 Not banned         the call is not on the banned list or in the Bad Calls file, and is a
+                       known call (MASTER.SCP or the known-call list) when the node's known
+                       call filter is on (spot_rule_scp; a beacon need not be)
   3 Reads              reads in the buffer: 2 for a patt3ch.lst + pattern, 3 unflagged, 5 none
                        (normal level), one more for a call not on the node's known-call list
                        (spot_validation_calls); a call decoded twice is read twice
@@ -266,7 +266,7 @@ class GateSpotRule:
         self.level = level                  # gate 3: spot_validation
         self.listed = listed                # gate 3: the known-call list, or None
         self.banned = frozenset(banned)
-        self.scp = scp                      # gate 2: in Super Check Partial, or None
+        self.scp = scp                      # gate 2, the known call filter: in MASTER.SCP, or None
         self.segments = [tuple(s) for s in segments] if segments else None
         self.notched = [tuple(n) for n in notched]
         self.beacons = dict(beacons or {})

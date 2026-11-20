@@ -1,4 +1,4 @@
-"""Files SparkGap downloads (SCP.DB, the SKCC roster, RBN archive days, the RBN auth library).
+"""Files SparkGap downloads (the SKCC roster, RBN archive days, the RBN auth library).
 
 refresh() fetches a file when it is missing, too old or no longer current, and keeps a download
 only when its check passes; a failed fetch keeps the previous copy. Each refresh is noted in

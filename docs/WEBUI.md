@@ -73,7 +73,7 @@ The left side lists each server's radios. Under each radio:
 
 Below the radios, **Server** holds the join code, Setup, RBN upload, the
 server's log, and **Downloads**: each file SparkGap fetched (the RBN auth
-library, SCP.DB, the SKCC roster, the RBN known calls, RBN's `patt3ch.lst`
+library, the SKCC roster, the RBN known calls, RBN's `patt3ch.lst`
 and beacon list), its record count, when it downloaded, where it is, and the
 last failed fetch. A failed or empty fetch keeps the previous copy.
 `sparkgap.sh status` lists the same.
@@ -152,8 +152,8 @@ Settings, in plain terms:
 - **Gated Rule filters**, shown only under the Gated Rule, as the Aggregator
   has them: **Bad Calls** (calls in `BadCalls.txt`), **Notched Freqs**
   (frequencies in `NotchedFreqs.txt`), each with the file's path beside the
-  config, and **SCP only** (no spot for a call in neither Super Check Partial
-  nor the known call list, beacons excepted). All are off unless set.
+  config, and **Known call filter** (no spot for a call that is in neither
+  SCP nor the known call list, beacons excepted). All are off unless set.
 
 The Repeat Rule's own options (contest words, CQ repeats, fragments and the
 rest), Strongest copy and Decoder SNR are config keys, not shown here: the

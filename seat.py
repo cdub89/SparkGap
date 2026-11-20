@@ -247,7 +247,7 @@ _CACHE: dict[Path, tuple[tuple[int, int, int], Any]] = {}
 _CACHE_LOCK = threading.Lock()
 
 
-RETRYABLE = ("SCP.DB", "skccdata.txt", "patt3ch.lst", "bcn.csv", "librbn2_auth.so")
+RETRYABLE = ("skccdata.txt", "patt3ch.lst", "bcn.csv", "librbn2_auth.so")
 
 
 def retry_fetchers() -> dict[str, Callable[[Path], Any]]:
@@ -255,10 +255,8 @@ def retry_fetchers() -> dict[str, Callable[[Path], Any]]:
     known calls are built from the archive days at start, so they have none."""
     import rbn2_feeder
     import rbn_files
-    import scp_db
     import skcc_roster
     return {
-        "SCP.DB": scp_db.refresh,
         "skccdata.txt": skcc_roster.refresh,
         "patt3ch.lst": rbn_files.refresh_patt3ch,
         "bcn.csv": rbn_files.refresh_beacons,
@@ -1321,7 +1319,7 @@ class Seat:
 
     def download_folders(self) -> list[Path]:
         """Where this machine's downloads land: the run root (the RBN auth library), and each
-        copy's rbn_known_dir (SCP.DB, the SKCC roster, the RBN archive days)."""
+        copy's rbn_known_dir (the SKCC roster, the RBN archive days, RBN's reference files)."""
         out = [self.root, self.root / "rbn_known"]
         for i in self.instances():
             try:

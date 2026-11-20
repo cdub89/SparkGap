@@ -801,10 +801,10 @@ def test_the_snapshot_lists_downloads_from_the_run_root_and_each_rbn_known_dir(s
     downloads.note(lib, "https://example.invalid/lib", None, "rbn2auth/1.2", None)
     elsewhere = seat.root / "code" / "rbn_known"  # a copy without rbn_known_dir: relative to its code
     elsewhere.mkdir()
-    (elsewhere / "SCP.DB").write_bytes(b"x")
-    downloads.note(elsewhere / "SCP.DB", "https://example.invalid/scp", 41_203, "calls", None)
+    (elsewhere / "skccdata.txt").write_bytes(b"x")
+    downloads.note(elsewhere / "skccdata.txt", "https://example.invalid/skcc", 41_203, "calls", None)
     got = {e["name"]: e["records"] for e in seat.snapshot()["downloads"]}
-    assert got == {"librbn2_auth.so": None, "SCP.DB": 41_203}
+    assert got == {"librbn2_auth.so": None, "skccdata.txt": 41_203}
     i = seat.instances()[0]
     i.config.write_text(json.dumps({**json.loads(i.config.read_text()), "rbn_known_dir": 17}))
     assert {e["name"] for e in seat.snapshot()["downloads"]} >= {"librbn2_auth.so"}
@@ -819,13 +819,13 @@ def test_retry_fetches_a_failed_download_with_the_codes_own_fetcher(seat: Seat, 
 
     def scp(d: Path) -> None:
         got.append(d)
-        (d / "SCP.DB").write_bytes(b"x")
-        downloads.note(d / "SCP.DB", "https://example.invalid/scp", 41_203, "calls", None)
+        (d / "skccdata.txt").write_bytes(b"x")
+        downloads.note(d / "skccdata.txt", "https://example.invalid/skcc", 41_203, "calls", None)
 
-    monkeypatch.setattr(seat_mod, "retry_fetchers", lambda: {"SCP.DB": scp})
-    assert seat.retry_download(str(folder / "SCP.DB")) == "SCP.DB: downloaded, 41203; read at the next start"
+    monkeypatch.setattr(seat_mod, "retry_fetchers", lambda: {"skccdata.txt": scp})
+    assert seat.retry_download(str(folder / "skccdata.txt")) == "skccdata.txt: downloaded, 41203; read at the next start"
     assert got == [folder.resolve()]
-    assert next(e for e in seat.snapshot()["downloads"] if e["name"] == "SCP.DB")["retry"] is True
+    assert next(e for e in seat.snapshot()["downloads"] if e["name"] == "skccdata.txt")["retry"] is True
 
 
 def test_retry_refuses_what_it_does_not_download(seat: Seat, tmp_path: Path) -> None:
