@@ -29,7 +29,8 @@ checked in this order; a call not spotted is dropped by the first gate that is f
  10 Re-spot            not spotted on this band in the last 10 minutes, unless moved 1 kHz
  11 Window             the frequency is inside the configured CW segments and outside every
                        range in the Notched Freqs file
- 12 Beacon             a /B, NCDXF or listed beacon skips 5 to 8; an NCDXF or listed beacon
+ 12 Beacon             a /B (KI6MTV/B, or KI6MTV /B read so in 2 windows), NCDXF or listed beacon
+                       skips 5 to 8; an NCDXF or listed beacon
                        spots on one read (it sends its call once a slot); an NCDXF beacon on its
                        frequency skips 4 too (its fading dashes decode as noise words that tie
                        it), and other such beacons are not a listed beacon's rivals; on an NCDXF
@@ -397,6 +398,13 @@ class GateSpotRule:
     def beacon(self, call: str, f: float) -> bool:
         return call.endswith("/B") or self.known_beacon(call, f)
 
+    def _read_as_b(self, call: str, window: int) -> bool:
+        """Gate 12: a /B beacon whose /B the decoder sent as a word of its own (KI6MTV /B): its /B
+        form read in SLASH_MIN windows of the signal's buffer, the count that sends it in that form."""
+        form = call + "/B"
+        wins = self._bins.get(self._win_bin.get(window, -1), {})
+        return "/" not in call and sum(form in self._forms.get(w, ()) for w in wins) >= SLASH_MIN
+
     def _ncdxf(self, tok: str) -> str:
         """Gate 12: the NCDXF call a word on an NCDXF frequency is one letter off, if only one."""
         if (tok in NCDXF or len(tok) < BEACON_MIN_CHARS
@@ -437,7 +445,7 @@ class GateSpotRule:
         for call in dict.fromkeys(t for t in text.split() if CALL_RE.match(t)):
             if snr is not None:
                 self._reads.append((now, call, freq_khz, snr))
-            if self._check(call, buf, tied, freq_khz, now, snr):
+            if self._check(call, buf, tied, freq_khz, now, snr, window):
                 self._held.append((now, call, freq_khz, snr, report, self.trace[-1][4], window))
         return []
 
@@ -477,13 +485,13 @@ class GateSpotRule:
         return spots
 
     def _check(self, call: str, buf: list[str], tied: list[tuple[int, str, bool]],
-               f: float, now: float, snr: float | None) -> bool:
+               f: float, now: float, snr: float | None, window: int = -1) -> bool:
         b = base(call)
         if not STRUCT_RE.match(b):
             return self._decide(now, f, call, 1)
         if call in self.banned or b in self.banned:
             return self._decide(now, f, call, 2)
-        beacon = self.beacon(call, f)
+        beacon = self.beacon(call, f) or self._read_as_b(call, window)
         if (self.scp is not None and not beacon and not (self.scp(call) or self.scp(b))
                 and (self.listed is None or not self.listed(b))):     # a known call needs no SCP entry
             return self._decide(now, f, call, 2, "not in SCP" if self.listed is None else "not in SCP or the known calls")
