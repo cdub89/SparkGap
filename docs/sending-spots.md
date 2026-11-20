@@ -9,13 +9,15 @@ machine.
 
 - SparkGap running, with its telnet server on (`telnet_port` in your config,
   default 7300).
-- A SparkGap checkout that has `rbn2_feeder.py`. Linux x86_64 and python3.
+- A SparkGap checkout that has `rbn2_feeder.py`. Linux x86_64 or aarch64 (a
+  64-bit Raspberry Pi) and python3.
 - **The RBN auth library, `librbn2_auth.so`.** The feeder depends on it: RBN
   accepts uploads only from a feeder that identifies itself the way RBN expects,
   and the library does that part. It is not in SparkGap's repo: a live feeder
-  downloads it on first start from
-  `https://downloads.wx7v.net/rbn/librbn2_auth.so` and keeps it only when its
-  SHA-256 matches the one `rbn2_feeder.py` pins.
+  downloads its machine's build on first start from
+  `https://downloads.wx7v.net/rbn/<machine>/librbn2_auth.so` (`x86_64` or
+  `aarch64`) and keeps it only when its SHA-256 matches the one
+  `rbn2_feeder.py` pins.
 - Your callsign and grid in the SparkGap config.
 
 ## Setup
@@ -24,7 +26,7 @@ machine.
    checkout, not inside it, when `rbn_upload` is live: with the checkout at
    `~/sparkgap/code`, it lands at `~/sparkgap/librbn2_auth.so`. A failed
    download keeps the copy already there. To fetch it by hand, download it and
-   `SHA256SUMS.txt` from `https://downloads.wx7v.net/rbn/`, check it with
+   `SHA256SUMS.txt` from `https://downloads.wx7v.net/rbn/<machine>/`, check it with
    `sha256sum -c SHA256SUMS.txt`, and put it there.
 2. **Set the config.** In your SparkGap config:
 
@@ -69,7 +71,7 @@ call.
 | --- | --- |
 | `not posting: no <path>: RBN would drop these spots` | The library is not there and did not download (see the `downloads:` warning before it); `<path>` is where it goes |
 | `<path> is version '...', this feeder takes rbn2auth/1.2` | The library and the feeder don't match, and the pinned one did not download; update your checkout, or check the `downloads:` warning |
-| `cannot load <path>` | The file is damaged or not for this machine (x86_64 only); delete it and the feeder downloads it again |
+| `cannot load <path>` | The file is damaged or not for this machine (`uname -m`); delete it and the feeder downloads it again |
 | `rbn_upload is None: off` | The config has no `rbn_upload` key |
 | `callsign and grid must both be set` | Fill both in the config |
 | `no band info from the skimmer's SETT: empty bandLimits` | SparkGap's telnet server did not report its bands; check it is running and on the configured port |

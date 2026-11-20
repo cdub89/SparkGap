@@ -810,6 +810,15 @@ def test_the_snapshot_lists_downloads_from_the_run_root_and_each_rbn_known_dir(s
     assert {e["name"] for e in seat.snapshot()["downloads"]} >= {"librbn2_auth.so"}
 
 
+def test_the_auth_library_is_a_download_only_where_it_is_built(monkeypatch: pytest.MonkeyPatch) -> None:
+    import rbn2_feeder
+    from seat import download_specs
+    monkeypatch.setattr(rbn2_feeder, "auth_build", lambda machine=None: ("https://example.invalid/lib", "0"))
+    assert download_specs()["librbn2_auth.so"][0] == "https://example.invalid/lib"
+    monkeypatch.setattr(rbn2_feeder, "auth_build", lambda machine=None: None)
+    assert "librbn2_auth.so" not in download_specs()
+
+
 def _noted_roster(seat: Seat, downloaded: float) -> Path:
     import os
 

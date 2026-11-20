@@ -3,10 +3,11 @@
 `rbn2_feeder.py` depends on `librbn2_auth.so`, a small private library that
 fills in the two fields RBN's upload scripts check on a feeder. Its interface is
 `rbn2_auth.h`; the library itself is not in this repo. A live feeder downloads
-it from `AUTH_URL`,
-`https://downloads.wx7v.net/rbn/librbn2_auth.so`, and keeps only the build
-whose SHA-256 is `AUTH_SHA256`; `SHA256SUMS.txt` beside it checks a copy by
-hand. A new version gets a new URL. Setup and use: `sending-spots.md`.
+its machine's build from `AUTH_BUILDS`
+(`https://downloads.wx7v.net/rbn/<machine>/librbn2_auth.so`, `x86_64` or
+`aarch64`), and keeps it only when its SHA-256 is the one pinned there;
+`SHA256SUMS.txt` beside each build checks a copy by hand. A new version gets new
+URLs. Setup and use: `sending-spots.md`.
 
 ## Interface
 
@@ -20,7 +21,7 @@ Three functions, nothing else exported:
   in row order.
 
 Each hash is 8 hex digits and a NUL. On bad input or a short buffer a function
-returns -1 and writes nothing. Linux x86_64.
+returns -1 and writes nothing. Linux x86_64 and aarch64.
 
 ## How the feeder uses it
 
