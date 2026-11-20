@@ -4,9 +4,9 @@ checked in this order; a call not spotted is dropped by the first gate that is f
   S Buffer             each signal (decoder bin) keeps its last 256 decoded characters, one
                        continuous text, first in first out; the buffer ends with its bin
   1 Shape              prefix (@, @@, #@ or #@@), 1 to 4 digits, 1 to 6 letters
-  2 Not banned         the call is not on the banned list or in the Bad Calls file, and is a
-                       known call (MASTER.SCP or the known-call list) when the node's known
-                       call filter is on (spot_rule_scp; a beacon need not be)
+  2 Not banned         the call is not in the Bad Calls file, and is in
+                       MASTER.SCP or on the known-call list when the node's MASTER.SCP filter
+                       is on (spot_rule_scp; a beacon need not be)
   3 Reads              reads in the buffer: 2 for a patt3ch.lst + pattern, 3 unflagged, 5 none
                        (normal level), one more for a call not on the node's known-call list
                        (spot_validation_calls); a call decoded twice is read twice
@@ -15,7 +15,7 @@ checked in this order; a call not spotted is dropped by the first gate that is f
                        cut-off copy of a longer call read there (N5T of N5TJ) never wins; noise or
                        sign-off letters (E T I S K) never make a longer call (K1TRE, KE8UEX K),
                        nor does a portable form (W1AW/7 is W1AW)
-  5 Keyword            the buffer holds CQ, TEST or QRZ, or an enabled qualifier
+  5 Keyword            the buffer holds CQ or TEST, or an enabled qualifier
   6 Qualifier          a qualifier the node profile enables acts as the event's CQ (SS N6RO)
   7 Tied               the call is the first callsign within 3 words after the keyword (noise
                        letters do not count; a sign-off AR KN SK BK TU ends the CQ), or follows
@@ -65,7 +65,7 @@ from spot_rule import (
 
 log = logging.getLogger(__name__)
 
-KEYWORDS = frozenset({"CQ", "TEST", "QRZ"})   # gate 5; UP would spot a split DX's callers
+KEYWORDS = frozenset({"CQ", "TEST"})   # gate 5; UP would spot a split DX's callers, QRZ a net's (#56 EK6)
 QUALIFIERS = frozenset({"SS", "NA", "FD", "CWT", "SST", "MST", "POTA", "SOTA", "WWFF", "IOTA",
                         "SKCC", "QRP", "DX"})                           # gate 6; enabled per node
 CALL_RE = re.compile(r"^(?:[A-Z0-9]{1,3}/)?(?:[A-Z]{1,2}|[0-9][A-Z]{1,2})[0-9]{1,4}[A-Z]{1,6}"
@@ -266,7 +266,7 @@ class GateSpotRule:
         self.level = level                  # gate 3: spot_validation
         self.listed = listed                # gate 3: the known-call list, or None
         self.banned = frozenset(banned)
-        self.scp = scp                      # gate 2, the known call filter: in MASTER.SCP, or None
+        self.scp = scp                      # gate 2, the MASTER.SCP filter: in MASTER.SCP, or None
         self.segments = [tuple(s) for s in segments] if segments else None
         self.notched = [tuple(n) for n in notched]
         self.beacons = dict(beacons or {})

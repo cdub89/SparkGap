@@ -446,3 +446,9 @@ def test_12_an_ncdxf_beacon_skips_gate_4() -> None:
     assert _feed(r, "VE8AT I6BT", f=14100.0) == ["VE8AT"]
     r = _rule(beacons={"W5ABC": 7039.0})
     assert _feed(r, "W5ABC I6BT", f=7039.0) == [] and _why(r, "W5ABC") == 4
+
+
+def test_5_qrz_is_no_keyword() -> None:
+    r = _rule()                     # cdub89/SparkGap#56 EK6: QRZ asks who is calling, no CQ
+    assert _feed(r, "QRZ QRZ DE W0GXQ W0GXQ K") == [] and _why(r, "W0GXQ") == 5
+    assert _feed(r, "QRZ W8OP W8OP", f=14056.6) == [] and _why(r, "W8OP") == 5

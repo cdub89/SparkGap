@@ -148,7 +148,7 @@ Settings, in plain terms:
 - **Gated Rule filters**, shown only under the Gated Rule, as the Aggregator
   has them: **Bad Calls** (calls in `BadCalls.txt`), **Notched Freqs**
   (frequencies in `NotchedFreqs.txt`), each with the file's path beside the
-  config, and **Known call filter** (no spot for a call that is in neither
+  config, and **MASTER.SCP Filter** (no spot for a call that is in neither
   SCP nor the known call list, beacons excepted). All are off unless set.
 
 The Repeat Rule's own options (contest words, CQ repeats, fragments and the

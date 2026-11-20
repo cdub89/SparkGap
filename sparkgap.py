@@ -2930,7 +2930,7 @@ def _make_spot_rule(config, tracker, local=None):
         # spot_rule_bad_calls, spot_rule_notched_freqs (off by default): BadCalls.txt and
         # NotchedFreqs.txt beside the config file, as the Aggregator's (Node Profile)
         here = os.path.dirname(_config_path or '.')
-        bad = list(config.get('spot_rule_banned_calls', ()))
+        bad = []
         notched = []
         for key, name in (('spot_rule_bad_calls', 'BadCalls.txt'), ('spot_rule_notched_freqs', 'NotchedFreqs.txt')):
             path = os.path.join(here, name)
@@ -2942,7 +2942,7 @@ def _make_spot_rule(config, tracker, local=None):
                 bad += read_bad_calls(path)
             else:
                 notched = read_notched(path)
-        # spot_rule_scp, the known call filter (cdub89/SparkGap#58): a call in neither MASTER.SCP nor
+        # spot_rule_scp, the MASTER.SCP filter (cdub89/SparkGap#58): a call in neither MASTER.SCP nor
         # the known call list fails gate 2
         scp = None
         if config.get('spot_rule_scp'):
@@ -2950,9 +2950,9 @@ def _make_spot_rule(config, tracker, local=None):
             if valid:
                 scp = lambda c: c in valid or max(c.split('/'), key=len) in valid
             else:
-                log.warning("spot_rule_scp is on but MASTER.SCP holds no calls: the known call filter is off")
+                log.warning("spot_rule_scp is on but MASTER.SCP holds no calls: the MASTER.SCP filter is off")
         log.info("spot rule gates: %d bad calls, %d notched ranges%s", len(bad), len(notched),
-                 ", known call filter on" if scp else "")
+                 ", MASTER.SCP filter on" if scp else "")
         calls = (local or {}).get('validation_calls', config.get('spot_validation_calls'))
         listed = _validation_list(config, tracker, calls)
         # spot_validation: the call validation level steps gate 3's reads; off or unset is normal
@@ -2979,7 +2979,7 @@ def _make_spot_rule(config, tracker, local=None):
             qualifiers=config.get('spot_rule_qualifiers', ()),
             stronger_db=float(stronger) if stronger else None)
     if config.get('spot_rule_scp') and local is None:
-        log.warning("spot_rule_scp is on but spot_rule_gates is off: the known call filter acts only with the gate rule")
+        log.warning("spot_rule_scp is on but spot_rule_gates is off: the MASTER.SCP filter acts only with the gate rule")
     # spot_validation (off by default): permissive / normal / aggressive confidence score in
     # place of the tier count; spot_validation_calls adds a call list to the score: "scp"
     # (MASTER.SCP), "rbn" (RBN known calls, rbn_known.py, refreshed from the archives here) or

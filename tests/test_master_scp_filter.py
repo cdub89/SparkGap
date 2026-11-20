@@ -1,4 +1,4 @@
-"""The Gated Rule's known call filter (spot_rule_scp) reads MASTER.SCP, cdub89/SparkGap#58."""
+"""The Gated Rule's MASTER.SCP filter (spot_rule_scp) reads MASTER.SCP, cdub89/SparkGap#58."""
 
 from __future__ import annotations
 
@@ -28,11 +28,11 @@ def test_the_known_call_filter_without_master_scp_is_off(
     caplog.set_level(logging.WARNING, logger="sparkgap")
     cfg = {"spot_rule_gates": True, "spot_rule_scp": True}
     rule = sparkgap._make_spot_rule(cfg, _tracker(set()))
-    assert rule.scp is None and "the known call filter is off" in caplog.text
+    assert rule.scp is None and "the MASTER.SCP filter is off" in caplog.text
 
 
 def test_the_known_call_filter_without_the_gate_rule_says_so(
         caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.WARNING, logger="sparkgap")
     sparkgap._make_spot_rule({"spot_rule": "repeat", "spot_rule_scp": True}, _tracker(set()))
-    assert "the known call filter acts only with the gate rule" in caplog.text
+    assert "the MASTER.SCP filter acts only with the gate rule" in caplog.text
