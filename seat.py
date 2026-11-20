@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import downloads
 import radios
 
 START_WAIT_S = 45  # longest a copy takes to reach the radio and go live
@@ -244,6 +245,23 @@ def proc_started(pid: int) -> float | None:
 
 _CACHE: dict[Path, tuple[tuple[int, int, int], Any]] = {}
 _CACHE_LOCK = threading.Lock()
+
+
+def download_specs() -> dict[str, tuple[str, downloads.Check, str, str]]:
+    """The files SparkGap Web can check and refresh, by name: URL, check, what it counts, user
+    agent, all the code's own. The RBN known calls are built from the archive days at start."""
+    import rbn2_feeder
+    import rbn_files
+    import skcc_roster
+    return {
+        "skccdata.txt": (skcc_roster.ROSTER_URL, skcc_roster._check, "members", skcc_roster.USER_AGENT),
+        "patt3ch.lst": (rbn_files.PATT3CH_URL, rbn_files._check_patt3ch, "patterns", rbn_files.USER_AGENT),
+        "bcn.csv": (rbn_files.BCN_URL, rbn_files._check_beacons, "beacons", rbn_files.USER_AGENT),
+        "master.scp": (rbn_files.MASTER_SCP_URL, rbn_files._check_master_scp, "calls",
+                       rbn_files.USER_AGENT),
+        "librbn2_auth.so": (rbn2_feeder.AUTH_URL, rbn2_feeder._auth_check, rbn2_feeder.AUTH_VERSION,
+                            "SparkGap rbn2_feeder"),
+    }
 
 
 def cached(path: Path, parse: Callable[[str], Any]) -> Any:
@@ -1299,6 +1317,57 @@ class Seat:
             "rx_settings": list(caps.rx_settings),
         }
 
+    def download_folders(self) -> list[Path]:
+        """Where this machine's downloads land: the run root (the RBN auth library), and each
+        copy's rbn_known_dir (the SKCC roster, the RBN archive days, RBN's reference files)."""
+        out = [self.root, self.root / "rbn_known"]
+        for i in self.instances():
+            try:
+                d = Path(self.config(i).get("rbn_known_dir") or "rbn_known")
+            except (OSError, ValueError, TypeError):  # a config that does not read, or not a path
+                continue
+            out.append(d if d.is_absolute() else i.code / d)
+        return out
+
+    def _downloaded(self) -> list[tuple[dict[str, Any], Path, tuple[str, downloads.Check, str, str]]]:
+        """Each noted download SparkGap Web can act on, at the path the code puts it (never a path
+        downloads.json names): its folder's file, the auth library in the run root only."""
+        specs, root = download_specs(), self.root.resolve()
+        out = []
+        for e in downloads.listed(self.download_folders()):
+            spec, folder = specs.get(e["name"]), Path(e["path"]).parent.resolve()
+            if spec is None or (e["name"] == "librbn2_auth.so" and folder != root):
+                continue
+            out.append((e, folder / e["name"], spec))
+        return out
+
+    def check_downloads(self) -> str:
+        """Check for updates: each file's date on its server against our download, nothing fetched."""
+        said = []
+        for e, path, (url, _, _, agent) in self._downloaded():
+            try:
+                newest = downloads.server_date(url, agent)
+            except downloads.FAILED as err:
+                said.append(f"{path.name} not checked ({type(err).__name__}: {err})")
+                continue
+            if newest is None:
+                said.append(f"{path.name}: its server gives no date")
+            elif e.get("downloaded") and newest <= e["downloaded"]:
+                said.append(f"{path.name} up to date")
+            else:
+                said.append(f"{path.name} newer on its server ({time.strftime('%m-%d %H:%MZ', time.gmtime(newest))})")
+        return "Downloads: " + ("; ".join(said) or "none to check")
+
+    def refresh_downloads(self) -> str:
+        """Refresh: fetch every file now, fresh or not; a failed fetch keeps the copy. Receivers
+        read a new copy at their next start."""
+        said = []
+        for _, path, (url, check, what, agent) in self._downloaded():
+            downloads.refresh(path, url, check, what, agent, current=lambda _p: False)
+            e = next((x for x in downloads.listed([path.parent]) if x["name"] == path.name), {})
+            said.append(f"{path.name} failed ({e['error']})" if e.get("error") else f"{path.name} ok")
+        return "Downloads refreshed: " + ("; ".join(said) or "none") + "; receivers read them at their next start"
+
     def snapshot(self) -> dict[str, Any]:
         instances = self.instances()
         stations = sorted({r for i in instances if (r := self.radio(i))})
@@ -1311,4 +1380,5 @@ class Seat:
             "bands": bands_in(CODE),  # what an added receiver can run
             "default_settings": self.default_settings(),
             "removed": self.removed_settings({i.name for i in instances}),
+            "downloads": downloads.listed(self.download_folders()),
         }
