@@ -70,12 +70,12 @@ The left side lists each server's radios. Under each radio:
 
 Below the radios, **Server** holds the join code, Setup, RBN upload, the
 server's log, and **Downloads**: each file SparkGap fetched (the RBN auth
-library, the SKCC roster, the RBN known calls, RBN's `patt3ch.lst`
-and beacon list), its record count, when it downloaded, where it is, and the
-last failed fetch, as `sparkgap.sh status` lists them. A failed or empty fetch
-keeps the previous copy. **Check for updates** compares each file's date on its
-server with our download; **Refresh** fetches them all now. Receivers read a new
-copy at their next start.
+library, the SKCC roster, the RBN known calls, RBN's `patt3ch.lst`,
+beacon list and `master.scp`), its record count, when it downloaded, where it
+is, and the last failed fetch, as `sparkgap.sh status` lists them. A failed or
+empty fetch keeps the previous copy. **Check for updates** compares each file's
+date on its server with our download; **Refresh** fetches them all now.
+Receivers read a new copy at their next start.
 
 ![The Server pane](web-server.png)
 

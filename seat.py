@@ -256,6 +256,8 @@ def download_specs() -> dict[str, tuple[str, downloads.Check, str, str]]:
         "skccdata.txt": (skcc_roster.ROSTER_URL, skcc_roster._check, "members", skcc_roster.USER_AGENT),
         "patt3ch.lst": (rbn_files.PATT3CH_URL, rbn_files._check_patt3ch, "patterns", rbn_files.USER_AGENT),
         "bcn.csv": (rbn_files.BCN_URL, rbn_files._check_beacons, "beacons", rbn_files.USER_AGENT),
+        "master.scp": (rbn_files.MASTER_SCP_URL, rbn_files._check_master_scp, "calls",
+                       rbn_files.USER_AGENT),
         "librbn2_auth.so": (rbn2_feeder.AUTH_URL, rbn2_feeder._auth_check, rbn2_feeder.AUTH_VERSION,
                             "SparkGap rbn2_feeder"),
     }
