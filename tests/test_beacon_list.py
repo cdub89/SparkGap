@@ -46,3 +46,20 @@ def test_the_list_is_read_once_a_run(tmp_path: Path) -> None:
     assert "W2DLL" in listed_beacons(on)
     (tmp_path / "bcn.csv").write_text("28300,K1NEW\n")
     assert "W2DLL" in listed_beacons(on) and "K1NEW" not in listed_beacons(on)
+
+
+def test_a_b_beacon_whose_suffix_comes_as_its_own_word_still_spots() -> None:
+    # cdub89/SparkGap#57 BL6: WX7V-1 11-20, KI6MTV on 28283.5 always decoded "KI6MTV /B", no CQ
+    r = spot_rule2.GateSpotRule(lambda c: "active")
+    spots = []
+    for t, text in enumerate(["BIBLE? DE KI6MTV /B", "KI6MTV /B READ", "BIBLE? DE KI6MTV /B"]):
+        r.feed(r.window_id(282835, t, 30.0 * t), 28283.5, text, 30.0 * t)
+        spots += r.end_pass()
+    assert [c for c, _ in spots] == ["KI6MTV/B"]                  # once read so in 2 windows
+    assert spot_rule2.beacon_kind("KI6MTV/B", 28283.5) == "/B"
+
+
+def test_one_garbled_b_does_not_make_a_beacon() -> None:
+    r = spot_rule2.GateSpotRule(lambda c: "active")
+    r.feed(r.window_id(140250, 0, 0.0), 14025.0, "DE K1ABC /B K1ABC K1ABC", 0.0)
+    assert r.end_pass() == []                                      # one window: still needs a CQ
