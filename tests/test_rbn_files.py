@@ -105,3 +105,9 @@ def test_the_tracker_reads_rbn_s_master_scp_else_the_shipped_one(tmp_path: Path,
     assert sparkgap._master_scp({**cfg, "master_scp": "COMBINED.SCP"}) == "COMBINED.SCP"
     monkeypatch.setattr(rbn_files, "refresh_master_scp", lambda d: None)
     assert sparkgap._master_scp(cfg) == "MASTER.SCP"
+
+
+def test_an_unusable_rbn_known_dir_falls_back_to_the_shipped_master_scp(tmp_path: Path) -> None:
+    (tmp_path / "file").write_text("x")
+    cfg = {"rbn_known_dir": str(tmp_path / "file" / "rbn_known")}  # under a file: can't be made
+    assert sparkgap._master_scp(cfg) == "MASTER.SCP"

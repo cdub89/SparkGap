@@ -156,8 +156,13 @@ def refresh(path: Path, url: str, check: Check, what: str, user_agent: str,
             get: Callable[[], bytes] | None = None, now: Callable[[], float] = time.time) -> bool:
     """Download url to path when path is missing, older than max_age_s, or current(path) is False;
     keep the download only when check passes. A failed fetch keeps the previous copy. Notes the
-    result in downloads.json and returns whether path exists."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    result in downloads.json and returns whether path exists; a folder that can't be made is no
+    download and no copy, so the caller falls back to its own."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        log.warning("downloads: %s cannot be made (%s): no download of %s", path.parent, e, url)
+        return False
     due = (not path.exists()
            or (max_age_s is not None and now() - path.stat().st_mtime > max_age_s)
            or (current is not None and not _holds(current, path)))

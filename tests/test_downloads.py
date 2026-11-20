@@ -132,3 +132,10 @@ def test_server_date_reads_last_modified(monkeypatch: pytest.MonkeyPatch) -> Non
                         lambda req, timeout: seen.append(req.get_method()) or Resp())
     assert downloads.server_date(URL, "test") == 1_794_594_395.0
     assert seen == ["HEAD"]
+
+
+def test_a_folder_that_cannot_be_made_is_no_download_not_a_crash(tmp_path: Path) -> None:
+    (tmp_path / "file").write_text("x")              # a file where the folder should be
+    path = tmp_path / "file" / "sub" / "list.txt"
+    ok, calls = _refresh(path, b"LIST\nA\n")
+    assert not ok and calls == []
