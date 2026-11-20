@@ -2,9 +2,11 @@
 
 `rbn2_feeder.py` depends on `librbn2_auth.so`, a small private library that
 fills in the two fields RBN's upload scripts check on a feeder. Its interface is
-`rbn2_auth.h`; the library itself is not in this repo and is not published. It
-is available from Chris WX7V on request, with a `SHA256SUMS.txt` to check it
-against. Setup and use: `sending-spots.md`.
+`rbn2_auth.h`; the library itself is not in this repo. A live feeder downloads
+it from `AUTH_URL`,
+`https://downloads.wx7v.net/rbn/librbn2_auth.so`, and keeps only the build
+whose SHA-256 is `AUTH_SHA256`; `SHA256SUMS.txt` beside it checks a copy by
+hand. A new version gets a new URL. Setup and use: `sending-spots.md`.
 
 ## Interface
 
@@ -25,8 +27,10 @@ returns -1 and writes nothing. Linux x86_64.
 Start up:
 
 1. Load `librbn2_auth.so` from the folder that contains the SparkGap checkout,
-   never inside it (`auth_lib_path()`). Missing or fails to load: stop, log why,
-   post nothing. There is no fallback.
+   never inside it (`auth_lib_path()`). A live feeder first downloads it there
+   when it is missing or not the pinned build (`fetch_auth_lib()`); a failed
+   download keeps the copy there. Missing or fails to load: stop, log why, post
+   nothing.
 2. Call `rbn2_auth_version` into a 64-byte buffer and compare it with the
    version the feeder takes. Anything else: stop and say which version was
    found.
