@@ -2972,7 +2972,6 @@ def _make_spot_rule(config, tracker, local=None):
             listed=listed,
             level=level,
             banned=bad,
-            segments=config.get('spot_rule_segments'),
             notched=notched,
             scp=scp,
             beacons=config.get('spot_rule_beacons'),
@@ -4566,7 +4565,7 @@ class _ItilaScanner:
             if _spot_rule_on:
                 if _bin_liveness and self._sc and _copies_known_runner(raw, self.valid_calls):
                     self._sc._lib.itila_sc_mark_evidence(self._sc._h, _ct.c_double(f_hz))
-                _emit_window(st, f_khz, raw, wpm, window_key)
+                _emit_window(st, f_khz, raw, wpm, window_key, cost)
                 continue
 
             # Path 1: direct extraction from this window (standard)
@@ -4665,7 +4664,7 @@ class _ItilaScanner:
             if _spot_rule_on:
                 if _bin_liveness and self._sc and _copies_known_runner(raw, self.valid_calls):
                     self._sc._lib.itila_sc_mark_evidence(self._sc._h, _ct.c_double(f_hz))
-                _emit_window(st, f_khz, raw, wpm, self._c_batch)
+                _emit_window(st, f_khz, raw, wpm, self._c_batch, cost)
                 continue
 
             # Path 1: direct CQ extraction
@@ -6944,6 +6943,7 @@ class SpotIntent:
     snr500: float = None   # itila2_snr_decoder: SNR in 500 Hz the spot reports; snr_db still ranks copies
     bin_seq: int = 0       # spot_rule_gates: the bin's never-reused id
     closed: bool = False   # spot_rule_gates: the bin closed; its buffer goes
+    cost: float = None     # spot_rule_gates: the decode's cost; a window keeps its lower-cost copy
 
 
 def _emit_intent(st, f_khz, call, wpm, is_runner, raw_text=''):
@@ -6964,7 +6964,7 @@ def _emit_intent(st, f_khz, call, wpm, is_runner, raw_text=''):
     st['pending'].append(intent)
 
 
-def _emit_window(st, f_khz, raw, wpm, window_key):
+def _emit_window(st, f_khz, raw, wpm, window_key, cost=None):
     """spot_rule "repeat": queue one decoded text of a window for RepeatSpotRule.
     Both LPF paths of a window share window_key, so they count as one sighting."""
     if _DUMP_WINDOWS and st.get('logged_window') != window_key:     # one line per window: replays rebuild bins exactly
@@ -6974,7 +6974,7 @@ def _emit_window(st, f_khz, raw, wpm, window_key):
     st['pending'].append(SpotIntent(
         call='', freq_khz=f_khz, snr_db=st['snr'], wpm=wpm, is_runner=True,
         window_id=window_key, bin_id=id(st), window_text=raw, snr500=st.get('snr500'),
-        bin_seq=st.get('bin_seq', 0)))
+        bin_seq=st.get('bin_seq', 0), cost=cost))
 
 
 class SpotTracker:
@@ -7971,7 +7971,8 @@ class SpotTracker:
                 spots += [{'call': call, 'freq_khz': f, 'snr': rule.spot_snr.get(call, intent.snr_db),
                            'wpm': intent.wpm, 'method': 'repeat', 'stream': stream}
                           for call, f in rule.feed(w, intent.freq_khz, intent.window_text, now,
-                                                   intent.snr_db, intent.snr500)
+                                                   intent.snr_db, intent.snr500,
+                                                   **({'cost': intent.cost} if hasattr(rule, 'end_pass') else {}))
                           if call not in self.blacklist]
             return spots
         # gate_short_scp_exact: require a second sighting at the same freq
@@ -9641,7 +9642,7 @@ class SparkGap:
                                 isc = m._itila_scanner
                                 if isc and isc._sc:
                                     isc._sc._lib.itila_sc_mark_evidence(isc._sc._h, _ct.c_double(f_hz))
-                        _emit_window(st, f_khz, raw, wpm, self._poll_batch)
+                        _emit_window(st, f_khz, raw, wpm, self._poll_batch, cost)
                         continue
                     call = _itila_extract_cq_call(raw, self.tracker.valid_calls)
                     if call and call not in st['spotted']:
