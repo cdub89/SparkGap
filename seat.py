@@ -248,18 +248,20 @@ _CACHE_LOCK = threading.Lock()
 
 def download_specs() -> dict[str, tuple[str, downloads.Check, str, str]]:
     """The files SparkGap Web can check and refresh, by name: URL, check, what it counts, user
-    agent, all the code's own. The RBN known calls are built from the archive days at start."""
+    agent, all the code's own; the auth library only where it is built for this machine. The RBN
+    known calls are built from the archive days at start."""
     import rbn2_feeder
     import rbn_files
     import skcc_roster
+    auth = rbn2_feeder.auth_build()
     return {
         "skccdata.txt": (skcc_roster.ROSTER_URL, skcc_roster._check, "members", skcc_roster.USER_AGENT),
         "patt3ch.lst": (rbn_files.PATT3CH_URL, rbn_files._check_patt3ch, "patterns", rbn_files.USER_AGENT),
         "bcn.csv": (rbn_files.BCN_URL, rbn_files._check_beacons, "beacons", rbn_files.USER_AGENT),
         "master.scp": (rbn_files.MASTER_SCP_URL, rbn_files._check_master_scp, "calls",
                        rbn_files.USER_AGENT),
-        "librbn2_auth.so": (rbn2_feeder.AUTH_URL, rbn2_feeder._auth_check, rbn2_feeder.AUTH_VERSION,
-                            "SparkGap rbn2_feeder"),
+        **({"librbn2_auth.so": (auth[0], rbn2_feeder._auth_check, rbn2_feeder.AUTH_VERSION,
+                                "SparkGap rbn2_feeder")} if auth else {}),
     }
 
 

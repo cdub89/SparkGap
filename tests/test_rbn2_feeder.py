@@ -166,9 +166,27 @@ def test_the_library_is_looked_for_in_the_run_root() -> None:
     assert str(f.auth_lib_path()) in (f.not_ready(None, dry_run=False) or "")
 
 
-def _pinned(monkeypatch: pytest.MonkeyPatch, good: bytes) -> None:
+def _pinned(monkeypatch: pytest.MonkeyPatch, good: bytes, machine: str = "x86_64") -> None:
     import hashlib
-    monkeypatch.setattr(f, "AUTH_SHA256", hashlib.sha256(good).hexdigest())
+    monkeypatch.setitem(f.AUTH_BUILDS, machine, ("https://example.invalid/lib", hashlib.sha256(good).hexdigest()))
+
+
+def test_each_machine_gets_its_own_build() -> None:
+    x86, arm = f.auth_build("x86_64"), f.auth_build("aarch64")
+    assert x86 and arm and x86[1] != arm[1]
+    assert x86[0].endswith("/x86_64/librbn2_auth.so") and arm[0].endswith("/aarch64/librbn2_auth.so")
+    assert f.auth_build("AMD64") == x86
+    assert f.auth_build("armv7l") is None
+
+
+def test_another_machines_build_is_never_kept(tmp_path, monkeypatch) -> None:
+    _pinned(monkeypatch, b"x86 build")
+    _pinned(monkeypatch, b"arm build", "aarch64")
+    lib = tmp_path / "librbn2_auth.so"
+    f.fetch_auth_lib(lib, get=lambda: b"x86 build", machine="aarch64")
+    assert not lib.exists()
+    f.fetch_auth_lib(lib, get=lambda: b"arm build", machine="aarch64")
+    assert lib.read_bytes() == b"arm build"
 
 
 def test_a_missing_library_is_downloaded_and_checked(tmp_path, monkeypatch) -> None:
@@ -208,7 +226,7 @@ def test_a_library_path_that_is_not_a_file_does_not_crash_the_fetch(tmp_path) ->
 
 def test_no_library_is_fetched_for_another_machine(tmp_path) -> None:
     lib = tmp_path / "librbn2_auth.so"
-    f.fetch_auth_lib(lib, get=lambda: pytest.fail("fetched"), machine="aarch64")
+    f.fetch_auth_lib(lib, get=lambda: pytest.fail("fetched"), machine="armv7l")
     assert not lib.exists()
 
 
