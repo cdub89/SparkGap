@@ -2955,7 +2955,7 @@ def _make_spot_rule(config, tracker, local=None):
         # spot_rule_bad_calls, spot_rule_notched_freqs (off by default): BadCalls.txt and
         # NotchedFreqs.txt beside the config file, as the Aggregator's (Node Profile)
         here = os.path.dirname(_config_path or '.')
-        bad = list(config.get('spot_rule_banned_calls', ()))
+        bad = []
         notched = []
         for key, name in (('spot_rule_bad_calls', 'BadCalls.txt'), ('spot_rule_notched_freqs', 'NotchedFreqs.txt')):
             path = os.path.join(here, name)
@@ -2967,20 +2967,17 @@ def _make_spot_rule(config, tracker, local=None):
                 bad += read_bad_calls(path)
             else:
                 notched = read_notched(path)
-        # spot_rule_scp (off by default): a call not in Super Check Partial (SCP.DB, scp_db.py) fails gate 2
+        # spot_rule_scp, the MASTER.SCP filter (cdub89/SparkGap#58): a call in neither MASTER.SCP nor
+        # the known call list fails gate 2
         scp = None
         if config.get('spot_rule_scp'):
-            cache = tracker.__dict__.setdefault('_validation_lists', {})
-            if 'scp_db' not in cache:
-                import scp_db
-                from pathlib import Path
-                cache['scp_db'] = scp_db.refresh(Path(config.get('rbn_known_dir', 'rbn_known')))
-            if cache['scp_db']:
-                scp = cache['scp_db'].__contains__
+            valid = tracker.valid_calls
+            if valid:
+                scp = lambda c: c in valid or max(c.split('/'), key=len) in valid
             else:
-                log.warning("spot_rule_scp is on but no SCP.DB could be read: the SCP check is off")
+                log.warning("spot_rule_scp is on but MASTER.SCP holds no calls: the MASTER.SCP filter is off")
         log.info("spot rule gates: %d bad calls, %d notched ranges%s", len(bad), len(notched),
-                 ", SCP check on" if scp else "")
+                 ", MASTER.SCP filter on" if scp else "")
         calls = (local or {}).get('validation_calls', config.get('spot_validation_calls'))
         listed = _validation_list(config, tracker, calls)
         # spot_validation: the call validation level steps gate 3's reads; off or unset is normal
@@ -3000,14 +2997,13 @@ def _make_spot_rule(config, tracker, local=None):
             listed=listed,
             level=level,
             banned=bad,
-            segments=config.get('spot_rule_segments'),
             notched=notched,
             scp=scp,
             beacons=config.get('spot_rule_beacons'),
             qualifiers=config.get('spot_rule_qualifiers', ()),
             stronger_db=float(stronger) if stronger else None)
     if config.get('spot_rule_scp') and local is None:
-        log.warning("spot_rule_scp is on but spot_rule_gates is off: the SCP check acts only with the gate rule")
+        log.warning("spot_rule_scp is on but spot_rule_gates is off: the MASTER.SCP filter acts only with the gate rule")
     # spot_validation (off by default): permissive / normal / aggressive confidence score in
     # place of the tier count; spot_validation_calls adds a call list to the score: "scp"
     # (MASTER.SCP), "rbn" (RBN known calls, rbn_known.py, refreshed from the archives here) or
@@ -4594,7 +4590,7 @@ class _ItilaScanner:
             if _spot_rule_on:
                 if _bin_liveness and self._sc and _copies_known_runner(raw, self.valid_calls):
                     self._sc._lib.itila_sc_mark_evidence(self._sc._h, _ct.c_double(f_hz))
-                _emit_window(st, f_khz, raw, wpm, window_key)
+                _emit_window(st, f_khz, raw, wpm, window_key, cost)
                 continue
 
             # Path 1: direct extraction from this window (standard)
@@ -4693,7 +4689,7 @@ class _ItilaScanner:
             if _spot_rule_on:
                 if _bin_liveness and self._sc and _copies_known_runner(raw, self.valid_calls):
                     self._sc._lib.itila_sc_mark_evidence(self._sc._h, _ct.c_double(f_hz))
-                _emit_window(st, f_khz, raw, wpm, self._c_batch)
+                _emit_window(st, f_khz, raw, wpm, self._c_batch, cost)
                 continue
 
             # Path 1: direct CQ extraction
@@ -6972,6 +6968,7 @@ class SpotIntent:
     snr500: float = None   # itila2_snr_decoder: SNR in 500 Hz the spot reports; snr_db still ranks copies
     bin_seq: int = 0       # spot_rule_gates: the bin's never-reused id
     closed: bool = False   # spot_rule_gates: the bin closed; its buffer goes
+    cost: float = None     # spot_rule_gates: the decode's cost; a window keeps its lower-cost copy
 
 
 def _emit_intent(st, f_khz, call, wpm, is_runner, raw_text=''):
@@ -6992,7 +6989,7 @@ def _emit_intent(st, f_khz, call, wpm, is_runner, raw_text=''):
     st['pending'].append(intent)
 
 
-def _emit_window(st, f_khz, raw, wpm, window_key):
+def _emit_window(st, f_khz, raw, wpm, window_key, cost=None):
     """spot_rule "repeat": queue one decoded text of a window for RepeatSpotRule.
     Both LPF paths of a window share window_key, so they count as one sighting."""
     if _DUMP_WINDOWS and st.get('logged_window') != window_key:     # one line per window: replays rebuild bins exactly
@@ -7002,7 +6999,7 @@ def _emit_window(st, f_khz, raw, wpm, window_key):
     st['pending'].append(SpotIntent(
         call='', freq_khz=f_khz, snr_db=st['snr'], wpm=wpm, is_runner=True,
         window_id=window_key, bin_id=id(st), window_text=raw, snr500=st.get('snr500'),
-        bin_seq=st.get('bin_seq', 0)))
+        bin_seq=st.get('bin_seq', 0), cost=cost))
 
 
 class SpotTracker:
@@ -7999,7 +7996,8 @@ class SpotTracker:
                 spots += [{'call': call, 'freq_khz': f, 'snr': rule.spot_snr.get(call, intent.snr_db),
                            'wpm': intent.wpm, 'method': 'repeat', 'stream': stream}
                           for call, f in rule.feed(w, intent.freq_khz, intent.window_text, now,
-                                                   intent.snr_db, intent.snr500)
+                                                   intent.snr_db, intent.snr500,
+                                                   **({'cost': intent.cost} if hasattr(rule, 'end_pass') else {}))
                           if call not in self.blacklist]
             return spots
         # gate_short_scp_exact: require a second sighting at the same freq
@@ -9670,7 +9668,7 @@ class SparkGap:
                                 isc = m._itila_scanner
                                 if isc and isc._sc:
                                     isc._sc._lib.itila_sc_mark_evidence(isc._sc._h, _ct.c_double(f_hz))
-                        _emit_window(st, f_khz, raw, wpm, self._poll_batch)
+                        _emit_window(st, f_khz, raw, wpm, self._poll_batch, cost)
                         continue
                     call = _itila_extract_cq_call(raw, self.tracker.valid_calls)
                     if call and call not in st['spotted']:
