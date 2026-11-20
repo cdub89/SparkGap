@@ -45,8 +45,9 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from collections import Counter, deque
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from itertools import pairwise
 from pathlib import Path
 
@@ -89,6 +90,7 @@ NCDXF = frozenset({"4U1UN", "VE8AT", "W6WX", "KH6RS", "ZL6B", "VK6RBP", "JA2IGY"
                    "4S7B", "ZS6DN", "5Z4B", "4X6TU", "OH2B", "CS3B", "LU4AA", "OA4B", "YV5B"})
 NCDXF_KHZ = (14100.0, 18110.0, 21150.0, 24930.0, 28200.0)
 BEACON_MIN_CHARS = 3          # gate 12: shorter words are not read as an NCDXF call
+BCN_FILE = "bcn.csv"          # gate 12: RBN's beacon list in rbn_known_dir (spot_rule_beacons)
 
 REASONS = {1: "not a callsign structure", 2: "banned call", 3: "not read enough",
            4: "not the best reading", 5: "no keyword", 7: "call not with the keyword",
@@ -111,13 +113,62 @@ def said(gate: int, why: str) -> str:
     return SAID.get(gate, "Not spotted")
 
 
-def beacon_kind(call: str, khz: float, beacons: dict[str, float] | None = None) -> str | None:
+Beacons = Mapping[str, float | tuple[float, ...]]   # call -> the kHz it is listed on (one or several)
+
+
+def near_listed(call: str, khz: float, beacons: Beacons | None) -> bool:
+    """Gate 12: the call is a listed beacon within BEACON_KHZ of one of its listed frequencies."""
+    if not beacons or call not in beacons:
+        return False
+    listed = beacons[call]
+    freqs = (listed,) if isinstance(listed, (int, float)) else listed
+    return any(abs(khz - x) <= BEACON_KHZ for x in freqs)
+
+
+def read_beacons(path: str | Path) -> dict[str, tuple[float, ...]]:
+    """RBN's beacon list (bcn.csv, `kHz,CALL` per line): each call with every kHz it is listed on,
+    under its base call (W2DLL/B2 is W2DLL), as the decoder reads it."""
+    out: dict[str, list[float]] = {}
+    for ln in Path(path).read_text(errors="replace").splitlines():
+        parts = ln.split(",")
+        try:
+            khz, call = float(parts[0]), base(parts[1].strip().upper())
+        except (IndexError, ValueError):
+            continue
+        if call:
+            out.setdefault(call, []).append(khz)
+    return {c: tuple(f) for c, f in out.items()}
+
+
+_LISTED: dict[str, dict[str, tuple[float, ...]]] = {}   # rbn_known_dir's bcn.csv -> its list
+_LISTED_LOCK = threading.Lock()
+
+
+def listed_beacons(config: dict) -> dict[str, tuple[float, ...]]:
+    """spot_rule_beacons (off by default): RBN's beacon list, BCN_FILE in rbn_known_dir, where it
+    is fetched daily. Read once a run, so the rule, the run log and the feeder agree: a new list
+    is read at the next start. Empty when off or not there."""
+    if not config.get("spot_rule_beacons"):
+        return {}
+    path = Path(config.get("rbn_known_dir") or "rbn_known") / BCN_FILE
+    with _LISTED_LOCK:
+        if str(path) not in _LISTED:
+            try:
+                _LISTED[str(path)] = read_beacons(path)
+            except OSError as e:
+                log.warning("spot_rule_beacons is on but %s cannot be read (%s): no listed beacons",
+                            path, e)
+                _LISTED[str(path)] = {}
+        return _LISTED[str(path)]
+
+
+def beacon_kind(call: str, khz: float, beacons: Beacons | None = None) -> str | None:
     """How RBN types a spot of this call: "NCDXF" (an NCDXF call within 5 kHz of an NCDXF frequency),
-    "listed" (a spot_rule_beacons call near its kHz) or "/B" (any call ending /B); None for a CQ spot.
+    "listed" (a listed beacon near one of its kHz) or "/B" (any call ending /B); None for a CQ spot.
     The feeder sends it as the spot's type, the archive's mode column shows NCDXF B or BEACON."""
     if call in NCDXF and any(abs(khz - x) <= BEACON_KHZ for x in NCDXF_KHZ):
         return "NCDXF"
-    if beacons and call in beacons and abs(khz - beacons[call]) <= BEACON_KHZ:
+    if near_listed(call, khz, beacons):
         return "listed"
     if call.upper().endswith("/B"):
         return "/B"
@@ -256,7 +307,7 @@ class GateSpotRule:
     def __init__(self, shape: Callable[[str], str | None],
                  listed: Callable[[str], bool] | None = None,
                  banned: Iterable[str] = (), segments: Iterable[tuple[float, float]] | None = None,
-                 beacons: dict[str, float] | None = None, stronger_db: float | None = STRONGER_DB,
+                 beacons: Beacons | None = None, stronger_db: float | None = STRONGER_DB,
                  best_reading: bool = True, qualifiers: Iterable[str] = (),
                  notched: Iterable[tuple[float, float]] = (), level: str = "normal",
                  scp: Callable[[str], bool] | None = None):
@@ -357,7 +408,7 @@ class GateSpotRule:
     def known_beacon(self, call: str, f: float) -> bool:
         if call in NCDXF:
             return any(abs(f - x) <= BEACON_KHZ for x in NCDXF_KHZ)
-        return call in self.beacons and abs(f - self.beacons[call]) <= BEACON_KHZ
+        return near_listed(call, f, self.beacons)
 
     def feed(self, window: int, freq_khz: float, text: str, now: float,
              snr: float | None = None, report: float | None = None) -> list[tuple[str, float]]:
