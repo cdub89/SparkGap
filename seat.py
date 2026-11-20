@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import downloads
 import radios
 
 START_WAIT_S = 45  # longest a copy takes to reach the radio and go live
@@ -244,6 +245,25 @@ def proc_started(pid: int) -> float | None:
 
 _CACHE: dict[Path, tuple[tuple[int, int, int], Any]] = {}
 _CACHE_LOCK = threading.Lock()
+
+
+RETRYABLE = ("SCP.DB", "skccdata.txt", "patt3ch.lst", "bcn.csv", "librbn2_auth.so")
+
+
+def retry_fetchers() -> dict[str, Callable[[Path], Any]]:
+    """The downloads SparkGap Web can retry, by file name: each fetched into its folder. The RBN
+    known calls are built from the archive days at start, so they have none."""
+    import rbn2_feeder
+    import rbn_files
+    import scp_db
+    import skcc_roster
+    return {
+        "SCP.DB": scp_db.refresh,
+        "skccdata.txt": skcc_roster.refresh,
+        "patt3ch.lst": rbn_files.refresh_patt3ch,
+        "bcn.csv": rbn_files.refresh_beacons,
+        "librbn2_auth.so": lambda d: rbn2_feeder.fetch_auth_lib(d / rbn2_feeder.AUTH_LIB),
+    }
 
 
 def cached(path: Path, parse: Callable[[str], Any]) -> Any:
@@ -1299,6 +1319,38 @@ class Seat:
             "rx_settings": list(caps.rx_settings),
         }
 
+    def download_folders(self) -> list[Path]:
+        """Where this machine's downloads land: the run root (the RBN auth library), and each
+        copy's rbn_known_dir (SCP.DB, the SKCC roster, the RBN archive days)."""
+        out = [self.root, self.root / "rbn_known"]
+        for i in self.instances():
+            try:
+                d = Path(self.config(i).get("rbn_known_dir") or "rbn_known")
+            except (OSError, ValueError, TypeError):  # a config that does not read, or not a path
+                continue
+            out.append(d if d.is_absolute() else i.code / d)
+        return out
+
+    def retry_download(self, path: str) -> str:
+        """Fetch one failed download again now (SparkGap Web's Retry). Only a file this code
+        downloads, in this machine's download folders (the auth library: the run root only); the
+        URL and check are the code's own, never downloads.json's. Copies read it at their next start."""
+        p = Path(path)
+        folder = p.parent.resolve()
+        if folder not in {f.resolve() for f in self.download_folders()}:
+            raise SeatError(f"{path}: not in a download folder")
+        refetch = retry_fetchers().get(p.name)
+        if refetch is None:
+            raise SeatError(f"{p.name}: fetched again only at the next start")
+        if p.name == "librbn2_auth.so" and folder != self.root.resolve():
+            raise SeatError(f"{path}: the auth library lives in the run root only")
+        refetch(folder)
+        e = next((e for e in downloads.listed([folder]) if e["name"] == p.name), None)
+        if e is None or e.get("error"):
+            raise SeatError(f"{p.name}: {(e or {}).get('error') or 'no download'}")
+        n = e.get("records")
+        return f"{p.name}: downloaded, {n if n is not None else e.get('what')}; read at the next start"
+
     def snapshot(self) -> dict[str, Any]:
         instances = self.instances()
         stations = sorted({r for i in instances if (r := self.radio(i))})
@@ -1311,4 +1363,6 @@ class Seat:
             "bands": bands_in(CODE),  # what an added receiver can run
             "default_settings": self.default_settings(),
             "removed": self.removed_settings({i.name for i in instances}),
+            "downloads": [{**e, "retry": e["name"] in RETRYABLE}
+                          for e in downloads.listed(self.download_folders())],
         }

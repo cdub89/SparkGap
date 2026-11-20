@@ -2906,6 +2906,19 @@ def _note_retired_keys(config):
         if k in config:
             log.warning("%s: removed (%s); the key is no longer read", k, why)
 
+def _fetch_rbn_files(config):
+    """RBN's patt3ch.lst and, with the Gated Rule, its beacon list (bcn.csv) into rbn_known_dir,
+    at most once a day (rbn_files.py). Returns the patt3ch.lst the tracker reads: the download,
+    else the copy in the checkout. No gate reads bcn.csv yet (cdub89/SparkGap#56)."""
+    import rbn_files
+    from pathlib import Path
+    cache = Path(config.get('rbn_known_dir', 'rbn_known'))
+    if config.get('spot_rule_gates'):
+        rbn_files.refresh_beacons(cache)
+    got = rbn_files.refresh_patt3ch(cache)
+    return str(got) if got else 'patt3ch.lst'
+
+
 def _make_spot_rule(config, tracker, local=None):
     """The RepeatSpotRule SparkGap runs with spot_rule "repeat": tiers from patt3ch, lock-on,
     CQ groups and CQ qualifiers always on (measured on every recording we have), and since
@@ -8682,6 +8695,7 @@ class SparkGap:
         self.tracker = SpotTracker(calls, blacklist,
                                    self.cfg.get('respot_interval', 120),
                                    add_calls=add_calls,
+                                   patt3ch_path=_fetch_rbn_files(self.cfg),
                                    scp_bypass_threshold=int(self.cfg.get('scp_bypass_threshold', 0)),
                                    gate_config=gate_config,
                                    recent_band_config=self.cfg.get('recent_band_floor'))
@@ -10344,6 +10358,7 @@ def run_file_mode(args, config):
     gate_config = {k: config[k] for k in SpotTracker.GATE_DEFAULTS if k in config}
     tracker = SpotTracker(calls, blacklist, respot_interval=0, add_calls=add_calls,
                           scp_bypass_threshold=int(config.get('scp_bypass_threshold', 0)),
+                          patt3ch_path=_fetch_rbn_files(config),
                           gate_config=gate_config)
     _note_retired_keys(config)
     _select_bin_liveness(config.get('itila2_bin_liveness', False), _liveness_list(config, tracker),
