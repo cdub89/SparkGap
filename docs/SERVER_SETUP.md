@@ -187,8 +187,8 @@ on a Ryzen 5 5500U), and nothing while no browser is connected.
 ## Sending spots to RBN
 
 Each radio's feeder needs the RBN auth library in the run folder
-(`~/sparkgap/librbn2_auth.so`) before RBN upload is set to live:
-[sending-spots.md](sending-spots.md).
+(`~/sparkgap/librbn2_auth.so`); a live feeder downloads it there on first
+start: [sending-spots.md](sending-spots.md).
 
 ## For developers
 

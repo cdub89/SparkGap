@@ -166,6 +166,52 @@ def test_the_library_is_looked_for_in_the_run_root() -> None:
     assert str(f.auth_lib_path()) in (f.not_ready(None, dry_run=False) or "")
 
 
+def _pinned(monkeypatch: pytest.MonkeyPatch, good: bytes) -> None:
+    import hashlib
+    monkeypatch.setattr(f, "AUTH_SHA256", hashlib.sha256(good).hexdigest())
+
+
+def test_a_missing_library_is_downloaded_and_checked(tmp_path, monkeypatch) -> None:
+    _pinned(monkeypatch, b"good build")
+    lib = tmp_path / "librbn2_auth.so"
+    f.fetch_auth_lib(lib, get=lambda: b"good build", machine="x86_64")
+    assert lib.read_bytes() == b"good build"
+    f.fetch_auth_lib(lib, get=lambda: pytest.fail("fetched again"), machine="x86_64")
+
+
+def test_a_download_that_is_not_the_pinned_build_is_never_kept(tmp_path, monkeypatch) -> None:
+    _pinned(monkeypatch, b"good build")
+    lib = tmp_path / "librbn2_auth.so"
+    f.fetch_auth_lib(lib, get=lambda: b"tampered", machine="x86_64")
+    assert not lib.exists()
+
+
+def test_a_failed_download_keeps_the_previous_library(tmp_path, monkeypatch) -> None:
+    _pinned(monkeypatch, b"new build")
+    lib = tmp_path / "librbn2_auth.so"
+    lib.write_bytes(b"old build")
+
+    def offline() -> bytes:
+        raise OSError("timed out")
+
+    f.fetch_auth_lib(lib, get=offline, machine="x86_64")
+    assert lib.read_bytes() == b"old build"  # the version check then decides
+
+
+def test_a_library_path_that_is_not_a_file_does_not_crash_the_fetch(tmp_path) -> None:
+    lib = tmp_path / "librbn2_auth.so"
+    lib.mkdir()
+    f.fetch_auth_lib(lib, get=lambda: b"x", machine="x86_64")  # Auth() then refuses it
+    with pytest.raises(f.AuthError, match="cannot load"):
+        f.Auth(str(lib))
+
+
+def test_no_library_is_fetched_for_another_machine(tmp_path) -> None:
+    lib = tmp_path / "librbn2_auth.so"
+    f.fetch_auth_lib(lib, get=lambda: pytest.fail("fetched"), machine="aarch64")
+    assert not lib.exists()
+
+
 def test_without_a_library_nothing_is_posted() -> None:
     assert f.not_ready(None, dry_run=False)
     assert f.not_ready(_auth(), dry_run=False) is None

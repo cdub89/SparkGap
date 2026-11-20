@@ -792,3 +792,75 @@ def test_nodes_the_all_band_recorder_cannot_feed_keep_record_wav(
     monkeypatch.setattr(seat, "pid", lambda name: 4242)
     seat.change("dallas1", {"record": True}, live_record=_live)
     assert seat.config(i)["record_wav"] and "record_iq_dir" not in seat.config(i)
+
+
+def test_the_snapshot_lists_downloads_from_the_run_root_and_each_rbn_known_dir(seat: Seat) -> None:
+    import downloads
+    lib = seat.root / "librbn2_auth.so"
+    lib.write_bytes(b"x")
+    downloads.note(lib, "https://example.invalid/lib", None, "rbn2auth/1.2", None)
+    elsewhere = seat.root / "code" / "rbn_known"  # a copy without rbn_known_dir: relative to its code
+    elsewhere.mkdir()
+    (elsewhere / "skccdata.txt").write_bytes(b"x")
+    downloads.note(elsewhere / "skccdata.txt", "https://example.invalid/skcc", 41_203, "members", None)
+    got = {e["name"]: e["records"] for e in seat.snapshot()["downloads"]}
+    assert got == {"librbn2_auth.so": None, "skccdata.txt": 41_203}
+    i = seat.instances()[0]
+    i.config.write_text(json.dumps({**json.loads(i.config.read_text()), "rbn_known_dir": 17}))
+    assert {e["name"] for e in seat.snapshot()["downloads"]} >= {"librbn2_auth.so"}
+
+
+def _noted_roster(seat: Seat, downloaded: float) -> Path:
+    import os
+
+    import downloads
+    folder = seat.root / "rbn_known"
+    folder.mkdir(exist_ok=True)
+    path = folder / "skccdata.txt"
+    path.write_bytes(b"x")
+    os.utime(path, (downloaded, downloaded))
+    downloads.note(path, "https://example.invalid/from-the-manifest", 1, "members", None)
+    return path
+
+
+def test_check_for_updates_compares_the_servers_date_and_fetches_nothing(seat: Seat, monkeypatch) -> None:
+    import downloads
+    _noted_roster(seat, 1_800_000_000.0)
+    asked: list[str] = []
+    dates = iter([1_700_000_000.0, 1_900_000_000.0])
+    monkeypatch.setattr(downloads, "server_date", lambda url, agent: asked.append(url) or next(dates))
+    monkeypatch.setattr(downloads, "fetch", lambda *a, **k: pytest.fail("fetched"))
+    assert seat.check_downloads() == "Downloads: skccdata.txt up to date"
+    assert seat.check_downloads() == "Downloads: skccdata.txt newer on its server (03-17 17:46Z)"
+    import skcc_roster
+    assert asked == [skcc_roster.ROSTER_URL] * 2  # the code's URL, never the manifest's
+
+
+def test_refresh_fetches_a_fresh_file_and_a_failure_keeps_the_copy(seat: Seat, monkeypatch) -> None:
+    import time
+
+    import downloads
+    import skcc_roster
+    path = _noted_roster(seat, time.time())                     # fresh: a start would not fetch it
+    monkeypatch.setattr(skcc_roster, "_check", lambda p: 7)
+    monkeypatch.setattr(downloads, "fetch", lambda url, agent, *a: b"new copy")
+    assert seat.refresh_downloads().startswith("Downloads refreshed: skccdata.txt ok")
+    assert path.read_bytes() == b"new copy"
+
+    def offline(*a: object) -> bytes:
+        raise OSError("timed out")
+
+    monkeypatch.setattr(downloads, "fetch", offline)
+    assert "skccdata.txt failed (OSError: timed out)" in seat.refresh_downloads()
+    assert path.read_bytes() == b"new copy"
+
+
+def test_only_files_the_code_downloads_are_checked_or_refreshed(seat: Seat, monkeypatch) -> None:
+    import downloads
+    elsewhere = seat.root / "rbn_known"
+    elsewhere.mkdir(exist_ok=True)
+    for name in ("rbn_known.txt", "librbn2_auth.so"):     # built at start; the library not in the root
+        (elsewhere / name).write_bytes(b"x")
+        downloads.note(elsewhere / name, "https://example.invalid/x", 1, "x", None)
+    monkeypatch.setattr(downloads, "server_date", lambda *a: pytest.fail("asked"))
+    assert seat.check_downloads() == "Downloads: none to check"

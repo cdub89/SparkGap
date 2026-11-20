@@ -2575,7 +2575,7 @@ def _rbn_known(config, keep=None):
 def _scp_lookup(config):
     """keep() for _rbn_known from config master_scp (one call per line), or None when it cannot be read."""
     try:
-        with open(config.get('master_scp', 'MASTER.SCP')) as f:
+        with open(_master_scp(config)) as f:
             scp = {l.strip().upper() for l in f if l.strip() and not l.startswith('#')}
     except OSError:
         return None
@@ -2905,6 +2905,31 @@ def _note_retired_keys(config):
     for k, why in REMOVED_KEYS.items():
         if k in config:
             log.warning("%s: removed (%s); the key is no longer read", k, why)
+
+def _master_scp(config):
+    """The MASTER.SCP the tracker reads: RBN's master.scp in rbn_known_dir, fetched at most once a
+    day (rbn_files.py, cdub89/SparkGap#58 SC1), else the copy in the checkout. A config naming
+    another file in master_scp keeps it."""
+    name = config.get('master_scp', 'MASTER.SCP')
+    if name != 'MASTER.SCP':
+        return name
+    import rbn_files
+    from pathlib import Path
+    got = rbn_files.refresh_master_scp(Path(config.get('rbn_known_dir', 'rbn_known')))
+    return str(got) if got else name
+
+def _fetch_rbn_files(config):
+    """RBN's patt3ch.lst and, with the Gated Rule, its beacon list (bcn.csv) into rbn_known_dir,
+    at most once a day (rbn_files.py). Returns the patt3ch.lst the tracker reads: the download,
+    else the copy in the checkout. No gate reads bcn.csv yet (cdub89/SparkGap#56)."""
+    import rbn_files
+    from pathlib import Path
+    cache = Path(config.get('rbn_known_dir', 'rbn_known'))
+    if config.get('spot_rule_gates'):
+        rbn_files.refresh_beacons(cache)
+    got = rbn_files.refresh_patt3ch(cache)
+    return str(got) if got else 'patt3ch.lst'
+
 
 def _make_spot_rule(config, tracker, local=None):
     """The RepeatSpotRule SparkGap runs with spot_rule "repeat": tiers from patt3ch, lock-on,
@@ -8668,7 +8693,7 @@ class SparkGap:
         if self.cfg.get('record_wav'):
             self._open_wav(self.cfg['record_wav'])
         calls, blacklist, add_calls = load_callsign_db(
-            self.cfg.get('master_scp', 'MASTER.SCP'),
+            _master_scp(self.cfg),
             self._add_calls_path,
             self.cfg.get('blacklist', 'blacklist.txt'),
         )
@@ -8682,6 +8707,7 @@ class SparkGap:
         self.tracker = SpotTracker(calls, blacklist,
                                    self.cfg.get('respot_interval', 120),
                                    add_calls=add_calls,
+                                   patt3ch_path=_fetch_rbn_files(self.cfg),
                                    scp_bypass_threshold=int(self.cfg.get('scp_bypass_threshold', 0)),
                                    gate_config=gate_config,
                                    recent_band_config=self.cfg.get('recent_band_floor'))
@@ -10337,13 +10363,14 @@ def run_file_mode(args, config):
              datetime.fromtimestamp(t0, timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ') if t0 is not None else 'the file start (no UTC start in its name)')
 
     calls, blacklist, add_calls = load_callsign_db(
-        config.get('master_scp', 'MASTER.SCP'),
+        _master_scp(config),
         config.get('add_calls', 'add_calls.txt'),
         config.get('blacklist', 'blacklist.txt'),
     )
     gate_config = {k: config[k] for k in SpotTracker.GATE_DEFAULTS if k in config}
     tracker = SpotTracker(calls, blacklist, respot_interval=0, add_calls=add_calls,
                           scp_bypass_threshold=int(config.get('scp_bypass_threshold', 0)),
+                          patt3ch_path=_fetch_rbn_files(config),
                           gate_config=gate_config)
     _note_retired_keys(config)
     _select_bin_liveness(config.get('itila2_bin_liveness', False), _liveness_list(config, tracker),

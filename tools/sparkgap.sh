@@ -117,14 +117,10 @@ ctl() {  # the server's command line client: every start, stop and change goes t
   local rc=$?; [ $rc -eq 2 ] && echo "sparkgap.sh: start SparkGap with: sparkgap.sh start" >&2
   return $rc
 }
-start() { ctl start "$1"; }
-stop() { ctl stop "$1"; }
 
 clone_of() {  # the clone, on a branch, that a code folder shares its repository with
   git -C "$1" worktree list --porcelain | awk '/^worktree / {w = $2} /^branch / {print w; exit}'
 }
-
-
 
 UPSTREAM=https://github.com/hotairfred/SparkGap.git
 radio_field() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get(sys.argv[2]) or "")' "$1" "$2" 2>/dev/null; }
@@ -177,16 +173,9 @@ init() {  # init <repository> <branch>: what is missing, nothing replaced
   [ -f "$R/instances" ] || { echo "# name code-dir config python" > "$R/instances"; echo "$R/instances: made"; }
 }
 
-
-
 source_clone() {  # the clone on a branch that every code folder follows: code/, or in an older root the first instance's
   if [ -d "$CODE/.git" ]; then echo "$CODE"; else clone_of "$(dir "${ALL%% *}")"; fi
 }
-
-
-
-
-
 
 [ $# -gt 0 ] || { usage; exit 0; }
 cmd=$1; shift
