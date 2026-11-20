@@ -7998,7 +7998,10 @@ class SpotTracker:
                 w = rule.window_id(intent.bin_seq if hasattr(rule, 'close_bin') else intent.bin_id,
                                    intent.window_id, now)
                 if hasattr(rule, 'end_pass'):         # spot_rule_gates: spots come from flush_pass()
-                    self._pass_intents.setdefault(id(rule), {})[intent.freq_khz] = intent
+                    held = self._pass_intents.setdefault(id(rule), {})
+                    prev = held.get(intent.freq_khz)
+                    if prev is None or prev.cost is None or intent.cost is None or intent.cost < prev.cost:
+                        held[intent.freq_khz] = intent   # the copy gate S keeps gives the spot its WPM and SNR
                 spots += [{'call': call, 'freq_khz': f, 'snr': rule.spot_snr.get(call, intent.snr_db),
                            'wpm': intent.wpm, 'method': 'repeat', 'stream': stream}
                           for call, f in rule.feed(w, intent.freq_khz, intent.window_text, now,
@@ -9611,7 +9614,7 @@ class SparkGap:
             if use_c and getattr(self, '_worker_started', False):
                 import ctypes as _ct
                 result_size = 288
-                max_poll = 128
+                max_poll = 256    # the whole result ring (RESULT_MAX): a window's two paths are never split across polls
                 if not hasattr(self, '_poll_buf'):
                     self._poll_buf = _ct.create_string_buffer(result_size * max_poll)
                 poll_buf = self._poll_buf

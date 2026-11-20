@@ -479,3 +479,19 @@ def test_s_a_cleaner_copy_finds_the_older_text_the_noisy_one_pushed_out() -> Non
     r.feed(win, 14025.0, "E I " * 130, 30.0, cost=26.4)          # noise: pushes window 1 out
     r.feed(win, 14025.0, "DE N5RG K", 30.0, cost=0.4)            # the clean copy of window 2
     assert [c for c, _ in r.end_pass()] == ["N5RG"]
+
+
+def test_s_the_spot_carries_the_kept_copy_s_speed() -> None:
+    # cdub89/SparkGap#56 EK5: a costlier later copy is set aside, and so are its WPM and SNR
+    import sparkgap
+    tracker = sparkgap.SpotTracker(set(), set())
+    rule = GateSpotRule(lambda c: "active")
+    tracker.__dict__["spot_rule"] = rule
+
+    def copy(text: str, wpm: int, cost: float) -> sparkgap.SpotIntent:
+        return sparkgap.SpotIntent(call="", freq_khz=14025.0, snr_db=12.0, wpm=wpm, is_runner=True,
+                                   window_id=1, bin_id=7, bin_seq=7, window_text=text, cost=cost)
+
+    tracker.process_intent(copy("CQ K1ABC K1ABC K", 20, 0.2))
+    tracker.process_intent(copy("CQ K1ABC E K1AB", 38, 9.5))
+    assert [(s["call"], s["wpm"]) for s in tracker.flush_pass()] == [("K1ABC", 20)]
