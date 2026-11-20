@@ -1,4 +1,4 @@
-"""Files SparkGap downloads (SCP.DB, the SKCC roster, RBN archive days, the RBN auth library).
+"""Files SparkGap downloads (SKCC roster, RBN archive days and reference files, RBN auth library).
 
 refresh() fetches a file when it is missing, too old or no longer current, and keeps a download
 only when its check passes; a failed fetch keeps the previous copy. Each refresh is noted in
@@ -9,6 +9,7 @@ the server reads so SparkGap Web and sparkgap.sh status show what this machine h
 from __future__ import annotations
 
 import contextlib
+import email.utils
 import fcntl
 import http.client
 import json
@@ -39,6 +40,19 @@ def fetch(url: str, user_agent: str, timeout_s: float = FETCH_TIMEOUT_S) -> byte
     if not data:
         raise ValueError("empty download")  # never let a zero-length reply replace a copy
     return data
+
+
+def server_date(url: str, user_agent: str, timeout_s: float = FETCH_TIMEOUT_S) -> float | None:
+    """When url's file last changed on its server (Last-Modified), without downloading it."""
+    req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": user_agent})
+    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        stamp = resp.headers.get("Last-Modified")
+    if not stamp:
+        return None
+    try:
+        return email.utils.parsedate_to_datetime(stamp).timestamp()
+    except (TypeError, ValueError):
+        return None
 
 
 def write_atomic(path: Path, data: bytes, check: Check | None = None) -> int | None:

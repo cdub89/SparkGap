@@ -272,7 +272,7 @@ def test_a_radio_with_no_receivers_yet_is_shown() -> None:
 DOWNLOADS = [
     {"name": "librbn2_auth.so", "path": "/r/librbn2_auth.so", "records": None, "what": "rbn2auth/1.2",
      "downloaded": NOW - 60, "checked": NOW, "error": None},
-    {"name": "SCP.DB", "path": "/r/rbn_known/SCP.DB", "records": 41203, "what": "calls",
+    {"name": "skccdata.txt", "path": "/r/rbn_known/skccdata.txt", "records": 41203, "what": "members",
      "downloaded": NOW - 86_400, "checked": NOW, "error": "URLError: timed out"},
 ]
 
@@ -282,8 +282,8 @@ def test_status_lists_downloads_with_records_and_the_last_failure() -> None:
     at = lines.index("━━ Downloads ━━")
     assert lines[at + 1].split() == ["file", "records", "downloaded", "location"]
     assert lines[at + 2].split() == ["librbn2_auth.so", "rbn2auth/1.2", "01-15", "07:59Z", "/r/librbn2_auth.so"]
-    assert lines[at + 3].split()[:3] == ["SCP.DB", "41,203", "calls"]
-    assert lines[at + 4] == ("     SCP.DB: last fetch failed 01-15 08:00Z (URLError: timed out); "
+    assert lines[at + 3].split()[:3] == ["skccdata.txt", "41,203", "members"]
+    assert lines[at + 4] == ("     skccdata.txt: last fetch failed 01-15 08:00Z (URLError: timed out); "
                              "using the copy from 01-14 08:00Z")
 
 

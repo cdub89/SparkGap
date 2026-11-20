@@ -596,11 +596,13 @@ def test_radiolog_reads_a_radio_named_as_radio_files_allow(server: Server, seat:
     assert not _result(ws, 8)["ok"]
 
 
-def test_download_retries_through_the_seat_and_refuses_outside_its_folders(
-    server: Server, seat: Seat  # noqa: F811
-) -> None:
-    ws = _ws(server)  # the test client sends short frames only: a short path
-    ws.send(OP_TEXT, json.dumps({"type": "server", "id": 21, "cmd": "download", "name": "downloads",
-                                 "settings": {"path": "/nowhere/SCP.DB"}}).encode())
+def test_downloads_takes_check_or_refresh_only(server: Server, seat: Seat) -> None:  # noqa: F811
+    ws = _ws(server)
+    ws.send(OP_TEXT, json.dumps({"type": "server", "id": 21, "cmd": "downloads", "name": "downloads",
+                                 "settings": {"action": "check"}}).encode())
     r = _result(ws, 21)
-    assert not r["ok"] and "not in a download folder" in r["error"]
+    assert r["ok"] and r["message"] == "Downloads: none to check"
+    ws.send(OP_TEXT, json.dumps({"type": "server", "id": 22, "cmd": "downloads", "name": "downloads",
+                                 "settings": {"action": "delete"}}).encode())
+    r = _result(ws, 22)
+    assert not r["ok"] and "check or refresh" in r["error"]

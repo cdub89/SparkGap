@@ -128,10 +128,11 @@ connected`).
   instance names its radio with `radio`.
 - `node` (no `name`, `settings`: `radio`, `callsign`, `grid`, `op_name`):
   writes that radio file's spotter ID, grid and operator.
-- `download` (no `name`, `settings`: `path`, a `downloads` entry's): fetches
-  that file again now, with the code's own URL and check. Refused for a file in
-  no download folder and for the RBN known calls (built at start). Receivers
-  read it at their next start.
+- `downloads` (no `name`, `settings`: `action`): `check` asks each downloaded
+  file's server for its date and says which are newer than our copy, fetching
+  nothing; `refresh` fetches them all now, a failed fetch keeping the copy. Both
+  use the code's own URL and check; the RBN known calls (built at start) are
+  left out. Receivers read a new copy at their next start.
 - `by`, optional on any request: the client's own name (`SparkGap Web`), put in
   the log with its address.
 - `cmd`: `start`, `stop`, `restart`, `set`, `add`, `remove`, `discover` or

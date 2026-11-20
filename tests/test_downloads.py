@@ -115,3 +115,20 @@ def test_listed_reads_each_folder_once(tmp_path: Path) -> None:
     names = [e["name"] for e in downloads.listed([tmp_path, tmp_path / "a", tmp_path / "a" / ".."])]
     assert names == ["two.txt", "one.txt"]
     assert downloads.listed([tmp_path / "nowhere"]) == []
+
+
+def test_server_date_reads_last_modified(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Resp:
+        headers = {"Last-Modified": "Fri, 13 Nov 2026 18:26:35 GMT"}
+
+        def __enter__(self) -> Resp:
+            return self
+
+        def __exit__(self, *a: object) -> None:
+            return None
+
+    seen: list[str] = []
+    monkeypatch.setattr(downloads.urllib.request, "urlopen",
+                        lambda req, timeout: seen.append(req.get_method()) or Resp())
+    assert downloads.server_date(URL, "test") == 1_794_594_395.0
+    assert seen == ["HEAD"]

@@ -41,6 +41,7 @@ const HINTS = {
   validation: "A confidence score decides which calls are spotted: permissive spots more, aggressive fewer (docs/ITILA2.md). Off: a set number of copies, 2 to 4 by how common the call's pattern is.",
   validation_gates: "Steps the reads a call needs (gate 3): permissive one fewer, aggressive one more than normal's 2, 3 or 5 by the call's pattern. Unset is normal, and RBN is told Normal.",
   call_source: "Calls known from this list score higher in validation: SCP, calls RBN skimmers heard in the last days, or those plus the SKCC roster.",
+  downloads: "Files this machine downloads, as sparkgap.sh status lists them. A failed fetch keeps the previous copy; receivers read a new one at their next start. Check for updates compares each file's date on its server with the download; Refresh fetches them all now.",
   call_source_gates: "A call not on this list needs one more read (gate 3): SCP, calls RBN skimmers heard in the last days, or those plus the SKCC roster. None: no list.",
 };
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
@@ -2064,12 +2065,12 @@ function downloadRecords(e) {
 function downloadsHtml(seat, k) {
   const list = (seat && seat.downloads) || [];
   if (!list.length) return "";
-  const folders = [...new Set(list.map(e => String(e.path || "").replace(/[^/]*$/, "")))];
-  const rows = folders.map(f => `<div class="dlfolder mono">${esc(f)}</div>` + list.filter(e => String(e.path || "").replace(/[^/]*$/, "") === f).map(e =>
-    `<div class="dlrow mono"><span>${esc(e.name || "")}</span><span>${esc(downloadRecords(e))}</span><span class="muted">${esc(utcShort(e.downloaded))}</span></div>`
-    + (e.error ? `<div class="dlfail"><span class="bad">failed ${esc(utcShort(e.checked))}: ${esc(e.error)}; ${e.downloaded ? `using the copy from ${esc(utcShort(e.downloaded))}` : "no copy"}</span>`
-      + (e.retry ? ` <button class="btn small" data-act="dlretry" data-server="${k}" data-path="${esc(e.path)}">Retry</button>` : "") + `</div>` : "")).join("")).join("");
-  return `<section class="psection"><div class="psec"><span class="psectitle">Downloads</span><span class="muted">a failed fetch keeps the previous copy; receivers read a new one at their next start</span></div><div class="dlist">${rows}</div></section>`;
+  const cell = (t, c = "") => `<span${c ? ` class="${c}"` : ""}>${esc(t)}</span>`;
+  const rows = list.map(e => cell(e.name || "", "dlname") + cell(downloadRecords(e)) + cell(utcShort(e.downloaded)) + cell(e.path || "")
+    + (e.error ? `<span class="dlfail bad">${esc(e.name)}: last fetch failed ${esc(utcShort(e.checked))} (${esc(e.error)}); ${e.downloaded ? `using the copy from ${esc(utcShort(e.downloaded))}` : "no copy"}</span>` : "")).join("");
+  const btn = (act, label) => `<button class="btn small" data-act="${act}" data-server="${k}">${label}</button>`;
+  return `<section class="psection"><div class="psec" title="${esc(HINTS.downloads)}"><span class="psectitle">Downloads</span><span class="grow"></span>${btn("dlcheck", "Check for updates")}${btn("dlrefresh", "Refresh")}</div>`
+    + `<div class="dlist mono">${["file", "records", "downloaded", "location"].map(h => cell(h, "dlhead")).join("")}${rows}</div></section>`;
 }
 
 function serverPaneHtml(k, sv) {
@@ -2427,10 +2428,10 @@ function bindInput() {
       renderSettings();
       return;
     }
-    const dr = e.target.closest('[data-act="dlretry"]');
-    if (dr) {  // a failed download fetched again now, by the server
-      const link = app.servers[Number(dr.dataset.server)] && app.servers[Number(dr.dataset.server)].link;
-      if (link) { dr.disabled = true; dr.textContent = "Retrying..."; seatRequest(link, "download", "downloads", { path: dr.dataset.path }); }
+    const dl = e.target.closest('[data-act="dlcheck"], [data-act="dlrefresh"]');
+    if (dl) {  // Check for updates or Refresh: the server says what it found in its log and the footer
+      const link = app.servers[Number(dl.dataset.server)] && app.servers[Number(dl.dataset.server)].link;
+      if (link) { dl.disabled = true; seatRequest(link, "downloads", "downloads", { action: dl.dataset.act === "dlcheck" ? "check" : "refresh" }); }
       return;
     }
     const su = e.target.closest('[data-act="setupfind"], [data-act="setupremove"]');
