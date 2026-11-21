@@ -208,8 +208,7 @@ def refresh(cache_dir: Path, own_call: str, days: int = DAYS, today: date | None
         + "".join(f"{c}\n" for c in sorted(known)))
     log.info("rbn_known: %d known calls from %d days (%s)%s", len(known), len(have), span,
              f", {dropped} shared busts dropped (rbn_known_drop_busts)" if drop_busts else "")
-    downloads.note(listed, ARCHIVE_URL.format(day="YYYYMMDD"), len(known),
-                   f"known calls, {len(have)} days {span}", error)
+    downloads.note(listed, ARCHIVE_URL.format(day="YYYYMMDD"), len(known), "calls", error)
     return known
 
 

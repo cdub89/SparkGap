@@ -121,6 +121,7 @@ def test_decoder_options_are_written_and_off_removes_the_key(seat: Seat) -> None
     assert cfg["spot_rule_gates"] is True and cfg["spot_rule_bad_calls"] is True
     assert seat.settings(i)["spot_rule"] == "gates"
     assert seat.settings(i)["rule_files"]["spot_rule_bad_calls"] == str(i.config.parent / "BadCalls.txt")
+    assert seat.settings(i)["rule_files"]["spot_rule_notched_freqs"] == str(i.code / "NotchedFreqs.txt")
     seat.change("dallas1", {"spot_rule": "repeat", "call_source": None})    # back: the keys go
     assert "spot_rule_gates" not in seat.config(i) and "spot_validation_calls" not in seat.config(i)
     assert seat.settings(i)["spot_rule"] == "repeat" and seat.settings(i)["call_source"] is None

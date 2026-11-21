@@ -2910,14 +2910,15 @@ def _make_spot_rule(config, tracker, local=None):
         global _gates_on
         _gates_on = True    # C-worker bins close when idle (see _ItilaScanner.collect)
         # spot_rule_gates (off by default): spot_rule2.GateSpotRule, the call requirements in order
-        from spot_rule2 import LEVEL_READS, READS, STRONGER_DB, UNLISTED_READS, GateSpotRule, read_bad_calls, read_notched
+        from spot_rule2 import LEVEL_READS, READS, STRONGER_DB, UNLISTED_READS, GateSpotRule, read_bad_calls, read_notched, rule_file
         # spot_rule_bad_calls, spot_rule_notched_freqs (off by default): BadCalls.txt and
-        # NotchedFreqs.txt beside the config file, as the Aggregator's (Node Profile)
+        # NotchedFreqs.txt beside the config file, as the Aggregator's (Node Profile); NotchedFreqs.txt
+        # falls back to the checkout's (the FT8 sub-bands)
         here = os.path.dirname(_config_path or '.')
         bad = list(config.get('spot_rule_banned_calls', ()))
         notched = []
         for key, name in (('spot_rule_bad_calls', 'BadCalls.txt'), ('spot_rule_notched_freqs', 'NotchedFreqs.txt')):
-            path = os.path.join(here, name)
+            path = str(rule_file(here, name, os.path.dirname(os.path.abspath(__file__))))
             if not config.get(key):
                 continue
             if not os.path.exists(path):
