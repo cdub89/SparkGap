@@ -136,7 +136,7 @@ Spot decision:
 | --- | --- | --- | --- |
 | `spot_rule_qualifiers` | none | 5, 6 | Event words that act as CQ on this node |
 | `spot_rule_strongest_db` | 6 | 9 | The SNR margin a copy must beat; null or 0 is off |
-| `spot_rule_notched_freqs` | off | 11 | No spot on a frequency in `NotchedFreqs.txt` beside the config |
+| `spot_rule_notched_freqs` | off | 11 | No spot on a frequency in `NotchedFreqs.txt` beside the config, else the checkout's (the FT8 sub-bands) |
 | `spot_rule_beacons` | off | 12 | Read RBN's beacon list, `bcn.csv` in `rbn_known_dir` (`kHz,call` per line, about 2,500 beacons), read at start. A call listed on several frequencies matches any of them, and a listed `W2DLL/B2` is W2DLL. Without the file there are no listed beacons and the log says so (cdub89/SparkGap#57) |
 
 `spot_rule_bad_calls`, `spot_rule_scp` and `spot_rule_notched_freqs` are also the Bad Calls, MASTER.SCP Filter and Notched Freqs switches

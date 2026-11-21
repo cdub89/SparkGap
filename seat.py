@@ -642,14 +642,15 @@ class Seat:
     # ---- settings: a fixed list, each applied by a restart ----
 
     def settings(self, i: Instance) -> dict[str, Any]:
+        from spot_rule2 import rule_file
         cfg = self.config(i)
         return {
             "band": self.band(i),
             "bands_known": self.bands_known(i),
             "multi_band": self.multi_band(i),
             **decoder_settings(cfg),
-            # the Gated Rule's files, beside the config, as SparkGap reads them
-            "rule_files": {k: str(i.config.parent / f) for k, f in RULE_FILES.items()},
+            # the Gated Rule's files as SparkGap reads them: beside the config, else the checkout's
+            "rule_files": {k: str(rule_file(i.config.parent, f, i.code)) for k, f in RULE_FILES.items()},
             "rbn_upload": self.upload_mode(i),
             # a Flex copy's receive path as its config sets it at start (None: the radio's own)
             **{k: cfg.get(c) for k, (_, c) in RX_SETTINGS.items()},
