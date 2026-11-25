@@ -476,3 +476,7 @@ file retains its original headers and license.
 
 - Everyone who's run a CW skimmer for the last 15 years and kept the
   RBN ecosystem alive.
+
+<!-- Issue #60 fix: Docs: round-trip review and update (README to every page and back) -->
+
+Updated documentation and details regarding issue #60.
