@@ -99,6 +99,7 @@ FEED_STOP_S = 30.0
 FEED_RELINK_S = 12.0  # a running feeder links again within its RECONNECT_S after a server restart
 COMMANDS = ("start", "stop", "restart", "set", "add", "remove")
 RADIO_COMMANDS = ("discover", "node", "rename", "remove_radio", "downloads")  # not tied to one instance
+PAUSE_FILE = "PAUSED"  # in the root: new bins paused on every receiver until Play, across restarts
 BY_RE = re.compile(r"[^A-Za-z0-9 ._-]")  # what a client may call itself in the log
 
 
@@ -213,6 +214,7 @@ class Proc:
 class Server:
     def __init__(self, root: Path, cfg: dict[str, Any]) -> None:
         self.seat = Seat(root)
+        self.pause_file = root / PAUSE_FILE
         self.log_ring = LogRing()
         logging.getLogger("sparkgap.server").addHandler(self.log_ring)
         logging.getLogger("sparkgap.server").setLevel(logging.INFO)  # what the console shows
@@ -332,7 +334,8 @@ class Server:
             p = self.procs.get(("feeder", r["name"]))
             r["feeder"] = p.status if p else None
         procs = [p.view() for p in list(self.procs.values())]
-        return {"type": "seat", "utc": time.time(), **snap, "processes": procs}
+        return {"type": "seat", "utc": time.time(), **snap, "processes": procs,
+                "paused": self.pause_file.exists()}
 
     # ---- connections ----
 
@@ -499,6 +502,8 @@ class Server:
             old.writer.close()
         self.procs[(p.role, p.name)] = p
         log.info("Server: %s %s linked (pid %s)", p.role, p.name, p.pid)
+        if p.role == "skimmer":  # PAUSED decides, also for a copy that missed a Play while unlinked
+            self._send_pause(p, self.pause_file.exists())
         try:
             while True:
                 fin, op, data = await read_frame(reader)
@@ -629,6 +634,13 @@ class Server:
                 return result(False, "unknown radio")
             self._radio_log(c, rid, radio)
             return None
+        if cmd == "pause":  # the operator is about to transmit: now, not queued
+            on = settings.get("on") if isinstance(settings, dict) else None
+            if not isinstance(on, bool):
+                return refuse("pause: on must be true or false")
+            text = self._pause(on)
+            log.info("Server: %s by %s", text, requester(msg.get("by"), c.peer))
+            return result(True, text)
         if cmd in RADIO_COMMANDS:
             name = cmd   # busy and queued like an instance, under its own name
         elif cmd not in COMMANDS or not isinstance(name, str) or not NAME_RE.match(name):
@@ -737,6 +749,25 @@ class Server:
             return self._set_upload(name, settings["rbn_upload"])
         return self.seat.change(name, settings, live=self._live_band, live_rx=self._live_rx,
                                 live_record=self._live_record)
+
+    def _pause(self, on: bool) -> str:
+        """New bins paused (on) or resumed on every running receiver, at once (not queued behind a
+        start); PAUSED keeps it for receivers that start later."""
+        if on:
+            self.pause_file.touch()
+        else:
+            self.pause_file.unlink(missing_ok=True)
+        names = []
+        for (role, n), p in list(self.procs.items()):
+            if role == "skimmer":
+                self._send_pause(p, on)
+                names.append(n)
+        return f"new bins {'paused' if on else 'resumed'} on {len(names)} receivers"
+
+    @staticmethod
+    def _send_pause(p: Proc, on: bool) -> None:
+        msg = {"type": "command", "id": secrets.token_hex(8), "cmd": "pause", "args": {"on": on}}
+        p.writer.write(encode_frame(OP_TEXT, json.dumps(msg).encode()))
 
     # ---- the RBN feeder, through its link to the hub ----
 
