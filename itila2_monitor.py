@@ -8,6 +8,7 @@ passed since the last step.  Display only: spots, bins and windows never see it.
 
 import ctypes as ct
 import logging
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -17,6 +18,7 @@ WINDOW_S = 30.0        # decoded each step, as a batch window
 STEP_S = 0.5           # audio between steps
 WIDE_LPF_HZ = 200.0    # the wide path, as the scanner's h200
 TEXT_LEN = 1024
+SEG_EV_MIN = 300.0     # a stretch's own evidence below this: noise between overs (net 10-07, log)
 
 P = ct.POINTER(ct.c_double)
 log = logging.getLogger("sparkgap")
@@ -28,6 +30,8 @@ class Word:
     commit_utc: float   # audio time of the step that committed it
     wpm: float | None
     text: str
+    ev: float | None = None   # the stretch's own CW evidence (log Bayes factor)
+    kept: bool = True         # ev passed SEG_EV_MIN: shown; else logged only, for tuning
 
 
 def _bind(sc_lib: ct.CDLL, dec_lib: ct.CDLL) -> bool:
@@ -48,7 +52,8 @@ def _bind(sc_lib: ct.CDLL, dec_lib: ct.CDLL) -> bool:
     dec_lib.itila_get_wpm.argtypes = [ct.c_void_p]
     dec_lib.itila2_stream_step.restype = ct.c_int
     dec_lib.itila2_stream_step.argtypes = [ct.c_void_p, P, ct.c_int, ct.c_int, ct.c_double,
-                                           ct.c_char_p, ct.c_char_p, ct.c_int, ct.POINTER(ct.c_int)]
+                                           ct.c_char_p, ct.c_char_p, ct.c_int, ct.POINTER(ct.c_int),
+                                           P]
     return True
 
 
@@ -65,7 +70,9 @@ class Monitor:
         self._stable = ct.create_string_buffer(TEXT_LEN)
         self._live = ct.create_string_buffer(TEXT_LEN)
         self._last = ct.c_int(-1)
+        self._seg_ev = ct.c_double(0.0)
         self.khz: float | None = None
+        self.seeded_s = 0.0         # history it opened with, from a bin on the same signal
         self.live = ""
         self.words: list[Word] = []
         self._commit = 0            # samples since the monitor opened, up to the last cut
@@ -80,6 +87,9 @@ class Monitor:
             self._sc_lib.itila_sc_monitor_close(self._sc)
             return False
         self.khz, self.live, self._commit, self._next_step = khz, "", 0, 0.0
+        end = ct.c_longlong(0)
+        self.seeded_s = self._sc_lib.itila_sc_monitor_read(self._sc, None, None, 1 << 30,
+                                                           ct.byref(end), None) / RATE_HZ
         return True
 
     def close(self, scanner_gone: bool = False) -> None:
@@ -107,7 +117,7 @@ class Monitor:
         start = end.value - n
         cut = self._dec_lib.itila2_stream_step(
             self._h, self._env.ctypes.data_as(P), n, max(0, self._commit - start), self._ev,
-            self._stable, self._live, TEXT_LEN, ct.byref(self._last))
+            self._stable, self._live, TEXT_LEN, ct.byref(self._last), ct.byref(self._seg_ev))
         if cut < 0:
             return []
         self._commit = start + cut
@@ -117,7 +127,9 @@ class Monitor:
             return []
         wpm = self._dec_lib.itila_get_wpm(self._h)
         last = self._last.value if self._last.value >= 0 else cut
-        word = Word(now - (n - last) / RATE_HZ, now, wpm if wpm > 0 else None, text)
+        ev = self._seg_ev.value if math.isfinite(self._seg_ev.value) else None
+        word = Word(now - (n - last) / RATE_HZ, now, wpm if wpm > 0 else None, text, ev,
+                    ev is None or ev >= SEG_EV_MIN)
         self.words.append(word)
         return [word]
 
@@ -189,7 +201,7 @@ class MonitorHub:
                 log.warning("MONITOR %.2f kHz: %s", khz, e)
                 return
             if mon.open(khz):
-                log.info("MONITOR %.2f kHz: open", khz)
+                log.info("MONITOR %.2f kHz: open, %.1f s from its bin", khz, mon.seeded_s)
                 self.mon = mon
                 return
         log.info("MONITOR %.2f kHz: on no band", khz)

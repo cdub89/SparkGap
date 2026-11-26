@@ -2538,6 +2538,28 @@ static void bin_free_decoders(ItilaSc *sc, ScBin *b) {
  * Not in bins[]: the spawn, eviction, ready, list and count paths never see it, so spots are
  * the same with or without it.  It runs the bins' DSP (AFC, tone lock) and keeps the newest
  * 40 s of envelope for the caller to decode. */
+/* A new monitor starts from the envelope a bin on the same signal already holds (up to MON_KEEP),
+ * less the second its own pre-roll makes again, so its first steps see a window's worth of fits. */
+#define MON_SEED_HZ 30.0
+static void monitor_seed(ItilaSc *sc, ScBin *m)
+{
+    ScBin *best = NULL;
+    double gap = MON_SEED_HZ;
+    for (int k = 0; k < SC_MAX_BINS; k++) {
+        ScBin *b = &sc->bins[k];
+        double d = fabs(b->f_hz + b->afc_hz - m->f_hz);
+        if (b->active && b->env_n > 0 && d <= gap) { best = b; gap = d; }
+    }
+    if (!best) return;
+    int keep = best->env_n - (int)((double)sc->pre_len * 200.0 / sc->sample_rate);
+    int n = keep < MON_KEEP ? keep : MON_KEEP;
+    if (n <= 0) return;
+    memcpy(m->env100, best->env100 + keep - n, (size_t)n * sizeof(double));
+    memcpy(m->env200, best->env200 + keep - n, (size_t)n * sizeof(double));
+    m->env_n = n;
+    m->env_tot = n;
+}
+
 int itila_sc_monitor_open(ItilaSc *sc, double f_hz)
 {
     if (!sc) return 0;
@@ -2556,6 +2578,7 @@ int itila_sc_monitor_open(ItilaSc *sc, double f_hz)
         b->need_preroll = 1;
         b->start_in = sc->in_fed - sc->pre_len;
         sc->preroll_pending = 1;
+        monitor_seed(sc, b);
     }
     ok = ok && sc->mon;
     pthread_mutex_unlock(&sc->lock);

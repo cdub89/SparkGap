@@ -10399,11 +10399,13 @@ def _monitor_step(hub, managers, now):
     if st is None:
         return
     for w in st.words:
-        log.info("MONITOR %.2f kHz end=%.2f commit=%.2f wpm=%s: %s", st.khz, w.end_utc,
-                 w.commit_utc, "%.0f" % w.wpm if w.wpm else "-", w.text)
+        log.info("MONITOR %.2f kHz end=%.2f commit=%.2f wpm=%s ev=%s%s: %s", st.khz, w.end_utc,
+                 w.commit_utc, "%.0f" % w.wpm if w.wpm else "-", "%.0f" % w.ev if w.ev is not None else "-",
+                 "" if w.kept else " dropped", w.text)
+    kept = [w for w in st.words if w.kept]
     if _gui_feed is not None:
-        _gui_feed.publish_monitor(st.khz, " ".join(w.text for w in st.words), st.live,
-                                  st.words[-1].wpm if st.words else None)
+        _gui_feed.publish_monitor(st.khz, " ".join(w.text for w in kept), st.live,
+                                  kept[-1].wpm if kept else None)
 
 
 def run_file_mode(args, config):

@@ -2433,11 +2433,14 @@ double itila2_test_mark_power(const double *pow, const int8_t *marks, int n) {
  * cut; live: the open text after it; *last_mark: the last key-down sample before the cut.  Returns the new commit point (>= commit_from), or -1 when
  * the window fails the evidence test (nothing decoded, nothing committed).
  * ---------------------------------------------------------------------- */
+#define STREAM_WORD_UNITS 5.0     /* a gap this many dits long is a word gap (letter 3, word 7) */
+#define STREAM_FALLBACK_S 3.0     /* no word gap this long (a run-together fist): the window's cut */
 int itila2_stream_step(itila_t h, const double *env, int n, int commit_from, double ev_thresh,
-                       char *stable, char *live, int len, int *last_mark)
+                       char *stable, char *live, int len, int *last_mark, double *seg_ev)
 {
     itila_state_t *st = (itila_state_t*)h;
     if (last_mark) *last_mark = -1;
+    if (seg_ev) *seg_ev = NAN;
     if (len > 0) { stable[0] = '\0'; live[0] = '\0'; }
     if (!bind_scratch(st)) return -1;
     if (n < st->sample_rate || n > MAX_ENV || len < 2) return -1;
@@ -2457,6 +2460,18 @@ int itila2_stream_step(itila_t h, const double *env, int n, int commit_from, dou
     int n_cands = fit_mark_wpm_components(st->marks, n, wpm_em, cands, 2);
     int cut = gate_and_cut(st, e, n, A, nm, s2, cands, n_cands);
     if (cut < commit_from) cut = commit_from;
+    /* Commit at a word gap: a cut at a letter gap split words across commits (a bug's long letter
+     * gaps: W1D V, M ORE?, LakeDog 2026-11-26).  The latest word gap before the window's cut. */
+    double wpm = cands[0] > 0.0 ? cands[0] : wpm_em;
+    int word_gap = (int)(STREAM_WORD_UNITS * 1.2 / wpm * st->sample_rate);
+    int wcut = -1;
+    for (int i = cut - 1, run = 0; i >= commit_from && word_gap > 0; i--) {
+        run = st->marks[i] ? 0 : run + 1;
+        if (run == word_gap) { wcut = i + word_gap / 2; break; }
+    }
+    if (wcut < 0)
+        wcut = cut - commit_from > STREAM_FALLBACK_S * st->sample_rate ? cut : commit_from;
+    cut = wcut;
     if (last_mark)
         for (int i = cut - 1; i >= commit_from; i--)
             if (st->marks[i]) { *last_mark = i; break; }
@@ -2472,6 +2487,13 @@ int itila2_stream_step(itila_t h, const double *env, int n, int commit_from, dou
         decode_runs_beam_from(st, st->marks, n, cut, cands[0], 0.0, texts, 1, NULL) > 0) {
         strncpy(live, texts[0], len - 1);
         live[len - 1] = '\0';
+    }
+    /* The words since the last commit must show CW on their own: the window passing can be another
+     * over, and noise between overs read as E and T (LakeDog 2026-11-26); the caller judges it.
+     * Last: it reruns the HMM. */
+    if (stable[0] && cut > commit_from) {
+        double ev = signal_evidence_ratio(st, e + commit_from, cut - commit_from, A, nm, s2);
+        if (seg_ev) *seg_ev = ev;
     }
     return cut;
 }

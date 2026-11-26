@@ -90,9 +90,11 @@ def test_monitor_commits_each_word_once() -> None:
     for at in range(0, len(i), block):
         _feed(lib, h, i, q, at, min(block, len(i) - at))
         mon.feed((at + block) / FS)
-    texts = [w.text for w in mon.words if w.commit_utc > 10.0]       # after the fits settle
-    assert len(texts) >= 25
-    assert sum(t == "RN" for t in texts) >= 0.9 * len(texts)
+    settled = [w.text for w in mon.words if w.commit_utc > 10.0]     # after the fits settle
+    words = " ".join(settled).split()
+    assert len(words) >= 25                                           # a commit holds whole words
+    assert sum(t == "RN" for t in words) >= 0.9 * len(words)
+    assert all(w.kept for w in mon.words)
     delays = sorted(w.commit_utc - w.end_utc for w in mon.words)
     assert delays[len(delays) // 2] < 2.0
     mon.close()
@@ -126,3 +128,20 @@ def test_the_hub_opens_moves_and_drops_the_monitor() -> None:
     assert hub.mon is not None
     lib.itila_sc_free(h)                                          # a band change frees the scanner
     assert hub.step([], 13.5) is None and hub.mon is None
+
+
+@pytest.mark.parametrize("fir1", [False, True])
+def test_a_monitor_on_a_signal_with_a_bin_starts_from_its_envelope(fir1: bool) -> None:
+    """Opened 8 s into a keyed signal its bin holds: seconds of history, not the 1 s pre-roll."""
+    lib, h = _scanner(fir1)
+    lib = _monitor_lib(lib)
+    i, q = _keyed_iq(seconds=9.0)
+    _feed(lib, h, i, q, 0, 8 * FS)
+    fb = np.empty(64)
+    assert lib.itila_sc_list_bins(h, fb.ctypes.data_as(P), 64) >= 1       # the keyed tone's bin
+    assert lib.itila_sc_monitor_open(h, TONE_HZ) == 1
+    _feed(lib, h, i, q, 8 * FS, FS)
+    env, end = np.empty(8000), ct.c_longlong(0)
+    n = lib.itila_sc_monitor_read(h, None, env.ctypes.data_as(P), 8000, ct.byref(end), None)
+    assert n > 5 * 200 and end.value == n
+    lib.itila_sc_free(h)
