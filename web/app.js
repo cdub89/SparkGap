@@ -1412,7 +1412,7 @@ function renderLadder() {
     const chip = document.createElement("div");
     chip.className = "chip" + (it.spot ? " spot" : "") + (it.call ? " call" : "") + (Math.abs(app.selectedKhz - it.khz) < 0.05 ? " sel" : "");
     chip.style.top = (y - 11) + "px";
-    chip.innerHTML = `<span class="cd"></span><span class="cc">${esc(it.call || it.khz.toFixed(2))}</span><span class="cw">${it.wpm ? Math.round(it.wpm) : ""}</span>`;
+    chip.innerHTML = `<span class="cd"></span><span class="cc">${esc(it.call || it.khz.toFixed(1))}</span><span class="cw">${it.wpm ? Math.round(it.wpm) : ""}</span>`;
     chip.onclick = () => pick(it.khz, it.call);
     box.appendChild(chip);
   }
@@ -1471,11 +1471,11 @@ function readings(r, mode) {
 
 function renderDetail() {
   const i = inst(), d = i && app.selectedKhz > 0 ? i.detail : null;
-  $("dTitle").textContent = d ? d.call || d.khz.toFixed(2) : "Pick a signal";
+  $("dTitle").textContent = d ? d.call || d.khz.toFixed(1) : "Pick a signal";
   const pill = $("dPill");
   pill.hidden = !d;
   if (d) { pill.textContent = d.spotted ? "SPOTTED" : "HEARD"; pill.className = "pill" + (d.spotted ? " spot" : ""); }
-  $("dKhz").textContent = d ? d.khz.toFixed(2) : "-";
+  $("dKhz").textContent = d ? d.khz.toFixed(1) : "-";  // the dialled frequency, as a spot shows it; the monitor keeps the measured one
   $("dWpm").textContent = d && d.wpm ? Math.round(d.wpm) : "-";
   $("dSnr").textContent = d && d.snr ? Math.round(d.snr) + " dB" : "-";
   $("dWhy").hidden = !(d && d.why);
@@ -2619,7 +2619,7 @@ function bindInput() {
     list.innerHTML = app.matches.map((m, n) => `<div class="match${n ? "" : " first"}" data-n="${n}">`
       + `<span class="cd" style="width:6px;height:6px;border-radius:50%;border:1px solid var(${m.spot ? "--accent" : "--faint"});background:${m.spot ? "var(--accent)" : "transparent"}"></span>`
       + `<span class="mono" style="width:90px;font-weight:600">${esc(m.label)}</span>`
-      + `<span class="mono muted" style="width:80px">${m.call ? m.khz.toFixed(2) : ""}</span>`
+      + `<span class="mono muted" style="width:80px">${m.call ? m.khz.toFixed(1) : ""}</span>`
       + `<span class="ago">${m.ago ? m.ago + " ago" : "go to"}</span></div>`).join("");
     list.hidden = !app.matches.length || document.activeElement !== search;
   };
