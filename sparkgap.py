@@ -10393,6 +10393,7 @@ def _monitor_hub(config, tracker):
     hub.set_known(known)
     if _gui_feed is not None:
         _gui_feed.on_monitor = hub.request
+        _gui_feed.on_window_text = hub.heard_window
     return hub
 
 

@@ -6,6 +6,7 @@ itila2_stream_step, so the fits are a 30 s window's, and commits the words the w
 passed since the last step.  Display only: spots, bins and windows never see it.
 """
 
+import collections
 import ctypes as ct
 import logging
 import math
@@ -241,6 +242,7 @@ def split_prosigns(words: list[str]) -> list[str]:
 
 
 JOIN_PIECES = 4        # a call split by fades into up to this many pieces (DEN 9 F GC: N9FGC)
+HEARD_KHZ = 0.15       # a window this close to the pick is the same signal (bin snap and AFC)
 JOIN_HOLD_S = 3.0      # a commit ending in the start of a known call waits this long for the rest
 
 
@@ -335,6 +337,18 @@ class MonitorHub:
         self._held: list[str] = []
         self._held_at = 0.0
         self._heard: set[str] = set()          # known calls shown since the monitor opened
+        self._windows: collections.deque[tuple[float, str]] = collections.deque(maxlen=200)
+
+    def heard_window(self, khz: float, text: str) -> None:
+        """A decoded window (any thread): its known calls near the pick join the calls heard, so
+        WA2UIA shows as WA2USA, which the windows copied (11-26)."""
+        self._windows.append((khz, text))
+
+    def _take_windows(self, khz: float) -> None:
+        while self._windows:
+            k, text = self._windows.popleft()
+            if self.joiner is not None and abs(k - khz) <= HEARD_KHZ:
+                self._heard.update(w for w in text.split() if w in self.joiner.known)
 
     def set_known(self, calls: Iterable[str]) -> None:
         self.joiner = CallJoin(calls)
@@ -354,7 +368,9 @@ class MonitorHub:
             self._want = None
             self._move(want[0], scanners)
         if self.mon is None or self.mon.khz is None:
+            self._windows.clear()
             return None
+        self._take_windows(self.mon.khz)
         words = self.mon.feed(now)
         text = self._shown([w.text for w in words if w.kept], now)
         if not text and self.mon.live == self._live:
