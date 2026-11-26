@@ -54,6 +54,7 @@ STALL_S = 10                # no DAX-IQ packet for this long: a new stream
 RETRY_S = 30                # after a recovery: time for the new stream to start
 LOSS_BUDGET = 3             # losses recovered within LOSS_WINDOW_S; the next stops: no loops on the radio
 LOSS_WINDOW_S = 3600
+PAN_CREATE_TIMEOUT_S = 5.0  # a 2 s wait missed the reply, read as no free pan (LakeDog, 2026-11-26)
 CMD_TIMEOUT_S = 3.0         # removes and recovery: a 1 s wait missed replies that came (2026-10-22 12:47Z)
 HEARTBEAT_S = 1.0           # the station pings the radio this often, with keepalive on, as FlexLib does
 HEARTBEAT_TIMEOUT_S = 3.0
@@ -1166,7 +1167,10 @@ class FlexIQReceiver:
                 conn.ok(f"pan {pan} left by a stopped copy removed",
                         conn.cmd(f"display pan remove {pan}", timeout=CMD_TIMEOUT_S))
 
-        self._pan_id = conn.hex_id(conn.cmd("display pan create x=1 y=1"))
+        resp = conn.cmd("display pan create x=1 y=1", timeout=PAN_CREATE_TIMEOUT_S)
+        self._pan_id = conn.hex_id(resp)
+        if self._pan_id is None and conn.reply(resp) is None:
+            raise RuntimeError(f"[Flex] The radio did not answer pan create in {PAN_CREATE_TIMEOUT_S:.0f} s")
         if self._pan_id is None:
             raise RuntimeError("[Flex] No free panadapter on the radio; close one in SmartSDR or on the front panel")
         self._pan_owner = self._station_handle

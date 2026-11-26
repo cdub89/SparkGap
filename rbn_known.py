@@ -144,12 +144,16 @@ def _write(path: Path, text: str) -> None:
     downloads.write_atomic(path, text.encode())
 
 
-def refresh(cache_dir: Path, own_call: str, days: int = DAYS, today: date | None = None,
-            fetch: Callable[[date], bytes] = _fetch,
-            sleep: Callable[[float], None] = time.sleep, drop_busts: bool = False,
-            keep: Callable[[str], bool] | None = None) -> set[str]:
-    """Fetch any missing day of the last DAYS (yesterday back); write and return the known calls.
-    drop_busts, keep: see known_calls()."""
+def uses_archives(cfg: dict) -> bool:
+    """Whether a receiver config reads the RBN known calls (spot_validation_calls, itila_known_calls)."""
+    return cfg.get("spot_validation_calls") in ("rbn", "rbn+skcc") or cfg.get("itila_known_calls") == "rbn"
+
+
+def cache_days(cache_dir: Path, own_call: str, days: int = DAYS, today: date | None = None,
+               fetch: Callable[[date], bytes] = _fetch,
+               sleep: Callable[[float], None] = time.sleep) -> tuple[list[Counter[str]], list[date], str | None]:
+    """Fetch and cache any missing day of the last days (yesterday back); each day's counts, the days
+    held, and the last failure.  The server runs it ahead of a receiver's start (start without the wait)."""
     today = today or datetime.now(timezone.utc).date()
     cache_dir.mkdir(parents=True, exist_ok=True)
     tag = spotter(own_call) if own_call else "ALL"
@@ -198,6 +202,18 @@ def refresh(cache_dir: Path, own_call: str, days: int = DAYS, today: date | None
                 old.unlink()
         except ValueError:
             continue
+    return counted, have, error
+
+
+def refresh(cache_dir: Path, own_call: str, days: int = DAYS, today: date | None = None,
+            fetch: Callable[[date], bytes] = _fetch,
+            sleep: Callable[[float], None] = time.sleep, drop_busts: bool = False,
+            keep: Callable[[str], bool] | None = None) -> set[str]:
+    """Fetch any missing day of the last DAYS (yesterday back); write and return the known calls.
+    drop_busts, keep: see known_calls()."""
+    today = today or datetime.now(timezone.utc).date()
+    tag = spotter(own_call) if own_call else "ALL"
+    counted, have, error = cache_days(cache_dir, own_call, days, today, fetch, sleep)
     known = known_calls(counted, drop_busts=drop_busts, keep=keep)
     span = f"{min(have):%Y-%m-%d} to {max(have):%Y-%m-%d}" if have else "none"
     dropped = len(known_calls(counted)) - len(known) if drop_busts else 0

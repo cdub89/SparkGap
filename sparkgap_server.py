@@ -85,6 +85,7 @@ SERVER_PATH = "/server"
 FEED_PREFIX = "/feed/"
 HELP_PATH = "/help"
 STATE_EVERY_S = 2.0
+DOWNLOADS_EVERY_S = 3600.0  # RBN archive days fetched ahead of a receiver's start
 RADIO_LOG_EVERY_S = 2.0  # a radio's log is read at most this often, however many panes ask
 PING_EVERY_S = 20.0
 MAX_CLIENTS = 16
@@ -210,6 +211,27 @@ class Proc:
                 "status": self.status}
 
 
+def fetch_rbn_days(seat: Seat) -> int:
+    """Fetch any RBN archive day a receiver config on this machine reads; the folders filled."""
+    import rbn_known
+    done: set[tuple[Path, str, int]] = set()
+    for i in seat.instances():
+        try:
+            cfg = seat.config(i)
+        except (OSError, ValueError):
+            continue
+        if not rbn_known.uses_archives(cfg):
+            continue
+        d = Path(str(cfg.get("rbn_known_dir", "rbn_known"))).expanduser()
+        d = d if d.is_absolute() else i.code / d     # a receiver runs from its code folder
+        call = str(cfg.get("callsign", ""))
+        key = (d.resolve(), rbn_known.spotter(call) if call else "ALL", int(cfg.get("rbn_known_days", rbn_known.DAYS)))
+        if key not in done:
+            done.add(key)
+            rbn_known.cache_days(d, call, key[2])
+    return len(done)
+
+
 class Server:
     def __init__(self, root: Path, cfg: dict[str, Any]) -> None:
         self.seat = Seat(root)
@@ -282,6 +304,7 @@ class Server:
         )
         self.ready.set()  # after the line above, which the web console shows
         asyncio.get_running_loop().create_task(self._state_loop())
+        asyncio.get_running_loop().create_task(self._downloads_loop())
         self.listener = server
         await server.serve_forever()
 
@@ -295,6 +318,16 @@ class Server:
                 listener.close()
         for w in list(self.conns):
             w.transport.abort()
+
+    async def _downloads_loop(self) -> None:
+        """The RBN archive days the receivers read, kept cached: a start would otherwise fetch them
+        first (two missing days held a LakeDog start 19 s before it reached the radio, 2026-11-26)."""
+        while True:
+            try:
+                await asyncio.to_thread(fetch_rbn_days, self.seat)
+            except Exception:
+                log.exception("Server: downloads")
+            await asyncio.sleep(DOWNLOADS_EVERY_S)
 
     async def _state_loop(self) -> None:
         last_ping = time.monotonic()
