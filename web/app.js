@@ -587,6 +587,16 @@ class Instance {
     return [(this.firstHz + (best + 0.5) * this.hzPerBin) / 1000, db];
   }
 
+  // LIVE text: every call-shaped word bold, a spotted one in the spot colour, the picked call underlined
+  liveMarked(text, call) {
+    return esc(text).split(" ").map(w => {
+      const b = baseCall(w);
+      if (!CALL_RE.test(b)) return w;
+      const cls = [this.spots.has(b) ? "spot" : "", b === call ? "sel" : ""].filter(Boolean).join(" ");
+      return `<b${cls ? ` class="${cls}"` : ""}>${w}</b>`;
+    }).join(" ");
+  }
+
   marked(text, call) {
     return esc(text).split(" ").map(w => (call && w === call ? `<b>${w}</b>` : w)).join(" ");
   }
@@ -1482,7 +1492,7 @@ function renderDetail() {
   const mon = d && i.mon;  // click to decode: the words as sent, the one being sent dimmed
   $("dLive").hidden = !mon;
   $("dLiveHead").hidden = !mon;
-  const live = mon ? `${esc(mon.text)}${mon.live ? ` <span class="live">${esc(mon.live)}</span>` : ""}` : "";
+  const live = mon ? `${i.liveMarked(mon.text, d.call)}${mon.live ? ` <span class="live">${i.liveMarked(mon.live, d.call)}</span>` : ""}` : "";
   const sel = window.getSelection();  // a selection in the LIVE text holds it still until it is cleared
   const held = sel && !sel.isCollapsed && $("dLiveText").contains(sel.anchorNode);
   if (!held && $("dLiveText").innerHTML !== live) $("dLiveText").innerHTML = live;
