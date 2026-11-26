@@ -10382,9 +10382,12 @@ class _FileDigital:
                      self._first + (n - len(fi)) / fs)], self)
 
 
-def _monitor_hub(config, tracker):
+def _monitor_hub(config, tracker, forced=False):
     """Click to decode (exp/click-decode): the process's one monitor; the GUI feed's picks open it.
-    Split calls join into the tracker's calls and, where the config reads them, the RBN known calls."""
+    Split calls join into the tracker's calls and, where the config reads them, the RBN known calls.
+    None unless click_to_decode is on (default off) or a replay asks for it (--monitor-khz)."""
+    if not (config.get('click_to_decode') or forced):
+        return None
     from itila2_monitor import MonitorHub
     hub = MonitorHub(_get_itila_lib())
     known = set(tracker.valid_calls or ())
@@ -10528,8 +10531,8 @@ def run_file_mode(args, config):
     all_spots = []
     chunk_sec = 300  # 5-minute chunks
     _start_gui_feed(config, [(f"{center_khz:.0f} kHz", center_khz * 1000.0)], file_rate, [manager])
-    monitor = _monitor_hub(config, tracker)
-    if args.monitor_khz:
+    monitor = _monitor_hub(config, tracker, forced=bool(args.monitor_khz))
+    if monitor is not None and args.monitor_khz:
         monitor.request(args.monitor_khz)
     if _gui_feed is not None:
         _gui_feed.on_why = lambda call, khz: _why_answer(tracker.spot_rule, call, khz)
@@ -10726,7 +10729,8 @@ def run_file_mode(args, config):
             if digital is not None:
                 digital.add(i_block, q_block, _file_audio_t)
             manager.feed_all_iq(i_block, q_block)
-            _monitor_step(monitor, [manager], t_start + (pos + len(i_block)) / file_rate)
+            if monitor is not None:
+                _monitor_step(monitor, [manager], t_start + (pos + len(i_block)) / file_rate)
             if _spot_rule_on:
                 audio_now[0] = t_start + pos / file_rate
 
@@ -10785,9 +10789,10 @@ def run_file_mode(args, config):
 
         del i_data, q_data
 
-    if monitor.mon is not None:
+    if monitor is not None and monitor.mon is not None:
         log.info("MONITOR %.2f kHz: %d commits", monitor.mon.khz or 0.0, len(monitor.mon.words))
-    monitor.close()
+    if monitor is not None:
+        monitor.close()
 
     # Collect all accumulated text per signal before killing
     CALL_RE_EVAL = re.compile(r'[A-Z0-9]{1,3}\d{1,4}[A-Z]{1,4}')
