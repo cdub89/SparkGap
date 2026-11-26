@@ -199,3 +199,10 @@ def test_common_words_are_not_held_as_call_pieces() -> None:
 ])
 def test_prosigns_run_into_a_word_are_split_off(text: str, split: str) -> None:
     assert " ".join(split_prosigns(text.split())) == split
+
+
+def test_a_known_call_decides_between_the_arms() -> None:
+    """Narrow read KF9V4 at a lower cost, wide KF9VV: the known call is shown (LakeDog 11-26)."""
+    mon = Monitor.__new__(Monitor)
+    mon.known = frozenset({"KF9VV", "AA0YY"})
+    assert mon._calls("AA0YY DE KF9VV") == 2 and mon._calls("AA0YY DE KF9V4") == 1

@@ -2467,6 +2467,12 @@ int itila2_stream_step(itila_t h, const double *env, int n, int commit_from, dou
      * gaps: W1D V, M ORE?, LakeDog 2026-11-26).  The latest word gap before the window's cut. */
     double wpm = cands[0] > 0.0 ? cands[0] : wpm_em;
     int word_gap = (int)(STREAM_WORD_UNITS * 1.2 / wpm * st->sample_rate);
+    /* At least this fist's own letter/word boundary, from the gap centres of the last decode:
+     * a 5-dit cut fell inside words sent with long letter gaps (FR IEND, KF9VV 11-26). */
+    if (st->gap_unit_prev > 0.0 && st->gap_l_prev > 0.0 && st->gap_w_prev > st->gap_l_prev) {
+        int fitted = (int)(sqrt(st->gap_l_prev * st->gap_w_prev) * st->gap_unit_prev);
+        if (fitted > word_gap) word_gap = fitted;
+    }
     int wcut = force_cut >= 0 ? (force_cut < commit_from ? commit_from : force_cut > n ? n : force_cut) : -1;
     for (int i = cut - 1, run = 0; wcut < 0 && i >= commit_from && word_gap > 0; i--) {
         run = st->marks[i] ? 0 : run + 1;
