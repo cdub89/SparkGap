@@ -224,8 +224,9 @@ def split_prosigns(words: list[str]) -> list[str]:
             head.append(w[:2])
             w = w[2:]
         while not CALL_SHAPE.match(w) and len(w) > 3 and (
-                w[-2:] in TRAIL_PROSIGNS        # AR only after a number or QSO word: CLEAR, YEAR stay
-                or (w[-2:] == "AR" and (any(c.isdigit() for c in w[:-2]) or w[:-2] in QSO_WORDS))):
+                w[-2:] in TRAIL_PROSIGNS        # AR after a number or QSO word: CLEAR stays
+                or (w[-2:] == "AR"
+                    and (any(c.isdigit() for c in w[:-2]) or w[:-2] in QSO_WORDS))):
             tail.insert(0, w[-2:])
             w = w[:-2]
         out += head + [w] + tail
