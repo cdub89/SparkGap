@@ -182,10 +182,13 @@ def test_a_call_split_across_commits_waits_for_its_rest() -> None:
 
 
 def test_common_words_are_not_held_as_call_pieces() -> None:
-    """TU, GM, ES, K start known calls (TU5, GM3, ES1, K1): only a piece with its digit waits."""
+    """TU, GM, ES start known calls (TU5, GM3, ES1): only a piece with its digit, or a lone
+    letter (K | F9VV), waits."""
     hub = MonitorHub(ct.CDLL(None))
     hub.set_known(KNOWN + ["TU5AB", "GM3ABC", "ES1AB", "K1ABC"])
-    assert [hub._shown([t], 0.0) for t in ("TU", "GM ES", "K")] == ["TU", "GM ES", "K"]
+    assert [hub._shown([t], 0.0) for t in ("TU", "GM ES")] == ["TU", "GM ES"]
+    assert hub._shown(["K"], 0.0) == ""
+    assert hub._shown([], JOIN_HOLD_S) == "K"                  # the rest never came
 
 
 @pytest.mark.parametrize("text, split", [
@@ -206,3 +209,19 @@ def test_a_known_call_decides_between_the_arms() -> None:
     mon = Monitor.__new__(Monitor)
     mon.known = frozenset({"KF9VV", "AA0YY"})
     assert mon._calls("AA0YY DE KF9VV") == 2 and mon._calls("AA0YY DE KF9V4") == 1
+
+
+def test_a_lone_letter_waits_for_the_rest_of_its_call() -> None:
+    """K | F9VV came as two commits (11-26): the K waits, then joins."""
+    hub = MonitorHub(ct.CDLL(None))
+    hub.set_known(["KF9VV", "AA0YY"])
+    assert hub._shown(["ES K"], 0.0) == "ES"
+    assert hub._shown(["F9VV ES"], 1.0) == "KF9VV ES"
+
+
+def test_a_call_one_off_a_call_already_heard_is_that_call() -> None:
+    """AC5? and AC5G after DE AC5P (11-26); ACHP has no digit, AA0YY is known: both stay."""
+    hub = MonitorHub(ct.CDLL(None))
+    hub.set_known(["AC5P", "AA0YY", "AA0YZ"])
+    assert hub._shown(["DE AC5P SK"], 0.0) == "DE AC5P SK"
+    assert hub._shown(["73 AC5? ES AC5G ACHP DE AA0YY"], 1.0) == "73 AC5P ES AC5P ACHP DE AA0YY"
