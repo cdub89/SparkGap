@@ -388,12 +388,14 @@ class FeedServer:
             spot["why"] = why  # the gate rule's reason (spot_rule_gates)
         self._call(self._on_text, spot, self.spots)
 
-    def publish_monitor(self, khz: float, text: str, live: str, wpm: float | None) -> None:
-        """One monitor step: text is the words it committed, live the word still being sent."""
+    def publish_monitor(self, khz: float, text: str, live: str, wpm: float | None, back: int = 0) -> None:
+        """One monitor step: text is the words it committed, live the word still being sent; text
+        replaces the last back words already sent (a split call joined)."""
         self._call(self._broadcast, {
             "type": "monitor",
             "khz": round(float(khz), 2),
             "text": text,
+            "back": int(back),
             "live": live,
             "wpm": None if wpm is None else round(float(wpm), 1),
             "utc": time.time(),

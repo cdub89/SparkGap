@@ -919,7 +919,7 @@ def test_a_pick_opens_the_monitor_and_its_text_reaches_every_client(feed: FeedSe
     wait_for(lambda: len(asked) == 2)
     assert asked == [7047.5, None]
     feed.publish_monitor(7047.5, "CQ DE W1AW", "W1", 22.0)
-    assert other.json("monitor") == {"type": "monitor", "khz": 7047.5, "text": "CQ DE W1AW", "live": "W1",
+    assert other.json("monitor") == {"type": "monitor", "khz": 7047.5, "text": "CQ DE W1AW", "back": 0, "live": "W1",
                                      "wpm": 22.0, "utc": pytest.approx(time.time(), abs=5)}
 
 

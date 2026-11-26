@@ -219,6 +219,7 @@ class Step:
     words: list[Word] = field(default_factory=list)
     live: str = ""
     text: str = ""            # what shows: the kept words, split calls joined
+    back: int = 0             # words of the text shown before that this text replaces (K | F9VV)
 
 
 LEAD_PROSIGNS = ("BK", "BT")          # run into the next word: no word starts so (KNOW, SKILL do)
@@ -250,7 +251,7 @@ def split_prosigns(words: list[str]) -> list[str]:
 
 JOIN_PIECES = 4        # a call split by fades into up to this many pieces (DEN 9 F GC: N9FGC)
 HEARD_KHZ = 0.15       # a window this close to the pick is the same signal (bin snap and AFC)
-JOIN_HOLD_S = 3.0      # a commit ending in the start of a known call waits this long for the rest
+JOIN_BACK_S = 3.0      # a piece joins words shown up to this long before (K | F9VV: KF9VV)
 
 
 def _one_off(a: str, b: str) -> bool:
@@ -265,12 +266,10 @@ def _one_off(a: str, b: str) -> bool:
 
 class CallJoin:
     """Split calls joined again: pieces in a row that make a known call, the first not a known
-    call itself (KM7A Z: KM7AZ; DEN 9 F GC: DE N9FGC, LakeDog 11-26).  The tail of a commit that
-    starts a known call is held for the next commit, as a call split across two."""
+    call itself (KM7A Z: KM7AZ; DEN 9 F GC: DE N9FGC, LakeDog 11-26)."""
 
     def __init__(self, known: Iterable[str]) -> None:
         self.known = frozenset(c.strip().upper() for c in known if c.strip())
-        self.starts = {c[:k] for c in self.known for k in range(1, len(c))}
 
     def _call(self, joined: str) -> list[str] | None:
         if joined in self.known:
@@ -278,9 +277,6 @@ class CallJoin:
         if joined.startswith("DE") and joined[2:] in self.known:
             return ["DE", joined[2:]]
         return None
-
-    def _starts(self, joined: str) -> bool:
-        return joined in self.starts or (joined.startswith("DE") and joined[2:] in self.starts)
 
     def join(self, words: list[str]) -> list[str]:
         out, i = [], 0
@@ -310,17 +306,6 @@ class CallJoin:
             out.append(near[0] if len(near) == 1 else w)
         return out
 
-    def tail(self, words: list[str]) -> int:
-        """Where the held tail starts: the longest end run (of JOIN_PIECES at most) that starts a
-        known call and is not one; len(words) when nothing is held."""
-        for i in range(max(0, len(words) - JOIN_PIECES), len(words)):
-            joined = "".join(words[i:])
-            piece = any(c.isdigit() for c in joined) or (i == len(words) - 1 and len(joined) == 1)
-            if (piece and self._starts(joined) and not self._call(joined)   # KM7A, DEN 9, or a lone
-                    and words[-1] not in self.known):                       # letter: K | F9VV
-                return i
-        return len(words)
-
 
 Scanner = tuple[ct.CDLL, int, float]   # (scanner library, handle, ev_thresh) of one band
 
@@ -341,8 +326,8 @@ class MonitorHub:
         self.mon: Monitor | None = None
         self._live = ""
         self.joiner: CallJoin | None = None    # set_known(): the calls split calls join into
-        self._held: list[str] = []
-        self._held_at = 0.0
+        self._tail: list[str] = []             # the last words shown, which a piece may join
+        self._tail_at = 0.0
         self._heard: set[str] = set()          # known calls shown since the monitor opened
         self._windows: collections.deque[tuple[float, str]] = collections.deque(maxlen=200)
 
@@ -379,28 +364,26 @@ class MonitorHub:
             return None
         self._take_windows(self.mon.khz)
         words = self.mon.feed(now)
-        text = self._shown([w.text for w in words if w.kept], now)
+        back, text = self._shown([w.text for w in words if w.kept], now)
         if not text and self.mon.live == self._live:
             return Step(self.mon.khz, words) if words else None
         self._live = self.mon.live
-        return Step(self.mon.khz, words, self.mon.live, text)
+        return Step(self.mon.khz, words, self.mon.live, text, back)
 
-    def _shown(self, texts: list[str], now: float) -> str:
-        """The text to show from this step's kept commits, with a held tail from the last."""
+    def _shown(self, texts: list[str], now: float) -> tuple[int, str]:
+        """What to show from this step's kept commits at once, and how many of the last words
+        shown it replaces: a piece that completes a call rewrites them (K | F9VV: KF9VV)."""
         words = split_prosigns(" ".join(texts).split())
-        if self.joiner is None:
-            return " ".join(words)
-        if words:
-            if not self._held:
-                self._held_at = now
-            words, self._held = self.joiner.join(self._held + words), []
-            words = self.joiner.fix(words, self._heard)
-            self._heard.update(w for w in words if w in self.joiner.known)
-            cut = self.joiner.tail(words)
-            words, self._held = words[:cut], words[cut:]
-        elif self._held and now - self._held_at >= JOIN_HOLD_S:
-            words, self._held = self._held, []                      # the rest never came
-        return " ".join(words)
+        if self.joiner is None or not words:
+            return 0, " ".join(words)
+        tail = self._tail if now - self._tail_at <= JOIN_BACK_S else []
+        out = self.joiner.fix(self.joiner.join(tail + words), self._heard)
+        self._heard.update(w for w in out if w in self.joiner.known)
+        same = 0
+        while same < min(len(tail), len(out)) and out[same] == tail[same]:
+            same += 1
+        self._tail, self._tail_at = out[-(JOIN_PIECES - 1):], now
+        return len(tail) - same, " ".join(out[same:])
 
     def close(self) -> None:
         self._move(None, [])
@@ -411,7 +394,7 @@ class MonitorHub:
             self.mon.close()
             self.mon = None
         self._live = ""
-        self._held, self._heard = [], set()
+        self._tail, self._heard = [], set()
         if khz is None:
             return
         for sc_lib, sc_h, ev in scanners:
