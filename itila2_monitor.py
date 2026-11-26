@@ -26,7 +26,10 @@ NO_FIT = 999.0         # itila_get_last_cost when there was nothing to time
 HOLD_STEPS = 3         # steps in a row the window must pass the evidence test before text shows:
                        # at 6 dB noise passed some of the 60 tries per 30 s (LakeDog 11-26, N9FGC)
 HOLD_BACK_S = 1.0      # a failed step moves the commit to this long before now: quiet stays quiet
-LONE_EV_MIN = 2000.0   # a lone E or T needs this much evidence (noise E/T: 590-1815, N9FGC QSO)
+LONE_EV_MIN = 2000.0   # a lone E or T needs this much evidence (noise E/T: 590-1815, N9FGC QSO);
+                       # per second of key-down, noise letters scored as high as words (11-26)
+HEARD_BONUS = 2.0      # token prior on top of TOKEN_PRIOR for a call or prosign heard in this QSO
+QSO_PROSIGNS = ("BK", "BT", "KN", "SK", "AR")
 
 P = ct.POINTER(ct.c_double)
 log = logging.getLogger("sparkgap")
@@ -45,7 +48,7 @@ class Word:
 
 
 def _bind(sc_lib: ct.CDLL, dec_lib: ct.CDLL) -> bool:
-    if not hasattr(sc_lib, 'itila_sc_monitor_open') or not hasattr(dec_lib, 'itila2_stream_step'):
+    if not hasattr(sc_lib, 'itila_sc_monitor_open') or not hasattr(dec_lib, 'itila2_set_monitor'):
         return False
     sc_lib.itila_sc_monitor_open.restype = ct.c_int
     sc_lib.itila_sc_monitor_open.argtypes = [ct.c_void_p, ct.c_double]
@@ -62,6 +65,8 @@ def _bind(sc_lib: ct.CDLL, dec_lib: ct.CDLL) -> bool:
     dec_lib.itila_get_wpm.argtypes = [ct.c_void_p]
     dec_lib.itila_get_last_cost.restype = ct.c_double
     dec_lib.itila_get_last_cost.argtypes = [ct.c_void_p]
+    dec_lib.itila2_set_monitor.restype = ct.c_int
+    dec_lib.itila2_set_monitor.argtypes = [ct.c_void_p, ct.c_int, ct.c_char_p, ct.c_double]
     dec_lib.itila2_stream_step.restype = ct.c_int
     dec_lib.itila2_stream_step.argtypes = [ct.c_void_p, P, ct.c_int, ct.c_int, ct.c_double,
                                            ct.c_char_p, ct.c_char_p, ct.c_int, ct.POINTER(ct.c_int),
@@ -105,6 +110,13 @@ class _Arm:
         self._live = ct.create_string_buffer(TEXT_LEN)
         self._last = ct.c_int(-1)
         self._ev = ct.c_double(0.0)
+        self.words(())
+
+    def words(self, heard: Iterable[str]) -> None:
+        """Time each over on its own; the calls heard in this QSO and the prosigns earn a prior."""
+        if self.h:
+            text = "\n".join(sorted(set(heard) | set(QSO_PROSIGNS)))
+            self._lib.itila2_set_monitor(self.h, 1, text.encode(), HEARD_BONUS)
 
     def step(self, n: int, commit_from: int, ev_thresh: float,
              force_cut: int = -1) -> _Reading | None:
@@ -172,6 +184,10 @@ class Monitor:
         for a in self._arms:
             a.free()
         self._arms, self.khz = [], None
+
+    def heard(self, calls: Iterable[str]) -> None:
+        for a in self._arms:
+            a.words(calls)
 
     @property
     def scanner(self) -> int:
@@ -362,9 +378,15 @@ class MonitorHub:
         if self.mon is None or self.mon.khz is None:
             self._windows.clear()
             return None
+        heard = len(self._heard)
         self._take_windows(self.mon.khz)
+        if len(self._heard) != heard:
+            self.mon.heard(self._heard)
         words = self.mon.feed(now)
+        heard = len(self._heard)
         back, text = self._shown([w.text for w in words if w.kept], now)
+        if len(self._heard) != heard:
+            self.mon.heard(self._heard)            # the decoder's prior, from the next step
         if not text and self.mon.live == self._live:
             return Step(self.mon.khz, words) if words else None
         self._live = self.mon.live
