@@ -127,6 +127,7 @@ class Monitor:
         self._sc_lib, self._sc, self._dec_lib = sc_lib, sc_handle, dec_lib
         self._ev = ev_thresh
         self._arms: list[_Arm] = []
+        self.known: frozenset[str] = frozenset()   # the hub's known calls: an arm's call checks
         self.khz: float | None = None
         self.seeded_s = 0.0         # history it opened with, from a bin on the same signal
         self.live = ""
@@ -157,6 +158,9 @@ class Monitor:
             a.free()
         self._arms, self.khz = [], None
 
+    def _calls(self, text: str) -> int:
+        return sum(w in self.known for w in text.split())
+
     @property
     def scanner(self) -> int:
         return self._sc
@@ -185,9 +189,12 @@ class Monitor:
             return []               # the commit waits: the first word comes once it holds
         nr = narrow.step(n, commit_from, self._ev, force_cut=w.cut)   # the same stretch
         best, other, arm = w, nr, ARMS[0][0]
-        # narrow only reads better where wide read something too: alone it was noise (net 10-07)
-        if nr is not None and nr.text and w.text and nr.cost < min(w.cost, NO_FIT):
-            best, other, arm = nr, w, ARMS[1][0]
+        # narrow only reads better where wide read something too: alone it was noise (net 10-07);
+        # a known call in one reading only decides (KF9VV vs KF9V4, 11-26), else timing cost
+        if nr is not None and nr.text and w.text:
+            calls_w, calls_n = self._calls(w.text), self._calls(nr.text)
+            if calls_n > calls_w or (calls_n == calls_w and nr.cost < min(w.cost, NO_FIT)):
+                best, other, arm = nr, w, ARMS[1][0]
         self._commit = start + w.cut
         self.live = best.live
         if not best.text:
@@ -366,6 +373,7 @@ class MonitorHub:
                 log.warning("MONITOR %.2f kHz: %s", khz, e)
                 return
             if mon.open(khz):
+                mon.known = self.joiner.known if self.joiner else frozenset()
                 log.info("MONITOR %.2f kHz: open, %.1f s from its bin", khz, mon.seeded_s)
                 self.mon = mon
                 return
