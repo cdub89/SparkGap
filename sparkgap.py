@@ -10409,10 +10409,10 @@ def _monitor_step(hub, managers, now):
                  w.end_utc, w.commit_utc, "%.0f" % w.wpm if w.wpm else "-",
                  "%.0f" % w.ev if w.ev is not None else "-", w.arm, "" if w.kept else " dropped", w.text, w.other)
     kept = [w for w in st.words if w.kept]
-    if st.text and st.text != " ".join(w.text for w in kept):
-        log.info("MONITOR %.2f kHz shown: %s", st.khz, st.text)   # a split call joined, or a held tail
+    if st.back or (st.text and st.text != " ".join(w.text for w in kept)):
+        log.info("MONITOR %.2f kHz shown (back %d): %s", st.khz, st.back, st.text)   # a split call joined
     if _gui_feed is not None:
-        _gui_feed.publish_monitor(st.khz, st.text, st.live, kept[-1].wpm if kept else None)
+        _gui_feed.publish_monitor(st.khz, st.text, st.live, kept[-1].wpm if kept else None, st.back)
 
 
 def run_file_mode(args, config):

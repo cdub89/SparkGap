@@ -265,7 +265,8 @@ class Instance {
     } else if (m.type === "monitor") {
       if (this.selKhz === null || Math.abs(m.khz - this.selKhz) > MONITOR_MATCH_KHZ) return;  // another console's pick
       const mon = this.mon && Math.abs(this.mon.khz - m.khz) <= MONITOR_MATCH_KHZ ? this.mon : { khz: m.khz, text: "" };
-      if (m.text) mon.text = (mon.text ? mon.text + " " : "") + m.text;
+      const kept = m.back > 0 ? mon.text.split(" ").slice(0, -m.back).join(" ") : mon.text;  // a split call joined
+      if (m.text) mon.text = (kept ? kept + " " : "") + m.text;
       mon.text = mon.text.slice(-MONITOR_CHARS);
       mon.live = m.live || "";
       this.mon = mon;
