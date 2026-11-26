@@ -244,6 +244,16 @@ JOIN_PIECES = 4        # a call split by fades into up to this many pieces (DEN 
 JOIN_HOLD_S = 3.0      # a commit ending in the start of a known call waits this long for the rest
 
 
+def _one_off(a: str, b: str) -> bool:
+    """One substitution, insertion or deletion apart ('?' is a character like any other)."""
+    if abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) == len(b):
+        return sum(x != y for x, y in zip(a, b, strict=True)) == 1
+    short, long_ = (a, b) if len(a) < len(b) else (b, a)
+    return any(long_[:k] + long_[k + 1:] == short for k in range(len(long_)))
+
+
 class CallJoin:
     """Split calls joined again: pieces in a row that make a known call, the first not a known
     call itself (KM7A Z: KM7AZ; DEN 9 F GC: DE N9FGC, LakeDog 11-26).  The tail of a commit that
@@ -280,13 +290,25 @@ class CallJoin:
                 i += 1
         return out
 
+    def fix(self, words: list[str], heard: Iterable[str]) -> list[str]:
+        """A call-like word (with a digit) one character off a call this monitor already showed
+        is that call: AC5? and AC5G after DE AC5P (11-26).  A known call stays as it is."""
+        heard = list(heard)
+        out = []
+        for w in words:
+            near = [c for c in heard if w not in self.known and any(ch.isdigit() for ch in w)
+                    and w != c and _one_off(w, c)]
+            out.append(near[0] if len(near) == 1 else w)
+        return out
+
     def tail(self, words: list[str]) -> int:
         """Where the held tail starts: the longest end run (of JOIN_PIECES at most) that starts a
         known call and is not one; len(words) when nothing is held."""
         for i in range(max(0, len(words) - JOIN_PIECES), len(words)):
             joined = "".join(words[i:])
-            if (any(c.isdigit() for c in joined) and self._starts(joined) and not self._call(joined)
-                    and words[-1] not in self.known):   # a call piece has its digit: KM7A, DEN 9
+            piece = any(c.isdigit() for c in joined) or (i == len(words) - 1 and len(joined) == 1)
+            if (piece and self._starts(joined) and not self._call(joined)   # KM7A, DEN 9, or a lone
+                    and words[-1] not in self.known):                       # letter: K | F9VV
                 return i
         return len(words)
 
@@ -312,6 +334,7 @@ class MonitorHub:
         self.joiner: CallJoin | None = None    # set_known(): the calls split calls join into
         self._held: list[str] = []
         self._held_at = 0.0
+        self._heard: set[str] = set()          # known calls shown since the monitor opened
 
     def set_known(self, calls: Iterable[str]) -> None:
         self.joiner = CallJoin(calls)
@@ -348,6 +371,8 @@ class MonitorHub:
             if not self._held:
                 self._held_at = now
             words, self._held = self.joiner.join(self._held + words), []
+            words = self.joiner.fix(words, self._heard)
+            self._heard.update(w for w in words if w in self.joiner.known)
             cut = self.joiner.tail(words)
             words, self._held = words[:cut], words[cut:]
         elif self._held and now - self._held_at >= JOIN_HOLD_S:
@@ -363,7 +388,7 @@ class MonitorHub:
             self.mon.close()
             self.mon = None
         self._live = ""
-        self._held = []
+        self._held, self._heard = [], set()
         if khz is None:
             return
         for sc_lib, sc_h, ev in scanners:
