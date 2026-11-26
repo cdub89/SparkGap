@@ -7,7 +7,15 @@ import numpy as np
 import pytest
 from test_scanner_fft_front import FS, _keyed_iq, _scanner
 
-from itila2_monitor import JOIN_HOLD_S, CallJoin, Monitor, MonitorHub, shown, split_prosigns
+from itila2_monitor import (
+    JOIN_HOLD_S,
+    CallJoin,
+    Monitor,
+    MonitorHub,
+    narrow_wins,
+    shown,
+    split_prosigns,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 TONE_HZ = 14028063.0       # the keyed tone of _keyed_iq: "RN", 22 WPM
@@ -204,11 +212,16 @@ def test_prosigns_run_into_a_word_are_split_off(text: str, split: str) -> None:
     assert " ".join(split_prosigns(text.split())) == split
 
 
-def test_a_known_call_decides_between_the_arms() -> None:
-    """Narrow read KF9V4 at a lower cost, wide KF9VV: the known call is shown (LakeDog 11-26)."""
-    mon = Monitor.__new__(Monitor)
-    mon.known = frozenset({"KF9VV", "AA0YY"})
-    assert mon._calls("AA0YY DE KF9VV") == 2 and mon._calls("AA0YY DE KF9V4") == 1
+@pytest.mark.parametrize("wide, wc, narrow, nc, wins", [
+    ("GOT", 2.0, "G OT", 1.0, False),            # same letters: fewer spaces (a bug's gap, 11-26)
+    ("DE KF9VV", 2.0, "DE KF9V4", 1.0, False),   # the known call
+    ("BUT", 2.0, "BAT", 1.0, True),              # letters differ: timing cost
+    ("", 2.0, "QSE", 1.0, False),                # narrow alone: noise
+    ("SENDING", 1.0, "SENNITG", 2.0, False),
+])
+def test_the_arm_shown(wide: str, wc: float, narrow: str, nc: float, wins: bool) -> None:
+    assert narrow_wins(wide, wc, narrow, nc, frozenset({"KF9VV"})) is wins
+
 
 
 def test_a_lone_letter_waits_for_the_rest_of_its_call() -> None:

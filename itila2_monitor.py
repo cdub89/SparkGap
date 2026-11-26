@@ -80,6 +80,20 @@ class _Reading:
     wpm: float | None
 
 
+def narrow_wins(wide: str, wide_cost: float, narrow: str, narrow_cost: float,
+                known: frozenset[str]) -> bool:
+    """Whether the narrow arm's reading of a stretch is shown rather than the wide one's."""
+    if not narrow or not wide:
+        return False          # narrow alone read noise (net 10-07)
+    if wide.replace(" ", "") == narrow.replace(" ", ""):
+        return narrow.count(" ") < wide.count(" ")   # same letters: fewer spaces (G OT, a bug)
+    calls_w = sum(w in known for w in wide.split())
+    calls_n = sum(w in known for w in narrow.split())
+    if calls_w != calls_n:
+        return calls_n > calls_w                     # a known call decides (KF9VV vs KF9V4)
+    return narrow_cost < min(wide_cost, NO_FIT)      # else timing cost, as the windows
+
+
 class _Arm:
     """One filter's decoder: its own handle and envelope (the fits warm-start step to step)."""
 
@@ -159,9 +173,6 @@ class Monitor:
             a.free()
         self._arms, self.khz = [], None
 
-    def _calls(self, text: str) -> int:
-        return sum(w in self.known for w in text.split())
-
     @property
     def scanner(self) -> int:
         return self._sc
@@ -190,12 +201,8 @@ class Monitor:
             return []               # the commit waits: the first word comes once it holds
         nr = narrow.step(n, commit_from, self._ev, force_cut=w.cut)   # the same stretch
         best, other, arm = w, nr, ARMS[0][0]
-        # narrow only reads better where wide read something too: alone it was noise (net 10-07);
-        # a known call in one reading only decides (KF9VV vs KF9V4, 11-26), else timing cost
-        if nr is not None and nr.text and w.text:
-            calls_w, calls_n = self._calls(w.text), self._calls(nr.text)
-            if calls_n > calls_w or (calls_n == calls_w and nr.cost < min(w.cost, NO_FIT)):
-                best, other, arm = nr, w, ARMS[1][0]
+        if nr is not None and narrow_wins(w.text, w.cost, nr.text, nr.cost, self.known):
+            best, other, arm = nr, w, ARMS[1][0]
         self._commit = start + w.cut
         self.live = best.live
         if not best.text:
