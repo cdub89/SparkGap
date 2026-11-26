@@ -8995,6 +8995,7 @@ class SparkGap:
         if _gui_feed is not None:   # the rule of the spots the feed shows
             _gui_feed.on_why = lambda call, khz: _why_answer(
                 self.tracker.spot_rule if self._feed_takes('rbn') else self.tracker.local_rule, call, khz)
+        self._monitor = _monitor_hub() if _gui_feed is not None else None
 
         self.receiver.start()
         self.running = True
@@ -9623,6 +9624,8 @@ class SparkGap:
                     self._worker_started = True
                     log.info("C worker thread started (%d bands, CW+FT8)",
                              scanners_ready)
+            if getattr(self, '_monitor', None) is not None:
+                _monitor_step(self._monitor, self.managers, time.time())
             # PFB scanners' C worker only feeds; decode runs in Python.
             # Drain ready windows and route through the scanner's normal
             # _process_ready (Python decode + spotting path).
@@ -10379,22 +10382,28 @@ class _FileDigital:
                      self._first + (n - len(fi)) / fs)], self)
 
 
-def _file_monitor(monitor, manager, khz, now):
-    """--monitor-khz: open the monitor once the band's scanner exists, then step it (exp/click-decode)."""
-    if monitor is None:
-        holder = manager._itila_scanner
-        if holder is None or not holder._sc:
-            return None
-        from itila2_monitor import Monitor
-        monitor = Monitor(holder._sc._lib, holder._sc._h, _get_itila_lib(), holder.ev_thresh)
-        if not monitor.open(khz):
-            log.warning("MONITOR %.2f kHz: outside the band", khz)
-        else:
-            log.info("MONITOR %.2f kHz: open", khz)
-    for w in monitor.feed(now):
-        log.info("MONITOR %.2f kHz end=%.2f commit=%.2f wpm=%s: %s", monitor.khz, w.end_utc,
+def _monitor_hub():
+    """Click to decode (exp/click-decode): the process's one monitor; the GUI feed's picks open it."""
+    from itila2_monitor import MonitorHub
+    hub = MonitorHub(_get_itila_lib())
+    if _gui_feed is not None:
+        _gui_feed.on_monitor = hub.request
+    return hub
+
+
+def _monitor_step(hub, managers, now):
+    """Step the monitor on the bands' scanners; its words go to the log and the GUI feed."""
+    scanners = [(m._itila_scanner._sc._lib, m._itila_scanner._sc._h, m._itila_scanner.ev_thresh)
+                for m in managers if m._itila_scanner is not None and m._itila_scanner._sc]
+    st = hub.step(scanners, now)
+    if st is None:
+        return
+    for w in st.words:
+        log.info("MONITOR %.2f kHz end=%.2f commit=%.2f wpm=%s: %s", st.khz, w.end_utc,
                  w.commit_utc, "%.0f" % w.wpm if w.wpm else "-", w.text)
-    return monitor
+    if _gui_feed is not None:
+        _gui_feed.publish_monitor(st.khz, " ".join(w.text for w in st.words), st.live,
+                                  st.words[-1].wpm if st.words else None)
 
 
 def run_file_mode(args, config):
@@ -10508,9 +10517,11 @@ def run_file_mode(args, config):
         manager.cw_min_khz = cw_min
         manager.cw_max_khz = cw_max
     all_spots = []
-    monitor = None
     chunk_sec = 300  # 5-minute chunks
     _start_gui_feed(config, [(f"{center_khz:.0f} kHz", center_khz * 1000.0)], file_rate, [manager])
+    monitor = _monitor_hub()
+    if args.monitor_khz:
+        monitor.request(args.monitor_khz)
     if _gui_feed is not None:
         _gui_feed.on_why = lambda call, khz: _why_answer(tracker.spot_rule, call, khz)
     gui_pace, gui_audio0, last_gui_status = None, None, 0
@@ -10706,9 +10717,7 @@ def run_file_mode(args, config):
             if digital is not None:
                 digital.add(i_block, q_block, _file_audio_t)
             manager.feed_all_iq(i_block, q_block)
-            if args.monitor_khz:
-                monitor = _file_monitor(monitor, manager, args.monitor_khz,
-                                        t_start + (pos + len(i_block)) / file_rate)
+            _monitor_step(monitor, [manager], t_start + (pos + len(i_block)) / file_rate)
             if _spot_rule_on:
                 audio_now[0] = t_start + pos / file_rate
 
@@ -10767,9 +10776,9 @@ def run_file_mode(args, config):
 
         del i_data, q_data
 
-    if monitor is not None:
-        log.info("MONITOR %.2f kHz: %d commits", monitor.khz or 0.0, len(monitor.words))
-        monitor.close()
+    if monitor.mon is not None:
+        log.info("MONITOR %.2f kHz: %d commits", monitor.mon.khz or 0.0, len(monitor.mon.words))
+    monitor.close()
 
     # Collect all accumulated text per signal before killing
     CALL_RE_EVAL = re.compile(r'[A-Z0-9]{1,3}\d{1,4}[A-Z]{1,4}')

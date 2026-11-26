@@ -88,6 +88,8 @@ const STORE = "sparkgap.web.";
 
 const $ = id => document.getElementById(id);
 const now = () => Date.now() / 1000;
+const MONITOR_MATCH_KHZ = 0.05;  // a monitor message for the pick: the node opened it where we asked
+const MONITOR_CHARS = 2000;      // the LIVE line keeps this much of the monitor's copy
 const esc = s => s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const baseCall = word => word.split("/").reduce((a, b) => (b.length > a.length ? b : a), "");
 const RUNNER_KEEP_S = 600;   // a split runner found by its sign labels its frequency this long (the spot rule's REPEAT_S)
@@ -133,6 +135,7 @@ class Instance {
     this.selKhz = null;
     this.selCall = "";
     this.why = null;  // the node's answer for the picked call: { call, text }
+    this.mon = null;  // click to decode: the monitor's copy of the pick, { khz, text, live }
     this.whyId = 0;
     this.since = 0;  // when this console last connected (status page)
     this.reconnects = 0;
@@ -240,6 +243,7 @@ class Instance {
       }
       if (!this.bands[this.band]) this.band = 0;
       this.subscribe();  // now the band on screen is known: only its spectrum is computed and sent
+      this.sendMonitor();  // a reconnect: the node opens the monitor on the pick again
       this.windows = []; this.spots.clear(); this.signals.clear(); this.recent.clear(); this.runners.clear();
       this.on("hello");
     } else if (m.type === "snapshot") {
@@ -258,6 +262,14 @@ class Instance {
     } else if (m.type === "status") {
       this.status = m;
       this.on("status");
+    } else if (m.type === "monitor") {
+      if (this.selKhz === null || Math.abs(m.khz - this.selKhz) > MONITOR_MATCH_KHZ) return;  // another console's pick
+      const mon = this.mon && Math.abs(this.mon.khz - m.khz) <= MONITOR_MATCH_KHZ ? this.mon : { khz: m.khz, text: "" };
+      if (m.text) mon.text = (mon.text ? mon.text + " " : "") + m.text;
+      mon.text = mon.text.slice(-MONITOR_CHARS);
+      mon.live = m.live || "";
+      this.mon = mon;
+      this.on("detail");
     } else if (m.type === "why_result" && m.id === this.whyId) {
       this.why = { call: m.call, text: m.ok ? m.message : "" };
       this.on("detail");
@@ -486,7 +498,16 @@ class Instance {
     });
   }
 
-  select(khz, call) { this.selKhz = khz; this.selCall = call; this.askWhy(); this.on("detail"); }
+  select(khz, call) {
+    if (khz !== this.selKhz) this.mon = null;
+    this.selKhz = khz; this.selCall = call; this.sendMonitor(); this.askWhy(); this.on("detail");
+  }
+
+  // click to decode: the node decodes the picked frequency as it is sent (an older node ignores this)
+  sendMonitor() {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ type: "monitor", khz: this.selKhz > 0 ? this.selKhz : null }));
+  }
 
   // a picked call heard but not spotted: ask the node which gate stopped it (an older node does not answer)
   askWhy() {
@@ -1458,6 +1479,9 @@ function renderDetail() {
   // both decodes of each window: wide filter on top, narrow dimmed
   $("dShow").textContent = DECODED_LABELS[DECODED.indexOf(app.decoded)] || "Both";
   $("dCopy").hidden = !(d && d.windows.length);
+  const mon = d && i.mon;  // click to decode: the words as sent, the one being sent dimmed
+  $("dLive").hidden = !mon;
+  $("dLive").innerHTML = mon ? `<div><span class="label">LIVE</span> ${esc(mon.text)}${mon.live ? ` <span class="live">${esc(mon.live)}</span>` : ""}</div>` : "";
   $("dWins").innerHTML = (d ? d.windows : []).map(r => {
     const rs = readings(r, app.decoded);
     // with both shown, the lower timing cost is marked (a tie or no fit marks neither)

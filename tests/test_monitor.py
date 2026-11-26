@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from test_scanner_fft_front import FS, _keyed_iq, _scanner
 
-from itila2_monitor import Monitor
+from itila2_monitor import Monitor, MonitorHub
 
 ROOT = Path(__file__).resolve().parent.parent
 TONE_HZ = 14028063.0       # the keyed tone of _keyed_iq: "RN", 22 WPM
@@ -97,3 +97,32 @@ def test_monitor_commits_each_word_once() -> None:
     assert delays[len(delays) // 2] < 2.0
     mon.close()
     lib.itila_sc_free(h)
+
+
+def test_the_hub_opens_moves_and_drops_the_monitor() -> None:
+    """A pick waits for a scanner and moves the monitor; a freed scanner is never touched."""
+    dec_path = ROOT / "libitila2.so"
+    if not dec_path.exists():
+        pytest.skip("libitila2.so not built")
+    lib, h = _scanner(False)
+    lib = _monitor_lib(lib)
+    hub = MonitorHub(ct.CDLL(str(dec_path)))
+    band = [(lib, h, 1.5)]
+    hub.request(TONE_HZ / 1000.0)
+    assert hub.step([], 0.0) is None and hub.mon is None          # no scanner yet: the pick waits
+    i, q = _keyed_iq(seconds=12.0)
+    block = FS // 10
+    steps = []
+    for at in range(0, len(i), block):
+        _feed(lib, h, i, q, at, min(block, len(i) - at))
+        steps.append(hub.step(band, (at + block) / FS))
+    assert hub.mon is not None and hub.mon.khz == TONE_HZ / 1000.0
+    assert any(st and st.words for st in steps)
+    hub.request(13_000.0)                                         # on no band: closed, nothing open
+    hub.step(band, 12.5)
+    assert hub.mon is None
+    hub.request(TONE_HZ / 1000.0)
+    hub.step(band, 13.0)
+    assert hub.mon is not None
+    lib.itila_sc_free(h)                                          # a band change frees the scanner
+    assert hub.step([], 13.5) is None and hub.mon is None

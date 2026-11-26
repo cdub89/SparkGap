@@ -7,7 +7,8 @@ passed since the last step.  Display only: spots, bins and windows never see it.
 """
 
 import ctypes as ct
-from dataclasses import dataclass
+import logging
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -18,6 +19,7 @@ WIDE_LPF_HZ = 200.0    # the wide path, as the scanner's h200
 TEXT_LEN = 1024
 
 P = ct.POINTER(ct.c_double)
+log = logging.getLogger("sparkgap")
 
 
 @dataclass
@@ -80,12 +82,17 @@ class Monitor:
         self.khz, self.live, self._commit, self._next_step = khz, "", 0, 0.0
         return True
 
-    def close(self) -> None:
-        if self.khz is not None:
+    def close(self, scanner_gone: bool = False) -> None:
+        """scanner_gone: the scanner was freed, its monitor bin with it; free only the decoder."""
+        if self.khz is not None and not scanner_gone:
             self._sc_lib.itila_sc_monitor_close(self._sc)
         if self._h:
             self._dec_lib.itila_free(self._h)
         self._h, self.khz = None, None
+
+    @property
+    def scanner(self) -> int:
+        return self._sc
 
     def feed(self, now: float) -> list[Word]:
         """A step when STEP_S of audio has passed; returns the words it committed."""
@@ -114,3 +121,75 @@ class Monitor:
         self.words.append(word)
         return [word]
 
+
+
+@dataclass
+class Step:
+    khz: float
+    words: list[Word] = field(default_factory=list)
+    live: str = ""
+
+
+Scanner = tuple[ct.CDLL, int, float]   # (scanner library, handle, ev_thresh) of one band
+
+
+def _addr(h: object) -> int | None:
+    """A scanner handle as an address: SparkGap holds a c_void_p, the tests an int."""
+    v = getattr(h, "value", h)
+    return v if isinstance(v, int) else None
+
+
+class MonitorHub:
+    """The one monitor of a process.  request() from any thread (the feed's loop); step() on the
+    thread that owns the scanners, which also opens, moves and closes the monitor there."""
+
+    def __init__(self, dec_lib: ct.CDLL) -> None:
+        self._dec_lib = dec_lib
+        self._want: tuple[float | None] | None = None   # a request not yet applied
+        self.mon: Monitor | None = None
+        self._live = ""
+
+    def request(self, khz: float | None) -> None:
+        self._want = (khz,)
+
+    def step(self, scanners: list[Scanner], now: float) -> Step | None:
+        """Apply the latest request, then step the monitor; a Step when it has new text."""
+        live = {_addr(h) for _, h, _ in scanners}
+        if self.mon is not None and _addr(self.mon.scanner) not in live:
+            log.info("MONITOR %.2f kHz: band closed", self.mon.khz or 0.0)
+            self.mon.close(scanner_gone=True)
+            self.mon = None
+        want = self._want
+        if want is not None and (want[0] is None or scanners):   # an open waits for a scanner
+            self._want = None
+            self._move(want[0], scanners)
+        if self.mon is None or self.mon.khz is None:
+            return None
+        words = self.mon.feed(now)
+        if not words and self.mon.live == self._live:
+            return None
+        self._live = self.mon.live
+        return Step(self.mon.khz, words, self.mon.live)
+
+    def close(self) -> None:
+        self._move(None, [])
+
+    def _move(self, khz: float | None, scanners: list[Scanner]) -> None:
+        if self.mon is not None:
+            log.info("MONITOR %.2f kHz: closed", self.mon.khz or 0.0)
+            self.mon.close()
+            self.mon = None
+        self._live = ""
+        if khz is None:
+            return
+        for sc_lib, sc_h, ev in scanners:
+            try:
+                mon = Monitor(sc_lib, sc_h, self._dec_lib, ev)
+            except RuntimeError as e:
+                log.warning("MONITOR %.2f kHz: %s", khz, e)
+                return
+            if mon.open(khz):
+                log.info("MONITOR %.2f kHz: open", khz)
+                self.mon = mon
+                return
+        log.info("MONITOR %.2f kHz: on no band", khz)
