@@ -2429,14 +2429,17 @@ double itila2_test_mark_power(const double *pow, const int8_t *marks, int n) {
 /* -------------------------------------------------------------------------
  * itila2_stream_step (exp/click-decode): one step of a monitor's decode.
  * env: the newest n samples (200 Hz, about 30 s).  The fits are itila_feed's on the whole
- * window; the cut is the window cut (gate_and_cut).  stable: the words from commit_from to the
- * cut; live: the open text after it; *last_mark: the last key-down sample before the cut.  Returns the new commit point (>= commit_from), or -1 when
- * the window fails the evidence test (nothing decoded, nothing committed).
+ * window; the cut is the latest word gap before the window cut (gate_and_cut), or force_cut when
+ * >= 0 (the other filter's arm cut there).  stable: the words from commit_from to the cut; live:
+ * the open text after it; *last_mark: the last key-down before the cut; *seg_ev: the stretch's
+ * own CW evidence; itila_get_last_cost: its timing cost.  Returns the new commit point
+ * (>= commit_from), or -1 when the window fails the evidence test (nothing committed).
  * ---------------------------------------------------------------------- */
 #define STREAM_WORD_UNITS 5.0     /* a gap this many dits long is a word gap (letter 3, word 7) */
 #define STREAM_FALLBACK_S 3.0     /* no word gap this long (a run-together fist): the window's cut */
 int itila2_stream_step(itila_t h, const double *env, int n, int commit_from, double ev_thresh,
-                       char *stable, char *live, int len, int *last_mark, double *seg_ev)
+                       char *stable, char *live, int len, int *last_mark, double *seg_ev,
+                       int force_cut)
 {
     itila_state_t *st = (itila_state_t*)h;
     if (last_mark) *last_mark = -1;
@@ -2464,8 +2467,8 @@ int itila2_stream_step(itila_t h, const double *env, int n, int commit_from, dou
      * gaps: W1D V, M ORE?, LakeDog 2026-11-26).  The latest word gap before the window's cut. */
     double wpm = cands[0] > 0.0 ? cands[0] : wpm_em;
     int word_gap = (int)(STREAM_WORD_UNITS * 1.2 / wpm * st->sample_rate);
-    int wcut = -1;
-    for (int i = cut - 1, run = 0; i >= commit_from && word_gap > 0; i--) {
+    int wcut = force_cut >= 0 ? (force_cut < commit_from ? commit_from : force_cut > n ? n : force_cut) : -1;
+    for (int i = cut - 1, run = 0; wcut < 0 && i >= commit_from && word_gap > 0; i--) {
         run = st->marks[i] ? 0 : run + 1;
         if (run == word_gap) { wcut = i + word_gap / 2; break; }
     }
@@ -2491,6 +2494,10 @@ int itila2_stream_step(itila_t h, const double *env, int n, int commit_from, dou
     /* The words since the last commit must show CW on their own: the window passing can be another
      * over, and noise between overs read as E and T (LakeDog 2026-11-26); the caller judges it.
      * Last: it reruns the HMM. */
+    /* The stretch's timing cost (itila_get_last_cost), as a window's: the caller keeps the arm
+     * (narrow or wide filter) whose reading is cheaper, as the windows' Lowest cost. */
+    st->last_timing_cost = cut - commit_from >= 4
+        ? compute_timing_cost(st->marks + commit_from, cut - commit_from, wpm_em, st->sc_runs) : 999.0;
     if (stable[0] && cut > commit_from) {
         double ev = signal_evidence_ratio(st, e + commit_from, cut - commit_from, A, nm, s2);
         if (seg_ev) *seg_ev = ev;

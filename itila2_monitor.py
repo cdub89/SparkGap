@@ -16,9 +16,10 @@ import numpy as np
 RATE_HZ = 200          # envelope samples per second
 WINDOW_S = 30.0        # decoded each step, as a batch window
 STEP_S = 0.5           # audio between steps
-WIDE_LPF_HZ = 200.0    # the wide path, as the scanner's h200
+ARMS = (("wide", 200.0), ("narrow", 100.0))   # as the scanner's h200 and h100; wide sets the cut
 TEXT_LEN = 1024
 SEG_EV_MIN = 300.0     # a stretch's own evidence below this: noise between overs (net 10-07, log)
+NO_FIT = 999.0         # itila_get_last_cost when there was nothing to time
 
 P = ct.POINTER(ct.c_double)
 log = logging.getLogger("sparkgap")
@@ -32,6 +33,8 @@ class Word:
     text: str
     ev: float | None = None   # the stretch's own CW evidence (log Bayes factor)
     kept: bool = True         # ev passed SEG_EV_MIN: shown; else logged only, for tuning
+    arm: str = "wide"         # the filter whose reading was cheaper (the windows' Lowest cost)
+    other: str = ""           # the other arm's reading, for the log
 
 
 def _bind(sc_lib: ct.CDLL, dec_lib: ct.CDLL) -> bool:
@@ -50,11 +53,56 @@ def _bind(sc_lib: ct.CDLL, dec_lib: ct.CDLL) -> bool:
     dec_lib.itila_free.argtypes = [ct.c_void_p]
     dec_lib.itila_get_wpm.restype = ct.c_double
     dec_lib.itila_get_wpm.argtypes = [ct.c_void_p]
+    dec_lib.itila_get_last_cost.restype = ct.c_double
+    dec_lib.itila_get_last_cost.argtypes = [ct.c_void_p]
     dec_lib.itila2_stream_step.restype = ct.c_int
     dec_lib.itila2_stream_step.argtypes = [ct.c_void_p, P, ct.c_int, ct.c_int, ct.c_double,
                                            ct.c_char_p, ct.c_char_p, ct.c_int, ct.POINTER(ct.c_int),
-                                           P]
+                                           P, ct.c_int]
     return True
+
+
+@dataclass
+class _Reading:
+    cut: int
+    text: str
+    live: str
+    last: int
+    ev: float | None
+    cost: float
+    wpm: float | None
+
+
+class _Arm:
+    """One filter's decoder: its own handle and envelope (the fits warm-start step to step)."""
+
+    def __init__(self, dec_lib: ct.CDLL, lpf_hz: float) -> None:
+        self._lib = dec_lib
+        self.h: int | None = dec_lib.itila_create(RATE_HZ, lpf_hz)
+        self.env = np.zeros(int(WINDOW_S * RATE_HZ))
+        self._stable = ct.create_string_buffer(TEXT_LEN)
+        self._live = ct.create_string_buffer(TEXT_LEN)
+        self._last = ct.c_int(-1)
+        self._ev = ct.c_double(0.0)
+
+    def step(self, n: int, commit_from: int, ev_thresh: float,
+             force_cut: int = -1) -> _Reading | None:
+        cut = self._lib.itila2_stream_step(
+            self.h, self.env.ctypes.data_as(P), n, commit_from, ev_thresh, self._stable, self._live,
+            TEXT_LEN, ct.byref(self._last), ct.byref(self._ev), force_cut)
+        if cut < 0:
+            return None
+        wpm = self._lib.itila_get_wpm(self.h)
+        return _Reading(cut, self._stable.value.decode(errors='replace').strip(),
+                        self._live.value.decode(errors='replace').strip(),
+                        self._last.value if self._last.value >= 0 else cut,
+                        self._ev.value if math.isfinite(self._ev.value) else None,
+                        self._lib.itila_get_last_cost(self.h), wpm if wpm > 0 else None)
+
+    def free(self) -> None:
+        if self.h:
+            self._lib.itila_free(self.h)
+        self.h = None
 
 
 class Monitor:
@@ -65,12 +113,7 @@ class Monitor:
             raise RuntimeError("no monitor in these libraries (itila2, exp/click-decode)")
         self._sc_lib, self._sc, self._dec_lib = sc_lib, sc_handle, dec_lib
         self._ev = ev_thresh
-        self._h: int | None = None
-        self._env = np.zeros(int(WINDOW_S * RATE_HZ))
-        self._stable = ct.create_string_buffer(TEXT_LEN)
-        self._live = ct.create_string_buffer(TEXT_LEN)
-        self._last = ct.c_int(-1)
-        self._seg_ev = ct.c_double(0.0)
+        self._arms: list[_Arm] = []
         self.khz: float | None = None
         self.seeded_s = 0.0         # history it opened with, from a bin on the same signal
         self.live = ""
@@ -82,9 +125,9 @@ class Monitor:
         self.close()
         if not self._sc_lib.itila_sc_monitor_open(self._sc, khz * 1000.0):
             return False
-        self._h = self._dec_lib.itila_create(RATE_HZ, WIDE_LPF_HZ)
-        if not self._h:
-            self._sc_lib.itila_sc_monitor_close(self._sc)
+        self._arms = [_Arm(self._dec_lib, lpf) for _, lpf in ARMS]
+        if not all(a.h for a in self._arms):
+            self.close(scanner_gone=False, opened=True)
             return False
         self.khz, self.live, self._commit, self._next_step = khz, "", 0, 0.0
         end = ct.c_longlong(0)
@@ -92,13 +135,13 @@ class Monitor:
                                                            ct.byref(end), None) / RATE_HZ
         return True
 
-    def close(self, scanner_gone: bool = False) -> None:
-        """scanner_gone: the scanner was freed, its monitor bin with it; free only the decoder."""
-        if self.khz is not None and not scanner_gone:
+    def close(self, scanner_gone: bool = False, opened: bool = False) -> None:
+        """scanner_gone: the scanner was freed, its monitor bin with it; free only the decoders."""
+        if (self.khz is not None or opened) and not scanner_gone:
             self._sc_lib.itila_sc_monitor_close(self._sc)
-        if self._h:
-            self._dec_lib.itila_free(self._h)
-        self._h, self.khz = None, None
+        for a in self._arms:
+            a.free()
+        self._arms, self.khz = [], None
 
     @property
     def scanner(self) -> int:
@@ -106,33 +149,34 @@ class Monitor:
 
     def feed(self, now: float) -> list[Word]:
         """A step when STEP_S of audio has passed; returns the words it committed."""
-        if self._h is None or now < self._next_step:
+        if not self._arms or now < self._next_step:
             return []
         self._next_step = now + STEP_S
+        wide, narrow = self._arms
         end, afc = ct.c_longlong(0), ct.c_double(0.0)
-        n = self._sc_lib.itila_sc_monitor_read(self._sc, None, self._env.ctypes.data_as(P),
-                                               len(self._env), ct.byref(end), ct.byref(afc))
+        n = self._sc_lib.itila_sc_monitor_read(self._sc, narrow.env.ctypes.data_as(P),
+                                               wide.env.ctypes.data_as(P), len(wide.env),
+                                               ct.byref(end), ct.byref(afc))
         if n < RATE_HZ:
             return []
         start = end.value - n
-        cut = self._dec_lib.itila2_stream_step(
-            self._h, self._env.ctypes.data_as(P), n, max(0, self._commit - start), self._ev,
-            self._stable, self._live, TEXT_LEN, ct.byref(self._last), ct.byref(self._seg_ev))
-        if cut < 0:
+        commit_from = max(0, self._commit - start)
+        w = wide.step(n, commit_from, self._ev)
+        if w is None:
             return []
-        self._commit = start + cut
-        self.live = self._live.value.decode(errors='replace').strip()
-        text = self._stable.value.decode(errors='replace').strip()
-        if not text:
+        nr = narrow.step(n, commit_from, self._ev, force_cut=w.cut)   # the same stretch
+        best, other, arm = w, nr, ARMS[0][0]
+        # narrow only reads better where wide read something too: alone it was noise (net 10-07)
+        if nr is not None and nr.text and w.text and nr.cost < min(w.cost, NO_FIT):
+            best, other, arm = nr, w, ARMS[1][0]
+        self._commit = start + w.cut
+        self.live = best.live
+        if not best.text:
             return []
-        wpm = self._dec_lib.itila_get_wpm(self._h)
-        last = self._last.value if self._last.value >= 0 else cut
-        ev = self._seg_ev.value if math.isfinite(self._seg_ev.value) else None
-        word = Word(now - (n - last) / RATE_HZ, now, wpm if wpm > 0 else None, text, ev,
-                    ev is None or ev >= SEG_EV_MIN)
+        word = Word(now - (n - best.last) / RATE_HZ, now, best.wpm, best.text, best.ev,
+                    best.ev is None or best.ev >= SEG_EV_MIN, arm, other.text if other else "")
         self.words.append(word)
         return [word]
-
 
 
 @dataclass
