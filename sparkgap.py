@@ -10379,6 +10379,24 @@ class _FileDigital:
                      self._first + (n - len(fi)) / fs)], self)
 
 
+def _file_monitor(monitor, manager, khz, now):
+    """--monitor-khz: open the monitor once the band's scanner exists, then step it (exp/click-decode)."""
+    if monitor is None:
+        holder = manager._itila_scanner
+        if holder is None or not holder._sc:
+            return None
+        from itila2_monitor import Monitor
+        monitor = Monitor(holder._sc._lib, holder._sc._h, _get_itila_lib(), holder.ev_thresh)
+        if not monitor.open(khz):
+            log.warning("MONITOR %.2f kHz: outside the band", khz)
+        else:
+            log.info("MONITOR %.2f kHz: open", khz)
+    for w in monitor.feed(now):
+        log.info("MONITOR %.2f kHz end=%.2f commit=%.2f wpm=%s: %s", monitor.khz, w.end_utc,
+                 w.commit_utc, "%.0f" % w.wpm if w.wpm else "-", w.text)
+    return monitor
+
+
 def run_file_mode(args, config):
     """Offline file mode — process a WAV recording and output spots."""
     # Log times follow the audio, as live logs follow the clock: the recording's start from its name, else 00:00:00
@@ -10490,6 +10508,7 @@ def run_file_mode(args, config):
         manager.cw_min_khz = cw_min
         manager.cw_max_khz = cw_max
     all_spots = []
+    monitor = None
     chunk_sec = 300  # 5-minute chunks
     _start_gui_feed(config, [(f"{center_khz:.0f} kHz", center_khz * 1000.0)], file_rate, [manager])
     if _gui_feed is not None:
@@ -10687,6 +10706,9 @@ def run_file_mode(args, config):
             if digital is not None:
                 digital.add(i_block, q_block, _file_audio_t)
             manager.feed_all_iq(i_block, q_block)
+            if args.monitor_khz:
+                monitor = _file_monitor(monitor, manager, args.monitor_khz,
+                                        t_start + (pos + len(i_block)) / file_rate)
             if _spot_rule_on:
                 audio_now[0] = t_start + pos / file_rate
 
@@ -10744,6 +10766,10 @@ def run_file_mode(args, config):
         print(f"  [progress] t={t_end/60:.1f}min: {unique_so_far} unique spots so far", flush=True)
 
         del i_data, q_data
+
+    if monitor is not None:
+        log.info("MONITOR %.2f kHz: %d commits", monitor.khz or 0.0, len(monitor.words))
+        monitor.close()
 
     # Collect all accumulated text per signal before killing
     CALL_RE_EVAL = re.compile(r'[A-Z0-9]{1,3}\d{1,4}[A-Z]{1,4}')
@@ -10829,6 +10855,8 @@ def main():
     parser.add_argument('--start-min', type=float, default=0, help='Start minute in file')
     parser.add_argument('--end-min', type=float, default=0, help='End minute in file (0=end)')
     parser.add_argument('--center-khz', type=float, default=7090, help='Center freq kHz for file mode')
+    parser.add_argument('--monitor-khz', type=float, default=0,
+                        help='File mode, itila2: decode this frequency in near real time (exp/click-decode)')
     parser.add_argument('--digital', action='store_true',
                         help='File mode: run the FT8 and RTTY minute cycle on the recording, as live '
                              '(enable_ft8, enable_rtty, rtty_excludes_cw)')

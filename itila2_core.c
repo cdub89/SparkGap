@@ -1328,9 +1328,28 @@ static int despeckle_runs(run_t *runs, int n_runs, double unit) {
     return n_runs;
 }
 
+static int decode_runs_beam_from(
+    itila_state_t *st,
+    const int8_t *marks, int T, int start,
+    double wpm, double freq_khz,
+    char out_texts[][MAX_TEXT], int max_out,
+    double *unit_sp_out);
+
 static int decode_runs_beam(
     itila_state_t *st,
     const int8_t *marks, int T,
+    double wpm, double freq_khz,
+    char out_texts[][MAX_TEXT], int max_out,
+    double *unit_sp_out)
+{
+    return decode_runs_beam_from(st, marks, T, 0, wpm, freq_khz, out_texts, max_out, unit_sp_out);
+}
+
+/* decode_runs_beam with the fits from all of marks[0, T) and the text from the runs ending after
+ * `start` only (exp/click-decode: the words since the last commit, timed by the whole window). */
+static int decode_runs_beam_from(
+    itila_state_t *st,
+    const int8_t *marks, int T, int start,
     double wpm, double freq_khz,
     char out_texts[][MAX_TEXT], int max_out,
     double *unit_sp_out)
@@ -1410,9 +1429,12 @@ static int decode_runs_beam(
     int beam_sz = 1;
     beam[0].score = 0.0; beam[0].sym[0] = '\0'; beam[0].txt[0] = '\0';
 
+    int run_end = 0;
     for (int r = 0; r < n_runs; r++) {
         int is_mark = runs[r].is_mark;
         int dur     = runs[r].dur;
+        run_end += dur;
+        if (run_end <= start) continue;
 
         if (is_mark) {
             if ((double)dur >= zone_lo && (double)dur <= zone_hi) {
@@ -2402,4 +2424,54 @@ double itila2_test_estimate_wpm(const int *is_mark, const int *dur, int n) {
 
 double itila2_test_mark_power(const double *pow, const int8_t *marks, int n) {
     return mark_power(pow, marks, n);
+}
+
+/* -------------------------------------------------------------------------
+ * itila2_stream_step (exp/click-decode): one step of a monitor's decode.
+ * env: the newest n samples (200 Hz, about 30 s).  The fits are itila_feed's on the whole
+ * window; the cut is the window cut (gate_and_cut).  stable: the words from commit_from to the
+ * cut; live: the open text after it; *last_mark: the last key-down sample before the cut.  Returns the new commit point (>= commit_from), or -1 when
+ * the window fails the evidence test (nothing decoded, nothing committed).
+ * ---------------------------------------------------------------------- */
+int itila2_stream_step(itila_t h, const double *env, int n, int commit_from, double ev_thresh,
+                       char *stable, char *live, int len, int *last_mark)
+{
+    itila_state_t *st = (itila_state_t*)h;
+    if (last_mark) *last_mark = -1;
+    if (len > 0) { stable[0] = '\0'; live[0] = '\0'; }
+    if (!bind_scratch(st)) return -1;
+    if (n < st->sample_rate || n > MAX_ENV || len < 2) return -1;
+    if (commit_from < 0) commit_from = 0;
+    if (commit_from > n) commit_from = n;
+    memcpy(st->feed_raw, env, (size_t)n * sizeof(double));
+    level_follow(st, st->feed_raw, n, st->feed_env);
+    const double *e = st->feed_env;
+
+    double A, nm, s2, wpm_em;
+    em_estimate(st, e, n, st->ws_wpm, &A, &nm, &s2, &wpm_em);
+    double sep = (A - nm) / sqrt(s2);
+    double log_bf = sep < SEP_MIN ? -INFINITY : signal_evidence_ratio(st, e, n, A, nm, s2);
+    if (log_bf < ev_thresh || sep < SEP_MIN) return -1;
+    posterior_to_marks(st->gamma_marg, n, st->marks);
+    double cands[2];
+    int n_cands = fit_mark_wpm_components(st->marks, n, wpm_em, cands, 2);
+    int cut = gate_and_cut(st, e, n, A, nm, s2, cands, n_cands);
+    if (cut < commit_from) cut = commit_from;
+    if (last_mark)
+        for (int i = cut - 1; i >= commit_from; i--)
+            if (st->marks[i]) { *last_mark = i; break; }
+
+    char (*texts)[MAX_TEXT] = st->sc_out_texts;
+    if (cut > commit_from &&
+        decode_runs_beam_from(st, st->marks, cut, commit_from, cands[0], 0.0, texts, 1, NULL) > 0) {
+        strncpy(stable, texts[0], len - 1);
+        stable[len - 1] = '\0';
+    }
+    st->last_wpm = st->pitch_wpm > 0.0 ? st->pitch_wpm : cands[0];
+    if (n > cut &&
+        decode_runs_beam_from(st, st->marks, n, cut, cands[0], 0.0, texts, 1, NULL) > 0) {
+        strncpy(live, texts[0], len - 1);
+        live[len - 1] = '\0';
+    }
+    return cut;
 }
