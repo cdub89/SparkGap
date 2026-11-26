@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from test_scanner_fft_front import FS, _keyed_iq, _scanner
 
-from itila2_monitor import Monitor, MonitorHub
+from itila2_monitor import Monitor, MonitorHub, shown
 
 ROOT = Path(__file__).resolve().parent.parent
 TONE_HZ = 14028063.0       # the keyed tone of _keyed_iq: "RN", 22 WPM
@@ -145,3 +145,12 @@ def test_a_monitor_on_a_signal_with_a_bin_starts_from_its_envelope(fir1: bool) -
     n = lib.itila_sc_monitor_read(h, None, env.ctypes.data_as(P), 8000, ct.byref(end), None)
     assert n > 5 * 200 and end.value == n
     lib.itila_sc_free(h)
+
+
+@pytest.mark.parametrize("text, ev, ok", [
+    ("JAKE", 6602.0, True), ("E", 1815.0, False), ("T", 2426.0, True), ("K", 588.0, True),
+    ("EI", 250.0, False), ("?", None, True),
+])
+def test_a_stretch_shows_with_evidence_of_its_own(text: str, ev: float | None, ok: bool) -> None:
+    """Noise between overs: low evidence, and a lone E or T needs more (N9FGC QSO, 6 dB, 11-26)."""
+    assert shown(text, ev) is ok

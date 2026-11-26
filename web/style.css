@@ -96,6 +96,7 @@ main { flex: 1; display: flex; gap: 12px; min-height: 0; }
 .dlabel { padding: 10px 16px 0; }
 .dcopy { display: flex; align-items: center; justify-content: space-between; }
 .dcopy #dShow { margin-left: auto; margin-right: 6px; }
+.dcopy #dLiveClear { margin-left: auto; margin-right: 6px; }
 .note { padding: 6px 16px; color: var(--muted); font-size: 12px; }
 .dlive { padding: 0 16px 4px; user-select: text; cursor: text; font-size: 12px; overflow-wrap: anywhere; max-height: 7.5em; overflow-y: auto; display: flex; flex-direction: column-reverse; }  /* one child: scrolled to the newest */
 .dlive .live { color: var(--muted); opacity: .75; }
