@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from test_scanner_fft_front import FS, _keyed_iq, _scanner
 
-from itila2_monitor import Monitor, MonitorHub, shown
+from itila2_monitor import JOIN_HOLD_S, CallJoin, Monitor, MonitorHub, shown, split_prosigns
 
 ROOT = Path(__file__).resolve().parent.parent
 TONE_HZ = 14028063.0       # the keyed tone of _keyed_iq: "RN", 22 WPM
@@ -154,3 +154,48 @@ def test_a_monitor_on_a_signal_with_a_bin_starts_from_its_envelope(fir1: bool) -
 def test_a_stretch_shows_with_evidence_of_its_own(text: str, ev: float | None, ok: bool) -> None:
     """Noise between overs: low evidence, and a lone E or T needs more (N9FGC QSO, 6 dB, 11-26)."""
     assert shown(text, ev) is ok
+
+
+KNOWN = ["KM7AZ", "N9FGC", "WB0RLJ", "W1DV", "5NNHR"]
+
+
+@pytest.mark.parametrize("text, joined", [
+    ("KM7A Z TU GM", "KM7AZ TU GM"),            # LakeDog 11-26: a gap in a call read as a word gap
+    ("DEN 9 F GC NT", "DE N9FGC NT"),           # N9FGC at 6 dB, DE run into the call
+    ("73 WB0RLJ EE", "73 WB0RLJ EE"),           # a known call stays as it is
+    ("TU 5NN 5NN K", "TU 5NN 5NN K"),           # nothing joins that is not a known call
+    ("R 5NN HR STEVE", "R 5NN HR STEVE"),       # 5NNHR is on the RBN list, but 5NN is no call piece
+])
+def test_split_calls_join_into_known_calls(text: str, joined: str) -> None:
+    assert " ".join(CallJoin(KNOWN).join(text.split())) == joined
+
+
+def test_a_call_split_across_commits_waits_for_its_rest() -> None:
+    """N9FGC came as three commits (DEN 9 | F | GC NT); a tail that never completes still shows."""
+    hub = MonitorHub(ct.CDLL(None))             # no decoder needed: only the text path
+    hub.set_known(KNOWN)
+    shown_at = [hub._shown(["DEN 9"], 0.0), hub._shown(["F"], 1.0), hub._shown(["GC NT"], 2.0)]
+    assert shown_at == ["", "", "DE N9FGC NT"]
+    assert hub._shown(["QSL KM7A"], 3.0) == "QSL"
+    assert hub._shown([], 3.0 + JOIN_HOLD_S / 2) == ""
+    assert hub._shown([], 3.0 + JOIN_HOLD_S) == "KM7A"
+
+
+def test_common_words_are_not_held_as_call_pieces() -> None:
+    """TU, GM, ES, K start known calls (TU5, GM3, ES1, K1): only a piece with its digit waits."""
+    hub = MonitorHub(ct.CDLL(None))
+    hub.set_known(KNOWN + ["TU5AB", "GM3ABC", "ES1AB", "K1ABC"])
+    assert [hub._shown([t], 0.0) for t in ("TU", "GM ES", "K")] == ["TU", "GM ES", "K"]
+
+
+@pytest.mark.parametrize("text, split", [
+    ("UR 5NN5NNBK", "UR 5NN5NN BK"),            # LakeDog 11-26
+    ("BKTUJIM", "BK TUJIM"),
+    ("TNX 73KN", "TNX 73 KN"),
+    ("KNOW SKILL YEAR DESK CLEAR", "KNOW SKILL YEAR DESK CLEAR"),   # words, not prosigns
+    ("73AR TNXAR", "73 AR TNX AR"),
+    ("K1BK DE W1AR", "K1BK DE W1AR"),           # calls keep their letters
+    ("BK TU", "BK TU"),
+])
+def test_prosigns_run_into_a_word_are_split_off(text: str, split: str) -> None:
+    assert " ".join(split_prosigns(text.split())) == split
