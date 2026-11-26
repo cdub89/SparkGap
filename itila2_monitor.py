@@ -11,6 +11,7 @@ import ctypes as ct
 import logging
 import math
 import re
+import threading
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
@@ -339,6 +340,7 @@ class MonitorHub:
     def __init__(self, dec_lib: ct.CDLL) -> None:
         self._dec_lib = dec_lib
         self._want: tuple[float | None] | None = None   # a request not yet applied
+        self._want_lock = threading.Lock()     # request() and step() run on different threads
         self.mon: Monitor | None = None
         self._live = ""
         self.joiner: CallJoin | None = None    # set_known(): the calls split calls join into
@@ -362,7 +364,8 @@ class MonitorHub:
         self.joiner = CallJoin(calls)
 
     def request(self, khz: float | None) -> None:
-        self._want = (khz,)
+        with self._want_lock:
+            self._want = (khz,)
 
     def step(self, scanners: list[Scanner], now: float) -> Step | None:
         """Apply the latest request, then step the monitor; a Step when it has new text."""
@@ -371,9 +374,13 @@ class MonitorHub:
             log.info("MONITOR %.2f kHz: band closed", self.mon.khz or 0.0)
             self.mon.close(scanner_gone=True)
             self.mon = None
-        want = self._want
-        if want is not None and (want[0] is None or scanners):   # an open waits for a scanner
-            self._want = None
+        with self._want_lock:     # a pick made while this one is taken is kept for the next step
+            want = self._want
+            if want is not None and (want[0] is None or scanners):   # an open waits for a scanner
+                self._want = None
+            else:
+                want = None
+        if want is not None:
             self._move(want[0], scanners)
         if self.mon is None or self.mon.khz is None:
             self._windows.clear()
