@@ -286,6 +286,8 @@ class FeedServer:
         self.on_why: Callable[[str, float], str] | None = None
         # monitor messages (click to decode): SparkGap sets this to open the monitor at kHz, None closes it
         self.on_monitor: Callable[[float | None], None] | None = None
+        # every decoded window's (kHz, text), on the publishing thread: the monitor's calls heard
+        self.on_window_text: Callable[[float, str], None] | None = None
 
     # ---- lifecycle ----
 
@@ -358,6 +360,8 @@ class FeedServer:
     def publish_window(
         self, khz: float, text: str, wpm: int | None, snr: float | None, cost: float | None
     ) -> None:
+        if self.on_window_text is not None and text:
+            self.on_window_text(float(khz), text)
         self._call(
             self._on_window,
             {

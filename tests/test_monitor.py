@@ -225,3 +225,15 @@ def test_a_call_one_off_a_call_already_heard_is_that_call() -> None:
     hub.set_known(["AC5P", "AA0YY", "AA0YZ"])
     assert hub._shown(["DE AC5P SK"], 0.0) == "DE AC5P SK"
     assert hub._shown(["73 AC5? ES AC5G ACHP DE AA0YY"], 1.0) == "73 AC5P ES AC5P ACHP DE AA0YY"
+
+
+def test_a_call_the_windows_copied_corrects_the_monitor() -> None:
+    """The windows read WA2USA at 10126.4; the monitor at 10126.50 read WA2UIA (11-26)."""
+    hub = MonitorHub(ct.CDLL(None))
+    hub.set_known(["WA2USA", "KF9VV"])
+    hub.heard_window(10126.4, "HI DE WA2USA GUD STORY JIM")
+    hub.heard_window(10130.0, "CQ DE KF9VV")                     # another signal: not this one
+    hub._take_windows(10126.5)                                   # as step() does
+    assert hub._heard == {"WA2USA"}
+    assert hub._shown(["N WA2UIA"], 0.0) == "N WA2USA"
+    assert hub._shown(["DE KF9VY"], 1.0) == "DE KF9VY"
