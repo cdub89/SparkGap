@@ -2584,6 +2584,12 @@ function bindInput() {
     if (copy) copyText(copy.dataset.code).then(ok => { copy.textContent = ok ? "Copied" : "Copy failed"; });
   });
   $("dShow").onclick = () => { app.decoded = DECODED[(DECODED.indexOf(app.decoded) + 1) % DECODED.length]; save("decoded", app.decoded); renderDetail(); };
+  $("dLiveClear").onclick = () => {
+    const i = inst();
+    if (i && i.mon) { i.mon.text = ""; i.mon.live = ""; }
+    $("dLiveText").innerHTML = "";
+    renderDetail();
+  };
   $("dLiveCopy").onclick = () => copyText($("dLiveText").innerText).then(ok => {
     $("dLiveCopy").textContent = ok ? "Copied" : "Copy failed";
     setTimeout(() => { $("dLiveCopy").textContent = "Copy"; }, 1500);

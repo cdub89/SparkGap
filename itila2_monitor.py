@@ -20,6 +20,10 @@ ARMS = (("wide", 200.0), ("narrow", 100.0))   # as the scanner's h200 and h100; 
 TEXT_LEN = 1024
 SEG_EV_MIN = 300.0     # a stretch's own evidence below this: noise between overs (net 10-07, log)
 NO_FIT = 999.0         # itila_get_last_cost when there was nothing to time
+HOLD_STEPS = 3         # steps in a row the window must pass the evidence test before text shows:
+                       # at 6 dB noise passed some of the 60 tries per 30 s (LakeDog 11-26, N9FGC)
+HOLD_BACK_S = 1.0      # a failed step moves the commit to this long before now: quiet stays quiet
+LONE_EV_MIN = 2000.0   # a lone E or T needs this much evidence (noise E/T: 590-1815, N9FGC QSO)
 
 P = ct.POINTER(ct.c_double)
 log = logging.getLogger("sparkgap")
@@ -105,6 +109,13 @@ class _Arm:
         self.h = None
 
 
+def shown(text: str, ev: float | None) -> bool:
+    """Whether a committed stretch shows: CW evidence of its own, more for a lone E or T."""
+    if ev is None:
+        return True
+    return ev >= (LONE_EV_MIN if text in ("E", "T") else SEG_EV_MIN)
+
+
 class Monitor:
     """One monitor on one scanner.  feed(now) after each IQ block; words collects the commits."""
 
@@ -120,6 +131,7 @@ class Monitor:
         self.words: list[Word] = []
         self._commit = 0            # samples since the monitor opened, up to the last cut
         self._next_step = 0.0
+        self._passes = 0            # steps in a row the window passed the evidence test
 
     def open(self, khz: float) -> bool:
         self.close()
@@ -129,7 +141,7 @@ class Monitor:
         if not all(a.h for a in self._arms):
             self.close(scanner_gone=False, opened=True)
             return False
-        self.khz, self.live, self._commit, self._next_step = khz, "", 0, 0.0
+        self.khz, self.live, self._commit, self._next_step, self._passes = khz, "", 0, 0.0, 0
         end = ct.c_longlong(0)
         self.seeded_s = self._sc_lib.itila_sc_monitor_read(self._sc, None, None, 1 << 30,
                                                            ct.byref(end), None) / RATE_HZ
@@ -163,7 +175,12 @@ class Monitor:
         commit_from = max(0, self._commit - start)
         w = wide.step(n, commit_from, self._ev)
         if w is None:
+            self._passes, self.live = 0, ""
+            self._commit = max(self._commit, end.value - int(HOLD_BACK_S * RATE_HZ))
             return []
+        self._passes += 1
+        if self._passes < HOLD_STEPS:
+            return []               # the commit waits: the first word comes once it holds
         nr = narrow.step(n, commit_from, self._ev, force_cut=w.cut)   # the same stretch
         best, other, arm = w, nr, ARMS[0][0]
         # narrow only reads better where wide read something too: alone it was noise (net 10-07)
@@ -174,7 +191,7 @@ class Monitor:
         if not best.text:
             return []
         word = Word(now - (n - best.last) / RATE_HZ, now, best.wpm, best.text, best.ev,
-                    best.ev is None or best.ev >= SEG_EV_MIN, arm, other.text if other else "")
+                    shown(best.text, best.ev), arm, other.text if other else "")
         self.words.append(word)
         return [word]
 
