@@ -351,3 +351,31 @@ def test_the_station_counts_every_pan_on_the_radio() -> None:
     assert st.health()["pans"] == 4
     st._status(["S0|display pan 0x40000001 removed"])
     assert st.health()["pans"] == 3 and set(st.pans) == {0x4000_0000, 0x4000_0002, 0x4000_0003}
+
+
+class _PanReply(_Scripted):
+    """Answers pan create with reply (None: no answer at all), keeping the wait it was given."""
+
+    def __init__(self, reply: str | None) -> None:
+        super().__init__({})
+        self.pan_reply, self.waited = reply, 0.0
+
+    def cmd(self, cmd: str, timeout: float = 2.0, settle: float = 0.0) -> list[str]:
+        if not cmd.startswith("display pan create"):
+            return super().cmd(cmd, timeout, settle)
+        self.seq += 1
+        self.waited = timeout
+        return [] if self.pan_reply is None else [f"R{self.seq}|{self.pan_reply}"]
+
+
+@pytest.mark.parametrize("reply, why", [
+    (None, r"did not answer pan create in 5 s"),        # LakeDog, 2026-11-26: a slow radio, not a full one
+    ("50000010|", r"No free panadapter"),
+])
+def test_a_pan_create_without_a_pan_says_which(reply: str | None, why: str) -> None:
+    rx = FlexIQReceiver("192.0.2.1", sample_rate=96_000, daxiq_channel=4)
+    conn = _PanReply(reply)
+    rx.conn, rx._clients, rx._station_handle = conn, [MAESTRO, LAKE_GUI], LAKE_STATION
+    with pytest.raises(RuntimeError, match=why):
+        rx._build()
+    assert conn.waited == flex_iq.PAN_CREATE_TIMEOUT_S

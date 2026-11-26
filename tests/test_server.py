@@ -576,7 +576,7 @@ def test_a_station_and_its_warnings_reach_the_server(server: Server) -> None:
 
 
 @pytest.mark.parametrize("cmd, settings, want", [
-    ("node", {"callsign": "WX7V-5"}, "saving the node"), ("stop", {}, "stopping"), ("start", {}, "starting"),
+    ("node", {"callsign": "K1ABC-1"}, "saving the node"), ("stop", {}, "stopping"), ("start", {}, "starting"),
     ("set", {"band": "20m"}, "changing band"), ("set", {"rbn_upload": "dry"}, "changing its rbn feeder"),
     ("set", {"record": True}, "restarting"), ("discover", {}, "discovering"),
 ])
@@ -606,3 +606,21 @@ def test_downloads_takes_check_or_refresh_only(server: Server, seat: Seat) -> No
                                  "settings": {"action": "delete"}}).encode())
     r = _result(ws, 22)
     assert not r["ok"] and "check or refresh" in r["error"]
+
+
+def test_the_server_fetches_the_rbn_days_its_receivers_read(seat: Seat, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811
+    """A receiver's start finds the RBN archive days cached (a LakeDog start waited 19 s on two, 2026-11-26):
+    one fetch per cache folder and spotter, none for a config that does not read them."""
+    import rbn_known
+    asked: list[tuple[Path, str, int]] = []
+    monkeypatch.setattr(rbn_known, "cache_days", lambda d, call, days: asked.append((d, call, days)))
+    cfg = seat.root / "config"
+    for n, extra in (("dallas1", {"spot_validation_calls": "rbn", "callsign": "K1ABC-1"}),
+                     ("dallas2", {"itila_known_calls": "rbn", "callsign": "K1ABC-2", "rbn_known_days": 7})):
+        path = cfg / f"{n}.local.json"
+        path.write_text(json.dumps({**json.loads(path.read_text()), **extra}))
+    assert sparkgap_server.fetch_rbn_days(seat) == 1               # one folder, one spotter (K1ABC)
+    assert asked == [(seat.instances()[0].code / "rbn_known", "K1ABC-1", 7)]
+    for n in ("dallas1", "dallas2"):
+        (cfg / f"{n}.local.json").write_text(json.dumps({"sdr_type": "flex", "rbn_known_dir": "/x"}))
+    assert sparkgap_server.fetch_rbn_days(seat) == 0
