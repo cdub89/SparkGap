@@ -1481,7 +1481,11 @@ function renderDetail() {
   $("dCopy").hidden = !(d && d.windows.length);
   const mon = d && i.mon;  // click to decode: the words as sent, the one being sent dimmed
   $("dLive").hidden = !mon;
-  $("dLive").innerHTML = mon ? `<div><span class="label">LIVE</span> ${esc(mon.text)}${mon.live ? ` <span class="live">${esc(mon.live)}</span>` : ""}</div>` : "";
+  $("dLiveHead").hidden = !mon;
+  const live = mon ? `${esc(mon.text)}${mon.live ? ` <span class="live">${esc(mon.live)}</span>` : ""}` : "";
+  const sel = window.getSelection();  // a selection in the LIVE text holds it still until it is cleared
+  const held = sel && !sel.isCollapsed && $("dLiveText").contains(sel.anchorNode);
+  if (!held && $("dLiveText").innerHTML !== live) $("dLiveText").innerHTML = live;
   $("dWins").innerHTML = (d ? d.windows : []).map(r => {
     const rs = readings(r, app.decoded);
     // with both shown, the lower timing cost is marked (a tie or no fit marks neither)
@@ -2580,6 +2584,10 @@ function bindInput() {
     if (copy) copyText(copy.dataset.code).then(ok => { copy.textContent = ok ? "Copied" : "Copy failed"; });
   });
   $("dShow").onclick = () => { app.decoded = DECODED[(DECODED.indexOf(app.decoded) + 1) % DECODED.length]; save("decoded", app.decoded); renderDetail(); };
+  $("dLiveCopy").onclick = () => copyText($("dLiveText").innerText).then(ok => {
+    $("dLiveCopy").textContent = ok ? "Copied" : "Copy failed";
+    setTimeout(() => { $("dLiveCopy").textContent = "Copy"; }, 1500);
+  });
   $("dCopy").onclick = () => copyText($("dWins").innerText).then(ok => {
     $("dCopy").textContent = ok ? "Copied" : "Copy failed";
     setTimeout(() => { $("dCopy").textContent = "Copy"; }, 1500);
