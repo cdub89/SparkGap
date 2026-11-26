@@ -9,6 +9,8 @@ passed since the last step.  Display only: spots, bins and windows never see it.
 import ctypes as ct
 import logging
 import math
+import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -201,6 +203,84 @@ class Step:
     khz: float
     words: list[Word] = field(default_factory=list)
     live: str = ""
+    text: str = ""            # what shows: the kept words, split calls joined
+
+
+LEAD_PROSIGNS = ("BK", "BT")          # run into the next word: no word starts so (KNOW, SKILL do)
+TRAIL_PROSIGNS = ("BK", "BT", "KN")   # run into the last: none ends so (YEAR, DESK end in AR, SK)
+QSO_WORDS = frozenset({"5NN", "599", "HR", "UR", "TU", "ES", "DE", "GM", "GA", "GE", "RR",
+                       "FB", "73", "72", "OP", "QTH", "RST", "BK", "NAME", "TNX"})   # no call piece
+CALL_SHAPE = re.compile(r"^(?:[A-Z]{1,2}|[A-Z]\d|\d[A-Z])\d[A-Z]{1,4}$")   # Web's CALL_RE
+
+
+def split_prosigns(words: list[str]) -> list[str]:
+    """A prosign run into a word split off it (5NN5NNBK, BKTUJIM, LakeDog 11-26); a call-shaped
+    word keeps its letters (K1BK)."""
+    out: list[str] = []
+    for w in words:
+        head: list[str] = []
+        tail: list[str] = []
+        while not CALL_SHAPE.match(w) and len(w) > 3 and w[:2] in LEAD_PROSIGNS:
+            head.append(w[:2])
+            w = w[2:]
+        while not CALL_SHAPE.match(w) and len(w) > 3 and (
+                w[-2:] in TRAIL_PROSIGNS        # AR only after a number or QSO word: CLEAR, YEAR stay
+                or (w[-2:] == "AR" and (any(c.isdigit() for c in w[:-2]) or w[:-2] in QSO_WORDS))):
+            tail.insert(0, w[-2:])
+            w = w[:-2]
+        out += head + [w] + tail
+    return out
+
+
+JOIN_PIECES = 4        # a call split by fades into up to this many pieces (DEN 9 F GC: N9FGC)
+JOIN_HOLD_S = 3.0      # a commit ending in the start of a known call waits this long for the rest
+
+
+class CallJoin:
+    """Split calls joined again: pieces in a row that make a known call, the first not a known
+    call itself (KM7A Z: KM7AZ; DEN 9 F GC: DE N9FGC, LakeDog 11-26).  The tail of a commit that
+    starts a known call is held for the next commit, as a call split across two."""
+
+    def __init__(self, known: Iterable[str]) -> None:
+        self.known = frozenset(c.strip().upper() for c in known if c.strip())
+        self.starts = {c[:k] for c in self.known for k in range(1, len(c))}
+
+    def _call(self, joined: str) -> list[str] | None:
+        if joined in self.known:
+            return [joined]
+        if joined.startswith("DE") and joined[2:] in self.known:
+            return ["DE", joined[2:]]
+        return None
+
+    def _starts(self, joined: str) -> bool:
+        return joined in self.starts or (joined.startswith("DE") and joined[2:] in self.starts)
+
+    def join(self, words: list[str]) -> list[str]:
+        out, i = [], 0
+        while i < len(words):
+            got, j = None, i + 1
+            if words[i] not in self.known:
+                for j in range(min(len(words), i + JOIN_PIECES), i + 1, -1):
+                    if QSO_WORDS.isdisjoint(words[i + 1:j]) and words[i] not in QSO_WORDS - {"DE"} \
+                            and (got := self._call("".join(words[i:j]))):
+                        break     # 5NN HR is not 5NNHR, a junk call on the RBN list
+            if got:
+                out += got
+                i = j
+            else:
+                out.append(words[i])
+                i += 1
+        return out
+
+    def tail(self, words: list[str]) -> int:
+        """Where the held tail starts: the longest end run (of JOIN_PIECES at most) that starts a
+        known call and is not one; len(words) when nothing is held."""
+        for i in range(max(0, len(words) - JOIN_PIECES), len(words)):
+            joined = "".join(words[i:])
+            if (any(c.isdigit() for c in joined) and self._starts(joined) and not self._call(joined)
+                    and words[-1] not in self.known):   # a call piece has its digit: KM7A, DEN 9
+                return i
+        return len(words)
 
 
 Scanner = tuple[ct.CDLL, int, float]   # (scanner library, handle, ev_thresh) of one band
@@ -221,6 +301,12 @@ class MonitorHub:
         self._want: tuple[float | None] | None = None   # a request not yet applied
         self.mon: Monitor | None = None
         self._live = ""
+        self.joiner: CallJoin | None = None    # set_known(): the calls split calls join into
+        self._held: list[str] = []
+        self._held_at = 0.0
+
+    def set_known(self, calls: Iterable[str]) -> None:
+        self.joiner = CallJoin(calls)
 
     def request(self, khz: float | None) -> None:
         self._want = (khz,)
@@ -239,10 +325,26 @@ class MonitorHub:
         if self.mon is None or self.mon.khz is None:
             return None
         words = self.mon.feed(now)
-        if not words and self.mon.live == self._live:
-            return None
+        text = self._shown([w.text for w in words if w.kept], now)
+        if not text and self.mon.live == self._live:
+            return Step(self.mon.khz, words) if words else None
         self._live = self.mon.live
-        return Step(self.mon.khz, words, self.mon.live)
+        return Step(self.mon.khz, words, self.mon.live, text)
+
+    def _shown(self, texts: list[str], now: float) -> str:
+        """The text to show from this step's kept commits, with a held tail from the last."""
+        words = split_prosigns(" ".join(texts).split())
+        if self.joiner is None:
+            return " ".join(words)
+        if words:
+            if not self._held:
+                self._held_at = now
+            words, self._held = self.joiner.join(self._held + words), []
+            cut = self.joiner.tail(words)
+            words, self._held = words[:cut], words[cut:]
+        elif self._held and now - self._held_at >= JOIN_HOLD_S:
+            words, self._held = self._held, []                      # the rest never came
+        return " ".join(words)
 
     def close(self) -> None:
         self._move(None, [])
@@ -253,6 +355,7 @@ class MonitorHub:
             self.mon.close()
             self.mon = None
         self._live = ""
+        self._held = []
         if khz is None:
             return
         for sc_lib, sc_h, ev in scanners:

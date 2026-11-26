@@ -8995,7 +8995,7 @@ class SparkGap:
         if _gui_feed is not None:   # the rule of the spots the feed shows
             _gui_feed.on_why = lambda call, khz: _why_answer(
                 self.tracker.spot_rule if self._feed_takes('rbn') else self.tracker.local_rule, call, khz)
-        self._monitor = _monitor_hub() if _gui_feed is not None else None
+        self._monitor = _monitor_hub(self.cfg, self.tracker) if _gui_feed is not None else None
 
         self.receiver.start()
         self.running = True
@@ -10382,10 +10382,15 @@ class _FileDigital:
                      self._first + (n - len(fi)) / fs)], self)
 
 
-def _monitor_hub():
-    """Click to decode (exp/click-decode): the process's one monitor; the GUI feed's picks open it."""
+def _monitor_hub(config, tracker):
+    """Click to decode (exp/click-decode): the process's one monitor; the GUI feed's picks open it.
+    Split calls join into the tracker's calls and, where the config reads them, the RBN known calls."""
     from itila2_monitor import MonitorHub
     hub = MonitorHub(_get_itila_lib())
+    known = set(tracker.valid_calls or ())
+    if config.get('spot_validation_calls') in ('rbn', 'rbn+skcc') or config.get('itila_known_calls') == 'rbn':
+        known |= _rbn_known(config, lambda c: c in tracker.valid_calls)
+    hub.set_known(known)
     if _gui_feed is not None:
         _gui_feed.on_monitor = hub.request
     return hub
@@ -10403,9 +10408,10 @@ def _monitor_step(hub, managers, now):
                  w.end_utc, w.commit_utc, "%.0f" % w.wpm if w.wpm else "-",
                  "%.0f" % w.ev if w.ev is not None else "-", w.arm, "" if w.kept else " dropped", w.text, w.other)
     kept = [w for w in st.words if w.kept]
+    if st.text and st.text != " ".join(w.text for w in kept):
+        log.info("MONITOR %.2f kHz shown: %s", st.khz, st.text)   # a split call joined, or a held tail
     if _gui_feed is not None:
-        _gui_feed.publish_monitor(st.khz, " ".join(w.text for w in kept), st.live,
-                                  kept[-1].wpm if kept else None)
+        _gui_feed.publish_monitor(st.khz, st.text, st.live, kept[-1].wpm if kept else None)
 
 
 def run_file_mode(args, config):
@@ -10521,7 +10527,7 @@ def run_file_mode(args, config):
     all_spots = []
     chunk_sec = 300  # 5-minute chunks
     _start_gui_feed(config, [(f"{center_khz:.0f} kHz", center_khz * 1000.0)], file_rate, [manager])
-    monitor = _monitor_hub()
+    monitor = _monitor_hub(config, tracker)
     if args.monitor_khz:
         monitor.request(args.monitor_khz)
     if _gui_feed is not None:
