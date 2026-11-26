@@ -201,6 +201,9 @@ typedef struct {
                                * decodes (3-char SCP collisions, M5M class)
                                * cluster median 19 / p75 36. Recommended
                                * production gate: emit only if cost <= 30. */
+    int     per_over;          /* exp/click-decode monitor (itila2_set_monitor): mark and gap fits per over */
+    char   *words;             /* monitor: words heard in this QSO, "\nW1\nW2\n", for the token prior */
+    double  words_bonus;
 } itila_state_t;
 
 /* -------------------------------------------------------------------------
@@ -1259,11 +1262,22 @@ int itila_set_known_calls(const char *calls, int len, double bonus) {
     return n;
 }
 
-/* Prior on the last token of txt: callsigns and common words are likely. */
-static double token_prior(const char *txt) {
+/* Whether t is one of the monitor's words heard in this QSO (itila2_set_monitor). */
+static int heard_word(const itila_state_t *st, const char *t) {
+    size_t n = strlen(t);
+    if (!st->words || n == 0 || n > 16) return 0;
+    char w[20];
+    w[0] = '\n'; memcpy(w + 1, t, n); w[n + 1] = '\n'; w[n + 2] = '\0';
+    return strstr(st->words, w) != NULL;
+}
+
+/* Prior on the last token of txt: callsigns and common words are likely, and on a monitor the
+ * calls and prosigns heard in this QSO more so. */
+static double token_prior(const itila_state_t *st, const char *txt) {
     const char *t = strrchr(txt, ' ');
     t = t ? t + 1 : txt;
     if (!*t || strchr(t, '?')) return 0.0;
+    if (heard_word(st, t)) return TOKEN_PRIOR + st->words_bonus;
     if (is_callsign(t)) {
         const known_set_t *k = __atomic_load_n(&g_known, __ATOMIC_ACQUIRE);
         /* Calls of 3 characters or fewer (1x1 special-event calls: N3F, W6T) get no bonus:
@@ -1283,11 +1297,11 @@ static void close_sym(beam_state_t *s) {
     s->sym[0] = '\0';
 }
 
-static void close_word(beam_state_t *s) {
+static void close_word(const itila_state_t *st, beam_state_t *s) {
     close_sym(s);
     int tl = strlen(s->txt);
     if (tl == 0 || s->txt[tl - 1] == ' ') return;
-    s->score += token_prior(s->txt);
+    s->score += token_prior(st, s->txt);
     if (tl < MAX_TEXT - 1) { s->txt[tl] = ' '; s->txt[tl + 1] = '\0'; }
 }
 
@@ -1328,9 +1342,63 @@ static int despeckle_runs(run_t *runs, int n_runs, double unit) {
     return n_runs;
 }
 
+/* Overs (exp/click-decode monitor): the runs between quiet stretches, each with its own mark and
+ * gap centres.  Quiet: OVER_GAP_S with under OVER_QUIET of it key-down, as the HMM marks noise
+ * blips between overs, so a clean silence is rare. */
+#define OVER_GAP_S 1.5
+#define OVER_QUIET 0.15
+#define MAX_OVERS  32
+#define OVER_MIN_MARKS 40   /* an over with fewer marks keeps the window's fits: few gaps fit badly */
+typedef struct { int r0, r1; double dit_m, dah_m, gap_e, gap_l, gap_w; } over_t;
+
+static int split_overs(const itila_state_t *st, const run_t *runs, int n_runs, over_t *ov) {
+    int w = (int)(OVER_GAP_S * st->sample_rate), lim = (int)(OVER_QUIET * w);
+    int bound[MAX_OVERS], nb = 0, on = 0, quiet = 0;
+    int8_t key[MAX_ENV];               /* the despeckled runs as samples: HMM blips are gone */
+    int T = 0;
+    for (int r = 0; r < n_runs; r++)
+        for (int k = 0; k < runs[r].dur && T < MAX_ENV; k++) key[T++] = (int8_t)runs[r].is_mark;
+    for (int i = 0; i < T; i++) {
+        on += key[i];
+        if (i >= w) on -= key[i - w];
+        int q = i >= w - 1 && on <= lim;
+        if (q && !quiet && nb < MAX_OVERS - 1) bound[nb++] = i - w / 2;   /* mid of the first quiet span */
+        quiet = q;
+    }
+    if (nb == 0) return 0;
+    int n = 0, at = 0;
+    ov[0].r0 = 0;
+    for (int r = 0, b = 0; r < n_runs; at += runs[r].dur, r++)
+        while (b < nb && at >= bound[b]) {
+            if (r > ov[n].r0) { ov[n].r1 = r; ov[++n].r0 = r; }
+            b++;
+        }
+    ov[n++].r1 = n_runs;
+    return n;
+}
+
+static int decode_runs_beam_from(
+    itila_state_t *st,
+    const int8_t *marks, int T, int start,
+    double wpm, double freq_khz,
+    char out_texts[][MAX_TEXT], int max_out,
+    double *unit_sp_out);
+
 static int decode_runs_beam(
     itila_state_t *st,
     const int8_t *marks, int T,
+    double wpm, double freq_khz,
+    char out_texts[][MAX_TEXT], int max_out,
+    double *unit_sp_out)
+{
+    return decode_runs_beam_from(st, marks, T, 0, wpm, freq_khz, out_texts, max_out, unit_sp_out);
+}
+
+/* decode_runs_beam with the fits from all of marks[0, T) and the text from the runs ending after
+ * `start` only (exp/click-decode: the words since the last commit, timed by the whole window). */
+static int decode_runs_beam_from(
+    itila_state_t *st,
+    const int8_t *marks, int T, int start,
     double wpm, double freq_khz,
     char out_texts[][MAX_TEXT], int max_out,
     double *unit_sp_out)
@@ -1391,6 +1459,31 @@ static int decode_runs_beam(
     }
     st->pitch_wpm = pitch_wpm(runs, n_runs, boundary, sqrt(unit_sp * gap_l));
 
+    /* A monitor's window holds both sides of a QSO: each over is timed by its own marks and gaps
+     * (O read as TTT where one fist's long gaps set the window's centres, AA0RQ 11-26); an over
+     * with too few falls back to the window's. */
+    over_t ov[MAX_OVERS];
+    int n_ov = st->per_over ? split_overs(st, runs, n_runs, ov) : 0;
+    for (int k = 0; k < n_ov; k++) {
+        over_t *o = &ov[k];
+        o->dit_m = dit_m; o->dah_m = dah_m; o->gap_e = gap_e; o->gap_l = gap_l; o->gap_w = gap_w;
+        int a = o->r0 > 0 ? o->r0 - 1 : 0, b = o->r1 < n_runs ? o->r1 + 1 : n_runs;
+        int marks_n = 0;
+        for (int r = o->r0; r < o->r1; r++) marks_n += runs[r].is_mark;
+        if (marks_n < OVER_MIN_MARKS) continue;
+        int uf = 0;
+        double dah = 0.0, u = fit_unit(runs + a, b - a, unit, &uf, &dah);
+        if (!uf || dah <= 0.0) continue;
+        o->dit_m = u; o->dah_m = dah;
+        o->gap_e = fit_elem_gap(runs + a, b - a, u, st->log_B);
+        if (!fit_gap_centres(runs + a, b - a, u, st->log_B, &o->gap_l, &o->gap_w)) {
+            o->gap_l = gap_l / unit_sp * u; o->gap_w = gap_w / unit_sp * u;
+        } else if (k == n_ov - 1) {
+            st->gap_l_prev = o->gap_l / u; st->gap_w_prev = o->gap_w / u; st->gap_unit_prev = u;
+        }
+    }
+    int cur_ov = -1;
+
     if (getenv("ITILA2_DUMP_RUNS")) {
         fprintf(stderr, "ITILA2 runs %.1f kHz wpm=%.1f unit=%.2f usp=%.2f%s dah=%.2f lw=%.1f%s n=%d:",
                 freq_khz, wpm, unit, unit_sp, unit_fitted ? "" : "(in)",
@@ -1410,9 +1503,22 @@ static int decode_runs_beam(
     int beam_sz = 1;
     beam[0].score = 0.0; beam[0].sym[0] = '\0'; beam[0].txt[0] = '\0';
 
+    int run_end = 0;
     for (int r = 0; r < n_runs; r++) {
         int is_mark = runs[r].is_mark;
         int dur     = runs[r].dur;
+        run_end += dur;
+        if (run_end <= start) continue;
+        if (n_ov) {
+            int k = cur_ov < 0 ? 0 : cur_ov;
+            while (k < n_ov - 1 && r >= ov[k].r1) k++;
+            if (k != cur_ov) {
+                cur_ov = k;
+                dit_m = ov[k].dit_m; dah_m = ov[k].dah_m; boundary = sqrt(dit_m * dah_m);
+                zone_lo = boundary * 0.75; zone_hi = boundary * 1.25;
+                gap_e = ov[k].gap_e; gap_l = ov[k].gap_l; gap_w = ov[k].gap_w;
+            }
+        }
 
         if (is_mark) {
             if ((double)dur >= zone_lo && (double)dur <= zone_hi) {
@@ -1475,7 +1581,7 @@ static int decode_runs_beam(
             if (n_keep == 1) {
                 for (int i = 0; i < beam_sz; i++) {
                     if (kbest == 1) close_sym(&beam[i]);
-                    else if (kbest == 2) close_word(&beam[i]);
+                    else if (kbest == 2) close_word(st, &beam[i]);
                 }
             } else {
                 int next_sz = 0;
@@ -1486,7 +1592,7 @@ static int decode_runs_beam(
                         *s1 = beam[i];
                         s1->score += ll[k] - ll[kbest];
                         if (k == 1) close_sym(s1);
-                        else if (k == 2) close_word(s1);
+                        else if (k == 2) close_word(st, s1);
                     }
                 qsort(next, next_sz, sizeof(beam_state_t), beam_score_cmp);
                 if (next_sz > MAX_TEXTS) next_sz = MAX_TEXTS;
@@ -1508,7 +1614,7 @@ static int decode_runs_beam(
     /* Flush remaining symbols and score the last token */
     for (int i = 0; i < beam_sz; i++) {
         close_sym(&beam[i]);
-        beam[i].score += token_prior(beam[i].txt);
+        beam[i].score += token_prior(st, beam[i].txt);
     }
     qsort(beam, beam_sz, sizeof(beam_state_t), beam_score_cmp);
 
@@ -2250,6 +2356,7 @@ void itila_free(itila_t h) {
     itila_state_t *st = (itila_state_t*)h;
     free(st->carry_env);
     free(st->carry_pow);
+    free(st->words);
     free(st);
 }
 
@@ -2402,4 +2509,106 @@ double itila2_test_estimate_wpm(const int *is_mark, const int *dur, int n) {
 
 double itila2_test_mark_power(const double *pow, const int8_t *marks, int n) {
     return mark_power(pow, marks, n);
+}
+
+/* -------------------------------------------------------------------------
+ * itila2_stream_step (exp/click-decode): one step of a monitor's decode.
+ * env: the newest n samples (200 Hz, about 30 s).  The fits are itila_feed's on the whole
+ * window; the cut is the latest word gap before the window cut (gate_and_cut), or force_cut when
+ * >= 0 (the other filter's arm cut there).  stable: the words from commit_from to the cut; live:
+ * the open text after it; *last_mark: the last key-down before the cut; *seg_ev: the stretch's
+ * own CW evidence; itila_get_last_cost: its timing cost.  Returns the new commit point
+ * (>= commit_from), or -1 when the window fails the evidence test (nothing committed).
+ * ---------------------------------------------------------------------- */
+#define STREAM_WORD_UNITS 5.0     /* a gap this many dits long is a word gap (letter 3, word 7) */
+#define STREAM_FALLBACK_S 3.0     /* no word gap this long (a run-together fist): the window's cut */
+int itila2_stream_step(itila_t h, const double *env, int n, int commit_from, double ev_thresh,
+                       char *stable, char *live, int len, int *last_mark, double *seg_ev,
+                       int force_cut)
+{
+    itila_state_t *st = (itila_state_t*)h;
+    if (last_mark) *last_mark = -1;
+    if (seg_ev) *seg_ev = NAN;
+    if (len > 0) { stable[0] = '\0'; live[0] = '\0'; }
+    if (!bind_scratch(st)) return -1;
+    if (n < st->sample_rate || n > MAX_ENV || len < 2) return -1;
+    if (commit_from < 0) commit_from = 0;
+    if (commit_from > n) commit_from = n;
+    memcpy(st->feed_raw, env, (size_t)n * sizeof(double));
+    level_follow(st, st->feed_raw, n, st->feed_env);
+    const double *e = st->feed_env;
+
+    double A, nm, s2, wpm_em;
+    em_estimate(st, e, n, st->ws_wpm, &A, &nm, &s2, &wpm_em);
+    double sep = (A - nm) / sqrt(s2);
+    double log_bf = sep < SEP_MIN ? -INFINITY : signal_evidence_ratio(st, e, n, A, nm, s2);
+    if (log_bf < ev_thresh || sep < SEP_MIN) return -1;
+    posterior_to_marks(st->gamma_marg, n, st->marks);
+    double cands[2];
+    int n_cands = fit_mark_wpm_components(st->marks, n, wpm_em, cands, 2);
+    int cut = gate_and_cut(st, e, n, A, nm, s2, cands, n_cands);
+    if (cut < commit_from) cut = commit_from;
+    /* Commit at a word gap: a cut at a letter gap split words across commits (a bug's long letter
+     * gaps: W1D V, M ORE?, LakeDog 2026-11-26).  The latest word gap before the window's cut. */
+    double wpm = cands[0] > 0.0 ? cands[0] : wpm_em;
+    int word_gap = (int)(STREAM_WORD_UNITS * 1.2 / wpm * st->sample_rate);
+    /* At least this fist's own letter/word boundary, from the gap centres of the last decode:
+     * a 5-dit cut fell inside words sent with long letter gaps (FR IEND, KF9VV 11-26). */
+    if (st->gap_unit_prev > 0.0 && st->gap_l_prev > 0.0 && st->gap_w_prev > st->gap_l_prev) {
+        int fitted = (int)(sqrt(st->gap_l_prev * st->gap_w_prev) * st->gap_unit_prev);
+        if (fitted > word_gap) word_gap = fitted;
+    }
+    int wcut = force_cut >= 0 ? (force_cut < commit_from ? commit_from : force_cut > n ? n : force_cut) : -1;
+    for (int i = cut - 1, run = 0; wcut < 0 && i >= commit_from && word_gap > 0; i--) {
+        run = st->marks[i] ? 0 : run + 1;
+        if (run == word_gap) { wcut = i + word_gap / 2; break; }
+    }
+    if (wcut < 0)
+        wcut = cut - commit_from > STREAM_FALLBACK_S * st->sample_rate ? cut : commit_from;
+    cut = wcut;
+    if (last_mark)
+        for (int i = cut - 1; i >= commit_from; i--)
+            if (st->marks[i]) { *last_mark = i; break; }
+
+    char (*texts)[MAX_TEXT] = st->sc_out_texts;
+    if (cut > commit_from &&
+        decode_runs_beam_from(st, st->marks, cut, commit_from, cands[0], 0.0, texts, 1, NULL) > 0) {
+        strncpy(stable, texts[0], len - 1);
+        stable[len - 1] = '\0';
+    }
+    st->last_wpm = st->pitch_wpm > 0.0 ? st->pitch_wpm : cands[0];
+    if (n > cut &&
+        decode_runs_beam_from(st, st->marks, n, cut, cands[0], 0.0, texts, 1, NULL) > 0) {
+        strncpy(live, texts[0], len - 1);
+        live[len - 1] = '\0';
+    }
+    /* The words since the last commit must show CW on their own: the window passing can be another
+     * over, and noise between overs read as E and T (LakeDog 2026-11-26); the caller judges it.
+     * Last: it reruns the HMM. */
+    /* The stretch's timing cost (itila_get_last_cost), as a window's: the caller keeps the arm
+     * (narrow or wide filter) whose reading is cheaper, as the windows' Lowest cost. */
+    st->last_timing_cost = cut - commit_from >= 4
+        ? compute_timing_cost(st->marks + commit_from, cut - commit_from, wpm_em, st->sc_runs) : 999.0;
+    if (stable[0] && cut > commit_from) {
+        double ev = signal_evidence_ratio(st, e + commit_from, cut - commit_from, A, nm, s2);
+        if (seg_ev) *seg_ev = ev;
+    }
+    return cut;
+}
+
+/* A monitor's decoder (exp/click-decode): per_over times each over on its own; words
+ * ("W1\nW2", the calls and prosigns heard in this QSO) earn bonus on top of the token prior.
+ * Returns 0, or -1 when the words could not be kept. */
+int itila2_set_monitor(itila_t h, int per_over, const char *words, double bonus) {
+    itila_state_t *st = (itila_state_t*)h;
+    if (!st) return -1;
+    st->per_over = per_over;
+    st->words_bonus = bonus;
+    free(st->words);
+    st->words = NULL;
+    if (!words || !*words) return 0;
+    size_t n = strlen(words);
+    if (!(st->words = malloc(n + 3))) return -1;
+    st->words[0] = '\n'; memcpy(st->words + 1, words, n); st->words[n + 1] = '\n'; st->words[n + 2] = '\0';
+    return 0;
 }

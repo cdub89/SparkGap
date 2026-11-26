@@ -88,6 +88,8 @@ const STORE = "sparkgap.web.";
 
 const $ = id => document.getElementById(id);
 const now = () => Date.now() / 1000;
+const MONITOR_MATCH_KHZ = 0.05;  // a monitor message for the pick: the node opened it where we asked
+const MONITOR_CHARS = 2000;      // the LIVE line keeps this much of the monitor's copy
 const esc = s => s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const baseCall = word => word.split("/").reduce((a, b) => (b.length > a.length ? b : a), "");
 const RUNNER_KEEP_S = 600;   // a split runner found by its sign labels its frequency this long (the spot rule's REPEAT_S)
@@ -133,6 +135,7 @@ class Instance {
     this.selKhz = null;
     this.selCall = "";
     this.why = null;  // the node's answer for the picked call: { call, text }
+    this.mon = null;  // click to decode: the monitor's copy of the pick, { khz, text, live }
     this.whyId = 0;
     this.since = 0;  // when this console last connected (status page)
     this.reconnects = 0;
@@ -240,6 +243,7 @@ class Instance {
       }
       if (!this.bands[this.band]) this.band = 0;
       this.subscribe();  // now the band on screen is known: only its spectrum is computed and sent
+      if (this.selKhz > 0) this.sendMonitor();  // a reconnect reopens our pick; no pick leaves another browser's monitor open
       this.windows = []; this.spots.clear(); this.signals.clear(); this.recent.clear(); this.runners.clear();
       this.on("hello");
     } else if (m.type === "snapshot") {
@@ -258,6 +262,15 @@ class Instance {
     } else if (m.type === "status") {
       this.status = m;
       this.on("status");
+    } else if (m.type === "monitor") {
+      if (this.selKhz === null || Math.abs(m.khz - this.selKhz) > MONITOR_MATCH_KHZ) return;  // another console's pick
+      const mon = this.mon && Math.abs(this.mon.khz - m.khz) <= MONITOR_MATCH_KHZ ? this.mon : { khz: m.khz, text: "" };
+      const kept = m.back > 0 ? mon.text.split(" ").slice(0, -m.back).join(" ") : mon.text;  // a split call joined
+      if (m.text) mon.text = (kept ? kept + " " : "") + m.text;
+      mon.text = mon.text.slice(-MONITOR_CHARS);
+      mon.live = m.live || "";
+      this.mon = mon;
+      this.on("detail");
     } else if (m.type === "why_result" && m.id === this.whyId) {
       this.why = { call: m.call, text: m.ok ? m.message : "" };
       this.on("detail");
@@ -486,7 +499,16 @@ class Instance {
     });
   }
 
-  select(khz, call) { this.selKhz = khz; this.selCall = call; this.askWhy(); this.on("detail"); }
+  select(khz, call) {
+    if (khz !== this.selKhz) this.mon = null;
+    this.selKhz = khz; this.selCall = call; this.sendMonitor(); this.askWhy(); this.on("detail");
+  }
+
+  // click to decode: the node decodes the picked frequency as it is sent (an older node ignores this)
+  sendMonitor() {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ type: "monitor", khz: this.selKhz > 0 ? this.selKhz : null }));
+  }
 
   // a picked call heard but not spotted: ask the node which gate stopped it (an older node does not answer)
   askWhy() {
@@ -564,6 +586,11 @@ class Instance {
     const db = level * this.dbUnit;
     if (best < 0 || db < PEAK_MIN_DB) return null;
     return [(this.firstHz + (best + 0.5) * this.hzPerBin) / 1000, db];
+  }
+
+  // LIVE text: every call-shaped word bold, as the windows show the picked call
+  liveMarked(text) {
+    return esc(text).split(" ").map(w => (CALL_RE.test(baseCall(w)) ? `<b>${w}</b>` : w)).join(" ");
   }
 
   marked(text, call) {
@@ -1385,7 +1412,7 @@ function renderLadder() {
     const chip = document.createElement("div");
     chip.className = "chip" + (it.spot ? " spot" : "") + (it.call ? " call" : "") + (Math.abs(app.selectedKhz - it.khz) < 0.05 ? " sel" : "");
     chip.style.top = (y - 11) + "px";
-    chip.innerHTML = `<span class="cd"></span><span class="cc">${esc(it.call || it.khz.toFixed(2))}</span><span class="cw">${it.wpm ? Math.round(it.wpm) : ""}</span>`;
+    chip.innerHTML = `<span class="cd"></span><span class="cc">${esc(it.call || it.khz.toFixed(1))}</span><span class="cw">${it.wpm ? Math.round(it.wpm) : ""}</span>`;
     chip.onclick = () => pick(it.khz, it.call);
     box.appendChild(chip);
   }
@@ -1444,11 +1471,11 @@ function readings(r, mode) {
 
 function renderDetail() {
   const i = inst(), d = i && app.selectedKhz > 0 ? i.detail : null;
-  $("dTitle").textContent = d ? d.call || d.khz.toFixed(2) : "Pick a signal";
+  $("dTitle").textContent = d ? d.call || d.khz.toFixed(1) : "Pick a signal";
   const pill = $("dPill");
   pill.hidden = !d;
   if (d) { pill.textContent = d.spotted ? "SPOTTED" : "HEARD"; pill.className = "pill" + (d.spotted ? " spot" : ""); }
-  $("dKhz").textContent = d ? d.khz.toFixed(2) : "-";
+  $("dKhz").textContent = d ? d.khz.toFixed(1) : "-";  // the dialled frequency, as a spot shows it; the monitor keeps the measured one
   $("dWpm").textContent = d && d.wpm ? Math.round(d.wpm) : "-";
   $("dSnr").textContent = d && d.snr ? Math.round(d.snr) + " dB" : "-";
   $("dWhy").hidden = !(d && d.why);
@@ -1458,6 +1485,13 @@ function renderDetail() {
   // both decodes of each window: wide filter on top, narrow dimmed
   $("dShow").textContent = DECODED_LABELS[DECODED.indexOf(app.decoded)] || "Both";
   $("dCopy").hidden = !(d && d.windows.length);
+  const mon = d && i.mon;  // click to decode: the words as sent, the one being sent dimmed
+  $("dLive").hidden = !mon;
+  $("dLiveHead").hidden = !mon;
+  const live = mon ? `${i.liveMarked(mon.text)}${mon.live ? ` <span class="live">${i.liveMarked(mon.live)}</span>` : ""}` : "";
+  const sel = window.getSelection();  // a selection in the LIVE text holds it still until it is cleared
+  const held = sel && !sel.isCollapsed && $("dLiveText").contains(sel.anchorNode);
+  if (!held && $("dLiveText").innerHTML !== live) $("dLiveText").innerHTML = live;
   $("dWins").innerHTML = (d ? d.windows : []).map(r => {
     const rs = readings(r, app.decoded);
     // with both shown, the lower timing cost is marked (a tie or no fit marks neither)
@@ -2556,6 +2590,16 @@ function bindInput() {
     if (copy) copyText(copy.dataset.code).then(ok => { copy.textContent = ok ? "Copied" : "Copy failed"; });
   });
   $("dShow").onclick = () => { app.decoded = DECODED[(DECODED.indexOf(app.decoded) + 1) % DECODED.length]; save("decoded", app.decoded); renderDetail(); };
+  $("dLiveClear").onclick = () => {
+    const i = inst();
+    if (i && i.mon) { i.mon.text = ""; i.mon.live = ""; }
+    $("dLiveText").innerHTML = "";
+    renderDetail();
+  };
+  $("dLiveCopy").onclick = () => copyText($("dLiveText").innerText).then(ok => {
+    $("dLiveCopy").textContent = ok ? "Copied" : "Copy failed";
+    setTimeout(() => { $("dLiveCopy").textContent = "Copy"; }, 1500);
+  });
   $("dCopy").onclick = () => copyText($("dWins").innerText).then(ok => {
     $("dCopy").textContent = ok ? "Copied" : "Copy failed";
     setTimeout(() => { $("dCopy").textContent = "Copy"; }, 1500);
@@ -2575,7 +2619,7 @@ function bindInput() {
     list.innerHTML = app.matches.map((m, n) => `<div class="match${n ? "" : " first"}" data-n="${n}">`
       + `<span class="cd" style="width:6px;height:6px;border-radius:50%;border:1px solid var(${m.spot ? "--accent" : "--faint"});background:${m.spot ? "var(--accent)" : "transparent"}"></span>`
       + `<span class="mono" style="width:90px;font-weight:600">${esc(m.label)}</span>`
-      + `<span class="mono muted" style="width:80px">${m.call ? m.khz.toFixed(2) : ""}</span>`
+      + `<span class="mono muted" style="width:80px">${m.call ? m.khz.toFixed(1) : ""}</span>`
       + `<span class="ago">${m.ago ? m.ago + " ago" : "go to"}</span></div>`).join("");
     list.hidden = !app.matches.length || document.activeElement !== search;
   };
