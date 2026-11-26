@@ -243,7 +243,7 @@ class Instance {
       }
       if (!this.bands[this.band]) this.band = 0;
       this.subscribe();  // now the band on screen is known: only its spectrum is computed and sent
-      this.sendMonitor();  // a reconnect: the node opens the monitor on the pick again
+      if (this.selKhz > 0) this.sendMonitor();  // a reconnect reopens our pick; no pick leaves another browser's monitor open
       this.windows = []; this.spots.clear(); this.signals.clear(); this.recent.clear(); this.runners.clear();
       this.on("hello");
     } else if (m.type === "snapshot") {
