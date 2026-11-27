@@ -47,8 +47,8 @@ minutes.
 - **Search** (Ctrl+F): type a call, some text or a frequency in kHz to jump to
   it. With the ⚙ dialog open, Ctrl+F is the browser's own find instead.
 - **Zoom**: drag to move along the band; Ctrl+scroll or pinch to zoom. The
-  **Zoom** button steps through the whole band, half and a quarter. Each
-  receiver opens at the zoom you last left it at, in this browser.
+  **Zoom** button steps through the whole band, half, a quarter, 10 kHz and
+  5 kHz. Each receiver opens at the zoom you last left it at, in this browser.
 - **Bottom bar**: the connection (a green dot and Live when all is well;
   **Reconnecting to radio** or **Radio not connected** when the receiver is
   running but its radio is not), how hard the computer is working, how many
