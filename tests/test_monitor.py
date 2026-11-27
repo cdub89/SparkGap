@@ -252,14 +252,14 @@ def test_a_call_the_windows_copied_corrects_the_monitor() -> None:
     assert hub._shown(["DE KF9VY"], 1.0) == (0, "DE KF9VY")
 
 
-def test_click_to_decode_is_off_by_default() -> None:
-    """No monitor without click_to_decode (a pick is then ignored); --monitor-khz forces one."""
+def test_live_monitor_is_off_by_default() -> None:
+    """No monitor without live_monitor (a pick is then ignored); --monitor-khz forces one."""
     import sparkgap
 
     class Tracker:
         valid_calls: set[str] = set()
 
     assert sparkgap._monitor_hub({}, Tracker()) is None
-    assert sparkgap._monitor_hub({"click_to_decode": False}, Tracker()) is None
-    assert sparkgap._monitor_hub({"click_to_decode": True}, Tracker()) is not None
+    assert sparkgap._monitor_hub({"live_monitor": False}, Tracker()) is None
+    assert sparkgap._monitor_hub({"live_monitor": True}, Tracker()) is not None
     assert sparkgap._monitor_hub({}, Tracker(), forced=True) is not None
