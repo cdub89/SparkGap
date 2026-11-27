@@ -10385,8 +10385,8 @@ class _FileDigital:
 def _monitor_hub(config, tracker, forced=False):
     """Click to decode (exp/click-decode): the process's one monitor; the GUI feed's picks open it.
     Split calls join into the tracker's calls and, where the config reads them, the RBN known calls.
-    None unless click_to_decode is on (default off) or a replay asks for it (--monitor-khz)."""
-    if not (config.get('click_to_decode') or forced):
+    None unless live_monitor is on (default off) or a replay asks for it (--monitor-khz)."""
+    if not (config.get('live_monitor') or forced):
         return None
     from itila2_monitor import MonitorHub
     hub = MonitorHub(_get_itila_lib())
