@@ -111,7 +111,7 @@ A receiver's settings:
   next minute; while its RECORD file is there, it records across a restart.
   While it records, the Node card says so and the switch shows on in orange.
 - **DECODED TEXT**: SparkGap reads each signal twice, through a wide and a
-  narrow filter. **Lowest cost** (the default) shows whichever it is surer of;
+  narrow filter. **Best** (the default) shows whichever it is surer of;
   you can show both, or only one. This is for this browser, all receivers.
 - **Decoder options** (click to open): the spot rule, call validation, the
   known call list, the decode window, AFC and, under the Gated Rule, its
