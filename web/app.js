@@ -72,7 +72,7 @@ const NEWS_SHOWN = 4;  // What's new entries shown in the dialog; the guide has 
 const NOTHING = '<span class="nothing">(nothing decoded)</span>';  // a path whose window decoded no text
 const DECODED = ["wide", "narrow", "both", "lowest"];
 const DECODED_LABELS = ["Wide", "Narrow", "Both", "Best"];  // which readings of each window the panel shows
-const ZOOM_STEPS = [["Full", 1], ["Half", 2], ["Quarter", 4], ["Max", 0]];  // the zoom button: name and fraction of the band (0: the deepest)
+const ZOOM_STEPS = [["Full", 1], ["Half", 2], ["Quarter", 4], ["10 kHz", 0, 10], ["5 kHz", 0, MIN_SPAN_KHZ]];  // the zoom button: name, fraction of the band or (0) a span in kHz
 const ZOOM_MATCH = 0.05;  // a view within 5% of a step's span is at that step
 const DETAIL_MATCH_KHZ = 0.06;
 const WHY_MATCH_KHZ = 1.0;  // a spot's reason holds within this of it, as the rule's gates 9 and 10 count a frequency
@@ -1427,19 +1427,25 @@ function zoomTo(span, at) {
   wf.setView(a - f * span, a - f * span + span);
 }
 
-// the zoom step the view is at (index into ZOOM_STEPS), or -1 between steps
+// a zoom step's span in kHz: a fraction of the band, or a fixed span (no wider than the band)
+function stepSpan(full, st) { return st[1] ? full / st[1] : Math.min(st[2], full); }
+// the zoom steps of a band this wide: each narrower than the one before (a 24 kHz band has no 10 kHz step)
+function zoomSteps(full) {
+  const out = [];
+  for (const st of ZOOM_STEPS) if (!out.length || stepSpan(full, st) < stepSpan(full, out[out.length - 1]) * (1 - ZOOM_MATCH)) out.push(st);
+  return out;
+}
+// the zoom step the view is at (index into zoomSteps), or -1 between steps
 function zoomStep(i) {
   const full = i.highKhz - i.lowKhz, span = wf.hi - wf.lo;
-  return ZOOM_STEPS.findIndex(([, d]) => Math.abs(span - stepSpan(full, d)) <= stepSpan(full, d) * ZOOM_MATCH);
+  return zoomSteps(full).findIndex(st => Math.abs(span - stepSpan(full, st)) <= stepSpan(full, st) * ZOOM_MATCH);
 }
-// a zoom step's span in kHz: a fraction of the band, or the deepest zoom
-function stepSpan(full, d) { return d ? full / d : Math.min(MIN_SPAN_KHZ, full); }
 
 function renderView() {
   const i = inst(), full = i ? i.highKhz - i.lowKhz : 0, span = wf.hi - wf.lo;
-  // the button names the zoom: its step (Full, Half, Quarter, Max), else how many times in (6×)
+  // the button names the zoom: its step (Full, Half, Quarter, 10 kHz, 5 kHz), else how many times in (6×)
   const k = i && full > 0 ? zoomStep(i) : 0, times = full > 0 && span > 0 ? full / span : 1;
-  $("full").textContent = k >= 0 ? ZOOM_STEPS[k][0] : `${times < 10 ? Math.round(times * 10) / 10 : Math.round(times)}\u00d7`;
+  $("full").textContent = k >= 0 ? zoomSteps(full)[k][0] : `${times < 10 ? Math.round(times * 10) / 10 : Math.round(times)}\u00d7`;
   $("range").textContent = wf.hi > wf.lo ? `${wf.lo.toFixed(1)} – ${wf.hi.toFixed(1)} kHz` : "";
   const s = $("span");
   s.max = Math.max(3, full);
@@ -2700,12 +2706,12 @@ function bindInput() {
   });
 
   $("span").oninput = e => zoomTo(Number(e.target.value), (wf.lo + wf.hi) / 2);
-  $("full").onclick = () => {  // the next step: Full, Half, Quarter of the band, Max, about the pick or the view's centre
+  $("full").onclick = () => {  // the next step: Full, Half, Quarter of the band, 10 kHz, 5 kHz, about the pick or the view's centre
     const i = inst();
     if (!i || !i.nBins) return;
-    const k = zoomStep(i), d = ZOOM_STEPS[k < 0 ? 0 : (k + 1) % ZOOM_STEPS.length][1];
-    if (d === 1) wf.setView(i.lowKhz, i.highKhz);
-    else zoomTo(stepSpan(i.highKhz - i.lowKhz, d), (wf.lo + wf.hi) / 2);
+    const full = i.highKhz - i.lowKhz, steps = zoomSteps(full), k = zoomStep(i), st = steps[k < 0 ? 0 : (k + 1) % steps.length];
+    if (st[1] === 1) wf.setView(i.lowKhz, i.highKhz);
+    else zoomTo(stepSpan(full, st), (wf.lo + wf.hi) / 2);
   };
   window.addEventListener("resize", () => { wf.dirty = true; renderView(); });
 }
