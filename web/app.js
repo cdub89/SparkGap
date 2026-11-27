@@ -243,7 +243,7 @@ class Instance {
       }
       if (!this.bands[this.band]) this.band = 0;
       this.subscribe();  // now the band on screen is known: only its spectrum is computed and sent
-      if (this.selKhz > 0) this.sendMonitor();  // a reconnect reopens our pick; no pick leaves another browser's monitor open
+      if (this.selKhz > 0 && !this.monClosed) this.sendMonitor();  // a reconnect reopens our pick; no pick leaves another browser's monitor open
       this.windows = []; this.spots.clear(); this.signals.clear(); this.recent.clear(); this.runners.clear();
       this.on("hello");
     } else if (m.type === "snapshot") {
@@ -263,7 +263,7 @@ class Instance {
       this.status = m;
       this.on("status");
     } else if (m.type === "monitor") {
-      if (this.selKhz === null || Math.abs(m.khz - this.selKhz) > MONITOR_MATCH_KHZ) return;  // another console's pick
+      if (this.monClosed || this.selKhz === null || Math.abs(m.khz - this.selKhz) > MONITOR_MATCH_KHZ) return;  // closed, or another console's pick
       const mon = this.mon && Math.abs(this.mon.khz - m.khz) <= MONITOR_MATCH_KHZ ? this.mon : { khz: m.khz, text: "" };
       const kept = m.back > 0 ? mon.text.split(" ").slice(0, -m.back).join(" ") : mon.text;  // a split call joined
       if (m.text) mon.text = (kept ? kept + " " : "") + m.text;
@@ -501,6 +501,7 @@ class Instance {
 
   select(khz, call) {
     if (khz !== this.selKhz) this.mon = null;
+    this.monClosed = false;  // a pick, even the same one, opens the monitor again
     this.selKhz = khz; this.selCall = call; this.sendMonitor(); this.askWhy(); this.on("detail");
   }
 
@@ -2590,9 +2591,12 @@ function bindInput() {
     if (copy) copyText(copy.dataset.code).then(ok => { copy.textContent = ok ? "Copied" : "Copy failed"; });
   });
   $("dShow").onclick = () => { app.decoded = DECODED[(DECODED.indexOf(app.decoded) + 1) % DECODED.length]; save("decoded", app.decoded); renderDetail(); };
-  $("dLiveClear").onclick = () => {
+  $("dLiveClear").onclick = () => {  // Clear closes the monitor and its pane; a pick opens it again
     const i = inst();
-    if (i && i.mon) { i.mon.text = ""; i.mon.live = ""; }
+    if (i) {
+      i.mon = null; i.monClosed = true;
+      if (i.ws && i.ws.readyState === WebSocket.OPEN) i.ws.send(JSON.stringify({ type: "monitor", khz: null }));
+    }
     $("dLiveText").innerHTML = "";
     renderDetail();
   };
