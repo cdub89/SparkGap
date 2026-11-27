@@ -70,8 +70,8 @@ const WINDOWS = [[60, "60 s"], [30, "30 s"], [20, "20 s"], [10, "10 s"]];
   // the dialog's header; its ? button shows help
 const NEWS_SHOWN = 4;  // What's new entries shown in the dialog; the guide has them all
 const NOTHING = '<span class="nothing">(nothing decoded)</span>';  // a path whose window decoded no text
-const DECODED = ["both", "wide", "narrow", "lowest"];
-const DECODED_LABELS = ["Both", "Wide", "Narrow", "Lowest cost"];  // which readings of each window the panel shows
+const DECODED = ["wide", "narrow", "both", "lowest"];
+const DECODED_LABELS = ["Wide", "Narrow", "Both", "Best"];  // which readings of each window the panel shows
 const ZOOM_STEPS = [["Full", 1], ["Half", 2], ["Quarter", 4], ["Max", 0]];  // the zoom button: name and fraction of the band (0: the deepest)
 const ZOOM_MATCH = 0.05;  // a view within 5% of a step's span is at that step
 const DETAIL_MATCH_KHZ = 0.06;

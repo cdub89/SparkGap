@@ -44,7 +44,7 @@ class Word:
     text: str
     ev: float | None = None   # the stretch's own CW evidence (log Bayes factor)
     kept: bool = True         # ev passed SEG_EV_MIN: shown; else logged only, for tuning
-    arm: str = "wide"         # the filter whose reading was cheaper (the windows' Lowest cost)
+    arm: str = "wide"         # the filter whose reading was cheaper (the windows' Best)
     other: str = ""           # the other arm's reading, for the log
 
 
