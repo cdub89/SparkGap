@@ -49,6 +49,8 @@ minutes.
 - **Zoom**: drag to move along the band; Ctrl+scroll or pinch to zoom. The
   **Zoom** button steps through the whole band, half, a quarter, 10 kHz and
   5 kHz. Each receiver opens at the zoom you last left it at, in this browser.
+  A tap on the frequency scale picks that frequency: a tick's kHz, or the
+  signal next to where you tapped.
 - **Bottom bar**: the connection (a green dot and Live when all is well;
   **Reconnecting to radio** or **Radio not connected** when the receiver is
   running but its radio is not), how hard the computer is working, how many

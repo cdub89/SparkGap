@@ -73,6 +73,7 @@ const NOTHING = '<span class="nothing">(nothing decoded)</span>';  // a path who
 const DECODED = ["wide", "narrow", "both", "lowest"];
 const DECODED_LABELS = ["Wide", "Narrow", "Both", "Best"];  // which readings of each window the panel shows
 const ZOOM_STEPS = [["Full", 1], ["Half", 2], ["Quarter", 4], ["10 kHz", 0, 10], ["5 kHz", 0, MIN_SPAN_KHZ]];  // the zoom button: name, fraction of the band or (0) a span in kHz
+const TICK_TAP_PX = 4;  // a tap on the frequency scale this close to a tick picks the tick
 const ZOOM_MATCH = 0.05;  // a view within 5% of a step's span is at that step
 const DETAIL_MATCH_KHZ = 0.06;
 const WHY_MATCH_KHZ = 1.0;  // a spot's reason holds within this of it, as the rule's gates 9 and 10 count a frequency
@@ -1381,6 +1382,8 @@ function renderStation() {
 }
 
 function yOf(khz, h) { return (wf.hi - khz) / Math.max(0.001, wf.hi - wf.lo) * h; }
+// the frequency scale's tick spacing in kHz for a span on screen
+function tickStep(span) { return span > 200 ? 5 : 1; }
 
 function renderTicks() {
   const c = $("ticks"), w = c.clientWidth, h = c.clientHeight, dpr = window.devicePixelRatio || 1;
@@ -1391,7 +1394,7 @@ function renderTicks() {
   if (wf.hi <= wf.lo) return;
   ctx.font = "11px 'IBM Plex Mono', ui-monospace, monospace";
   ctx.textBaseline = "middle";
-  const span = wf.hi - wf.lo, every = span > 40 ? 10 : span > 10 ? 5 : 1, step = span > 200 ? 5 : 1;
+  const span = wf.hi - wf.lo, every = span > 40 ? 10 : span > 10 ? 5 : 1, step = tickStep(span);
   for (let k = Math.ceil(wf.lo / step) * step; k <= wf.hi; k += step) {
     const y = Math.round(yOf(k, h)) + 0.5, major = k % every === 0;
     ctx.strokeStyle = cs.getPropertyValue(major ? "--muted" : "--edge").trim();
@@ -2713,6 +2716,16 @@ function bindInput() {
     if (st[1] === 1) wf.setView(i.lowKhz, i.highKhz);
     else zoomTo(stepSpan(full, st), (wf.lo + wf.hi) / 2);
   };
+  // the frequency scale: a tap on a tick picks that kHz, else the nearest signal, else the frequency tapped
+  $("ladder").addEventListener("click", e => {
+    const i = inst(), lad = $("ladder");
+    if (!i || e.target.closest(".chip") || wf.hi <= wf.lo) return;
+    const h = lad.clientHeight, y = e.clientY - lad.getBoundingClientRect().top, span = wf.hi - wf.lo;
+    const khz = wf.hi - y / h * span, tick = Math.round(khz / tickStep(span)) * tickStep(span);
+    if (Math.abs(yOf(tick, h) - y) <= TICK_TAP_PX) { pick(tick, ""); return; }
+    const near = i.nearestSignal(khz, 10 / h * span);  // 10 px either side, as a tap on the waterfall
+    pick(near > 0 ? near : Math.round(khz * 10) / 10, "");
+  });
   window.addEventListener("resize", () => { wf.dirty = true; renderView(); });
 }
 
