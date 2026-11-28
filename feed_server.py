@@ -284,6 +284,10 @@ class FeedServer:
         self.on_control: Callable[[dict[str, Any], Callable[[bool, str], None]], None] | None = None
         # why messages: SparkGap sets this to answer (call, kHz) with its spot rule's latest decision
         self.on_why: Callable[[str, float], str] | None = None
+        # monitor messages (Live Monitor): SparkGap sets this to open the monitor at kHz, None closes it
+        self.on_monitor: Callable[[float | None], None] | None = None
+        # every decoded window's (kHz, text), on the publishing thread: the monitor's calls heard
+        self.on_window_text: Callable[[float, str], None] | None = None
 
     # ---- lifecycle ----
 
@@ -356,6 +360,8 @@ class FeedServer:
     def publish_window(
         self, khz: float, text: str, wpm: int | None, snr: float | None, cost: float | None
     ) -> None:
+        if self.on_window_text is not None and text:
+            self.on_window_text(float(khz), text)
         self._call(
             self._on_window,
             {
@@ -381,6 +387,19 @@ class FeedServer:
         if why:
             spot["why"] = why  # the gate rule's reason (spot_rule_gates)
         self._call(self._on_text, spot, self.spots)
+
+    def publish_monitor(self, khz: float, text: str, live: str, wpm: float | None, back: int = 0) -> None:
+        """One monitor step: text is the words it committed, live the word still being sent; text
+        replaces the last back words already sent (a split call joined)."""
+        self._call(self._broadcast, {
+            "type": "monitor",
+            "khz": round(float(khz), 2),
+            "text": text,
+            "back": int(back),
+            "live": live,
+            "wpm": None if wpm is None else round(float(wpm), 1),
+            "utc": time.time(),
+        })
 
     def publish_status(self, status: dict[str, Any]) -> None:
         self._call(self._on_status, {"type": "status", **status, "utc": time.time()})
@@ -728,6 +747,8 @@ class FeedServer:
             self.clients.discard(c)
             self.n_clients = len(self.clients)
             self._watch()
+            if not self.clients and self.on_monitor is not None:
+                self.on_monitor(None)  # nobody watching: no decode left running
             namer.cancel()
             await asyncio.gather(sender, namer, return_exceptions=True)
             writer.close()
@@ -788,6 +809,18 @@ class FeedServer:
             self._on_control(c, msg)
         elif isinstance(msg, dict) and msg.get("type") == "why":
             self._on_why(c, msg)
+        elif isinstance(msg, dict) and msg.get("type") == "monitor":
+            self._on_monitor(msg)
+
+    def _on_monitor(self, msg: dict[str, Any]) -> None:
+        """Open the one monitor at khz, or close it (khz null): display only, so a view-only client may."""
+        khz = msg.get("khz")
+        if self.on_monitor is None:
+            return
+        if khz is None:
+            self.on_monitor(None)
+        elif isinstance(khz, (int, float)) and not isinstance(khz, bool) and math.isfinite(khz) and khz > 0:
+            self.on_monitor(float(khz))
 
     def _on_why(self, c: Client, msg: dict[str, Any]) -> None:
         """Why a call was or was not spotted: read only, so a view-only client may ask too."""

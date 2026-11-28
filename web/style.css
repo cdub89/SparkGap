@@ -96,7 +96,10 @@ main { flex: 1; display: flex; gap: 12px; min-height: 0; }
 .dlabel { padding: 10px 16px 0; }
 .dcopy { display: flex; align-items: center; justify-content: space-between; }
 .dcopy #dShow { margin-left: auto; margin-right: 6px; }
+.dcopy #dLiveClear { margin-left: auto; margin-right: 6px; }
 .note { padding: 6px 16px; color: var(--muted); font-size: 12px; }
+.dlive { padding: 0 16px 4px; user-select: text; cursor: text; font-size: 12px; overflow-wrap: anywhere; max-height: 7.5em; overflow-y: auto; display: flex; flex-direction: column-reverse; }  /* one child: scrolled to the newest */
+.dlive .live { color: var(--muted); opacity: .75; }
 .dwhy { margin-top: 6px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .wins { flex: 1; overflow-y: auto; scrollbar-width: thin; padding: 6px 16px 16px; display: flex; flex-direction: column; gap: 8px; font-size: 11px; }
 .win { display: flex; gap: 10px; }
@@ -109,7 +112,7 @@ main { flex: 1; display: flex; gap: 12px; min-height: 0; }
 .newslist { margin: 4px 0 0; padding-left: 18px; line-height: 1.5; }
 .win .nothing { color: var(--faint); font-style: italic; }
 .win .c { color: var(--faint); font-size: 10px; }
-.win b { color: var(--accent); }
+.win b, .dlive b { color: var(--accent); }
 .zoom { padding: 10px; display: flex; justify-content: center; }
 /* labelled rows: the zoom, what is on screen, the colour scale (as long as the slider); values share a left edge,
    and the third column holds the span, Full and the scale's unit */

@@ -392,6 +392,7 @@ struct ItilaSc {
 
     int    n_bins;
     ScBin  bins[SC_MAX_BINS];
+    ScBin *mon;            /* itila_sc_monitor_open: one bin outside bins[], never spawned, evicted or decoded here */
 
     pthread_mutex_t lock;  /* protects bins/envelope during concurrent feed+decode */
 
@@ -1007,7 +1008,7 @@ static inline __attribute__((always_inline)) int bin_push_2k(const ItilaSc *sc, 
     int pos3 = b->dl3_count % FIR_STAGE3_LEN;
     b->dl3_100[pos3] = b->dl3_100[pos3 + FIR_STAGE3_LEN] = env2_100;
     b->dl3_200[pos3] = b->dl3_200[pos3 + FIR_STAGE3_LEN] = env2_200;
-    struct ScPow *spw = sc->pow ? &sc->pow[b - sc->bins] : NULL;
+    struct ScPow *spw = sc->pow && b != sc->mon ? &sc->pow[b - sc->bins] : NULL;
     if (spw) {      /* itila2_snr_decoder: the same smoother on linear power, before the magnitude */
         spw->dl3[0][pos3] = spw->dl3[0][pos3 + FIR_STAGE3_LEN] = s2_100i*s2_100i + s2_100q*s2_100q;
         spw->dl3[1][pos3] = spw->dl3[1][pos3 + FIR_STAGE3_LEN] = s2_200i*s2_200i + s2_200q*s2_200q;
@@ -1274,6 +1275,25 @@ static int preroll_fft(ItilaSc *sc, ScBin *b, int slot, double *yr, double *yi)
     return drops;
 }
 
+/* One bin's DSP for this feed, with its pre-roll first when it is new. */
+static int process_one(ItilaSc *sc, ScBin *b, int stripe, const double *i_full, const double *q_full, int n)
+{
+    int drops = 0;
+    if (sc->fft_front) {
+        if (b->need_preroll) {
+            b->need_preroll = 0;
+            drops += preroll_fft(sc, b, sc->job_slot, sc->scr_re[stripe], sc->scr_im[stripe]);
+        }
+        return drops + (sc->fold ? process_bin_fold(sc, b, sc->job_slot, sc->scr_re[stripe], sc->scr_im[stripe])
+                                 : process_bin_fft(sc, b, sc->job_slot, sc->scr_re[stripe], sc->scr_im[stripe]));
+    }
+    if (b->need_preroll) {
+        b->need_preroll = 0;
+        if (sc->lin_n > 0) drops += process_bin(sc, b, sc->lin_i, sc->lin_q, sc->lin_n);
+    }
+    return drops + process_bin(sc, b, i_full, q_full, n);
+}
+
 /* One stripe of the bins: every n_threads-th bin from `stripe`.  A bin's
  * DSP touches only that bin, and the scanner fields read here are constant
  * while process_bins runs, so stripes need no locking. */
@@ -1284,20 +1304,7 @@ static int process_stripe(ItilaSc *sc, int stripe, const double *i_full, const d
     for (int bi = stripe; bi < SC_MAX_BINS; bi += step) {
         ScBin *b = &sc->bins[bi];
         if (!b->active) continue;
-        if (sc->fft_front) {
-            if (b->need_preroll) {
-                b->need_preroll = 0;
-                drops += preroll_fft(sc, b, sc->job_slot, sc->scr_re[stripe], sc->scr_im[stripe]);
-            }
-            drops += sc->fold ? process_bin_fold(sc, b, sc->job_slot, sc->scr_re[stripe], sc->scr_im[stripe])
-                              : process_bin_fft(sc, b, sc->job_slot, sc->scr_re[stripe], sc->scr_im[stripe]);
-            continue;
-        }
-        if (b->need_preroll) {
-            b->need_preroll = 0;
-            if (sc->lin_n > 0) drops += process_bin(sc, b, sc->lin_i, sc->lin_q, sc->lin_n);
-        }
-        drops += process_bin(sc, b, i_full, q_full, n);
+        drops += process_one(sc, b, stripe, i_full, q_full, n);
     }
     return drops;
 }
@@ -1339,6 +1346,28 @@ static void preroll_linearize(ItilaSc *sc)
     sc->lin_n = sc->pre_n;
 }
 
+/* The monitor bin, after the stripes, on the calling thread (stripe 0's scratch is free again).
+ * It keeps the newest MON_KEEP samples; nothing drains it. */
+#define MON_KEEP (40 * 200)
+static void monitor_feed(ItilaSc *sc, const double *i_full, const double *q_full, int n)
+{
+    ScBin *b = sc->mon;
+    if (!b) return;
+    int step = sc->fft_front ? n : (5 * sc->sample_rate / sc->dec1) * sc->dec1;   /* FIR1: trim every 5 s */
+    int at = 0;
+    do {
+        int m = n - at < step ? n - at : step;
+        process_one(sc, b, 0, i_full ? i_full + at : NULL, q_full ? q_full + at : NULL, m);
+        at += m;
+        if (b->env_n > SC_ENV_CAP - 2000) {
+            int drop = b->env_n - MON_KEEP;
+            memmove(b->env100, b->env100 + drop, MON_KEEP * sizeof(double));
+            memmove(b->env200, b->env200 + drop, MON_KEEP * sizeof(double));
+            b->env_n = MON_KEEP;
+        }
+    } while (at < n);
+}
+
 static void process_bins(ItilaSc *sc, const double *i_full, const double *q_full, int n)
 {
     if (sc->preroll_pending && !sc->fft_front) {
@@ -1347,6 +1376,7 @@ static void process_bins(ItilaSc *sc, const double *i_full, const double *q_full
     }
     if (sc->n_threads <= 1) {
         sc->env_drops += (uint64_t)process_stripe(sc, 0, i_full, q_full, n);
+        monitor_feed(sc, i_full, q_full, n);
         return;
     }
     pthread_mutex_lock(&sc->pool_lock);
@@ -1365,6 +1395,7 @@ static void process_bins(ItilaSc *sc, const double *i_full, const double *q_full
     drops += sc->job_drops;
     pthread_mutex_unlock(&sc->pool_lock);
     sc->env_drops += drops;
+    monitor_feed(sc, i_full, q_full, n);
 }
 
 static void stop_workers(ItilaSc *sc)
@@ -1833,6 +1864,7 @@ void itila_sc_free(ItilaSc *sc)
         if (sc->bins[i].active) bin_free_decoders(sc, &sc->bins[i]);
         free(sc->bins[i].tl.sv100); free(sc->bins[i].tl.sv200);
     }
+    if (sc->mon) { free(sc->mon->tl.sv100); free(sc->mon->tl.sv200); free(sc->mon); sc->mon = NULL; }
     pthread_mutex_unlock(&sc->lock);
     pthread_mutex_destroy(&sc->lock);
     pthread_mutex_destroy(&sc->pool_lock);
@@ -1965,7 +1997,7 @@ void itila_sc_feed_iq(ItilaSc *sc,
             sc->ring_a[slot] = sc->blk_start;
             sc->ring_w = (slot + 1) % sc->ring_k;
             if (sc->ring_cnt < sc->ring_k) sc->ring_cnt++;
-            if (sc->n_bins > 0) {
+            if (sc->n_bins > 0 || sc->mon) {
                 sc->job_slot = slot;
                 process_bins(sc, NULL, NULL, 0);
             }
@@ -1997,7 +2029,7 @@ void itila_sc_feed_iq(ItilaSc *sc,
     memcpy(sc->iq_res_q, q_full + n_dec1, new_res * sizeof(double));
     sc->iq_res_n = new_res;
 
-    if (n_dec1 > 0 && sc->n_bins > 0)
+    if (n_dec1 > 0 && (sc->n_bins > 0 || sc->mon))
         process_bins(sc, i_full, q_full, n_dec1);
     if (n_dec1 > 0)
         preroll_push(sc, i_full, q_full, n_dec1);
@@ -2500,4 +2532,84 @@ static void bin_free_decoders(ItilaSc *sc, ScBin *b) {
         if (b->h100) { sc->dec_free(b->h100); b->h100 = NULL; }
         if (b->h200) { sc->dec_free(b->h200); b->h200 = NULL; }
     }
+}
+
+/* ---- Live Monitor: one monitor bin at an exact frequency (cdub89/SparkGap#63) ----
+ * Not in bins[]: the spawn, eviction, ready, list and count paths never see it, so spots are
+ * the same with or without it.  It runs the bins' DSP (AFC, tone lock) and keeps the newest
+ * 40 s of envelope for the caller to decode. */
+/* A new monitor starts from the envelope a bin on the same signal already holds (up to MON_KEEP),
+ * less the second its own pre-roll makes again, so its first steps see a window's worth of fits. */
+#define MON_SEED_HZ 30.0
+static void monitor_seed(ItilaSc *sc, ScBin *m)
+{
+    ScBin *best = NULL;
+    double gap = MON_SEED_HZ;
+    for (int k = 0; k < SC_MAX_BINS; k++) {
+        ScBin *b = &sc->bins[k];
+        double d = fabs(b->f_hz + b->afc_hz - m->f_hz);
+        if (b->active && b->env_n > 0 && d <= gap) { best = b; gap = d; }
+    }
+    if (!best) return;
+    int keep = best->env_n - (int)((double)sc->pre_len * 200.0 / sc->sample_rate);
+    int n = keep < MON_KEEP ? keep : MON_KEEP;
+    if (n <= 0) return;
+    memcpy(m->env100, best->env100 + keep - n, (size_t)n * sizeof(double));
+    memcpy(m->env200, best->env200 + keep - n, (size_t)n * sizeof(double));
+    m->env_n = n;
+    m->env_tot = n;
+}
+
+int itila_sc_monitor_open(ItilaSc *sc, double f_hz)
+{
+    if (!sc) return 0;
+    pthread_mutex_lock(&sc->lock);
+    int ok = f_hz >= sc->band_min_hz && f_hz <= sc->band_max_hz;
+    if (ok && !sc->mon) sc->mon = calloc(1, sizeof(ScBin));
+    if (ok && sc->mon) {
+        ScBin *b = sc->mon;
+        float *sv100 = b->tl.sv100, *sv200 = b->tl.sv200;
+        memset(b, 0, sizeof(ScBin));
+        b->tl.sv100 = sv100; b->tl.sv200 = sv200;
+        b->f_hz = f_hz;
+        b->created_sample = sc->total_samples;
+        b->active = 1;
+        b->c_phase = 1.0;
+        b->need_preroll = 1;
+        b->start_in = sc->in_fed - sc->pre_len;
+        sc->preroll_pending = 1;
+        monitor_seed(sc, b);
+    }
+    ok = ok && sc->mon;
+    pthread_mutex_unlock(&sc->lock);
+    return ok;
+}
+
+void itila_sc_monitor_close(ItilaSc *sc)
+{
+    if (!sc) return;
+    pthread_mutex_lock(&sc->lock);
+    if (sc->mon) { free(sc->mon->tl.sv100); free(sc->mon->tl.sv200); free(sc->mon); sc->mon = NULL; }
+    pthread_mutex_unlock(&sc->lock);
+}
+
+/* The newest samples (up to max) of both paths; *end_sample = samples ever made, *afc_hz the
+ * AFC offset.  -1 when no monitor is open (a scanner made since the open: a band change). */
+int itila_sc_monitor_read(ItilaSc *sc, double *env100, double *env200, int max,
+                          long long *end_sample, double *afc_hz)
+{
+    int n = -1;
+    if (!sc || max <= 0) return 0;
+    pthread_mutex_lock(&sc->lock);
+    ScBin *b = sc->mon;
+    if (b) {
+        n = b->env_n < max ? b->env_n : max;
+        int at = b->env_n - n;
+        if (env100) memcpy(env100, b->env100 + at, n * sizeof(double));
+        if (env200) memcpy(env200, b->env200 + at, n * sizeof(double));
+        if (end_sample) *end_sample = b->env_tot;
+        if (afc_hz) *afc_hz = b->afc_hz;
+    }
+    pthread_mutex_unlock(&sc->lock);
+    return n;
 }

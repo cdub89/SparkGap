@@ -905,3 +905,33 @@ def test_a_khz_too_large_for_a_float_is_refused_not_raised(feed: FeedServer) -> 
     feed._call = lambda fn, c, frame: sent.append(frame)  # type: ignore[method-assign]
     feed._on_why(None, {"type": "why", "id": 1, "call": "K1VUT", "khz": 10**400})  # type: ignore[arg-type]
     assert json.loads(sent[0][sent[0].index(b"{"):])["error"] == "khz must be a number"
+
+
+def test_a_pick_opens_the_monitor_and_its_text_reaches_every_client(feed: FeedServer) -> None:
+    """Live Monitor: any client's pick (view only too) moves the one monitor; bad values are ignored."""
+    asked: list[float | None] = []
+    feed.on_monitor = asked.append
+    c, other = WS(feed.port, path="/feed?view"), WS(feed.port)
+    c.json("snapshot")
+    other.json("snapshot")
+    for khz in (7047.5, "7047.5", True, -1, None):
+        c.send(OP_TEXT, json.dumps({"type": "monitor", "khz": khz}).encode())
+    wait_for(lambda: len(asked) == 2)
+    assert asked == [7047.5, None]
+    feed.publish_monitor(7047.5, "CQ DE W1AW", "W1", 22.0)
+    assert other.json("monitor") == {"type": "monitor", "khz": 7047.5, "text": "CQ DE W1AW", "back": 0, "live": "W1",
+                                     "wpm": 22.0, "utc": pytest.approx(time.time(), abs=5)}
+
+
+def test_the_monitor_closes_when_the_last_client_leaves(feed: FeedServer) -> None:
+    asked: list[float | None] = []
+    feed.on_monitor = asked.append
+    a, b = WS(feed.port), WS(feed.port)
+    a.json("snapshot")
+    b.json("snapshot")
+    wait_for(lambda: feed.n_clients == 2)
+    a.s.close()
+    wait_for(lambda: feed.n_clients == 1)
+    assert asked == []
+    b.s.close()
+    wait_for(lambda: asked == [None])
