@@ -70,9 +70,10 @@ const WINDOWS = [[60, "60 s"], [30, "30 s"], [20, "20 s"], [10, "10 s"]];
   // the dialog's header; its ? button shows help
 const NEWS_SHOWN = 4;  // What's new entries shown in the dialog; the guide has them all
 const NOTHING = '<span class="nothing">(nothing decoded)</span>';  // a path whose window decoded no text
-const DECODED = ["both", "wide", "narrow", "lowest"];
-const DECODED_LABELS = ["Both", "Wide", "Narrow", "Lowest cost"];  // which readings of each window the panel shows
-const ZOOM_STEPS = [["Full", 1], ["Half", 2], ["Quarter", 4], ["Max", 0]];  // the zoom button: name and fraction of the band (0: the deepest)
+const DECODED = ["wide", "narrow", "both", "lowest"];
+const DECODED_LABELS = ["Wide", "Narrow", "Both", "Best"];  // which readings of each window the panel shows
+const ZOOM_STEPS = [["Full", 1], ["Half", 2], ["Quarter", 4], ["10 kHz", 0, 10], ["5 kHz", 0, MIN_SPAN_KHZ]];  // the zoom button: name, fraction of the band or (0) a span in kHz
+const TICK_TAP_PX = 4;  // a tap on the frequency scale this close to a tick picks the tick
 const ZOOM_MATCH = 0.05;  // a view within 5% of a step's span is at that step
 const DETAIL_MATCH_KHZ = 0.06;
 const WHY_MATCH_KHZ = 1.0;  // a spot's reason holds within this of it, as the rule's gates 9 and 10 count a frequency
@@ -88,6 +89,8 @@ const STORE = "sparkgap.web.";
 
 const $ = id => document.getElementById(id);
 const now = () => Date.now() / 1000;
+const MONITOR_MATCH_KHZ = 0.05;  // a monitor message for the pick: the node opened it where we asked
+const MONITOR_CHARS = 2000;      // the LIVE line keeps this much of the monitor's copy
 const esc = s => s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const baseCall = word => word.split("/").reduce((a, b) => (b.length > a.length ? b : a), "");
 const RUNNER_KEEP_S = 600;   // a split runner found by its sign labels its frequency this long (the spot rule's REPEAT_S)
@@ -133,6 +136,7 @@ class Instance {
     this.selKhz = null;
     this.selCall = "";
     this.why = null;  // the node's answer for the picked call: { call, text }
+    this.mon = null;  // click to decode: the monitor's copy of the pick, { khz, text, live }
     this.whyId = 0;
     this.since = 0;  // when this console last connected (status page)
     this.reconnects = 0;
@@ -240,6 +244,7 @@ class Instance {
       }
       if (!this.bands[this.band]) this.band = 0;
       this.subscribe();  // now the band on screen is known: only its spectrum is computed and sent
+      if (this.selKhz > 0 && !this.monClosed) this.sendMonitor();  // a reconnect reopens our pick; no pick leaves another browser's monitor open
       this.windows = []; this.spots.clear(); this.signals.clear(); this.recent.clear(); this.runners.clear();
       this.on("hello");
     } else if (m.type === "snapshot") {
@@ -258,6 +263,15 @@ class Instance {
     } else if (m.type === "status") {
       this.status = m;
       this.on("status");
+    } else if (m.type === "monitor") {
+      if (this.monClosed || this.selKhz === null || Math.abs(m.khz - this.selKhz) > MONITOR_MATCH_KHZ) return;  // closed, or another console's pick
+      const mon = this.mon && Math.abs(this.mon.khz - m.khz) <= MONITOR_MATCH_KHZ ? this.mon : { khz: m.khz, text: "" };
+      const kept = m.back > 0 ? mon.text.split(" ").slice(0, -m.back).join(" ") : mon.text;  // a split call joined
+      if (m.text) mon.text = (kept ? kept + " " : "") + m.text;
+      mon.text = mon.text.slice(-MONITOR_CHARS);
+      mon.live = m.live || "";
+      this.mon = mon;
+      this.on("detail");
     } else if (m.type === "why_result" && m.id === this.whyId) {
       this.why = { call: m.call, text: m.ok ? m.message : "" };
       this.on("detail");
@@ -486,7 +500,17 @@ class Instance {
     });
   }
 
-  select(khz, call) { this.selKhz = khz; this.selCall = call; this.askWhy(); this.on("detail"); }
+  select(khz, call) {
+    if (khz !== this.selKhz) this.mon = null;
+    this.monClosed = false;  // a pick, even the same one, opens the monitor again
+    this.selKhz = khz; this.selCall = call; this.sendMonitor(); this.askWhy(); this.on("detail");
+  }
+
+  // click to decode: the node decodes the picked frequency as it is sent (an older node ignores this)
+  sendMonitor() {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ type: "monitor", khz: this.selKhz > 0 ? this.selKhz : null }));
+  }
 
   // a picked call heard but not spotted: ask the node which gate stopped it (an older node does not answer)
   askWhy() {
@@ -564,6 +588,11 @@ class Instance {
     const db = level * this.dbUnit;
     if (best < 0 || db < PEAK_MIN_DB) return null;
     return [(this.firstHz + (best + 0.5) * this.hzPerBin) / 1000, db];
+  }
+
+  // LIVE text: every call-shaped word bold, as the windows show the picked call
+  liveMarked(text) {
+    return esc(text).split(" ").map(w => (CALL_RE.test(baseCall(w)) ? `<b>${w}</b>` : w)).join(" ");
   }
 
   marked(text, call) {
@@ -1353,6 +1382,8 @@ function renderStation() {
 }
 
 function yOf(khz, h) { return (wf.hi - khz) / Math.max(0.001, wf.hi - wf.lo) * h; }
+// the frequency scale's tick spacing in kHz for a span on screen
+function tickStep(span) { return span > 200 ? 5 : 1; }
 
 function renderTicks() {
   const c = $("ticks"), w = c.clientWidth, h = c.clientHeight, dpr = window.devicePixelRatio || 1;
@@ -1363,7 +1394,7 @@ function renderTicks() {
   if (wf.hi <= wf.lo) return;
   ctx.font = "11px 'IBM Plex Mono', ui-monospace, monospace";
   ctx.textBaseline = "middle";
-  const span = wf.hi - wf.lo, every = span > 40 ? 10 : span > 10 ? 5 : 1, step = span > 200 ? 5 : 1;
+  const span = wf.hi - wf.lo, every = span > 40 ? 10 : span > 10 ? 5 : 1, step = tickStep(span);
   for (let k = Math.ceil(wf.lo / step) * step; k <= wf.hi; k += step) {
     const y = Math.round(yOf(k, h)) + 0.5, major = k % every === 0;
     ctx.strokeStyle = cs.getPropertyValue(major ? "--muted" : "--edge").trim();
@@ -1385,7 +1416,7 @@ function renderLadder() {
     const chip = document.createElement("div");
     chip.className = "chip" + (it.spot ? " spot" : "") + (it.call ? " call" : "") + (Math.abs(app.selectedKhz - it.khz) < 0.05 ? " sel" : "");
     chip.style.top = (y - 11) + "px";
-    chip.innerHTML = `<span class="cd"></span><span class="cc">${esc(it.call || it.khz.toFixed(2))}</span><span class="cw">${it.wpm ? Math.round(it.wpm) : ""}</span>`;
+    chip.innerHTML = `<span class="cd"></span><span class="cc">${esc(it.call || it.khz.toFixed(1))}</span><span class="cw">${it.wpm ? Math.round(it.wpm) : ""}</span>`;
     chip.onclick = () => pick(it.khz, it.call);
     box.appendChild(chip);
   }
@@ -1399,19 +1430,25 @@ function zoomTo(span, at) {
   wf.setView(a - f * span, a - f * span + span);
 }
 
-// the zoom step the view is at (index into ZOOM_STEPS), or -1 between steps
+// a zoom step's span in kHz: a fraction of the band, or a fixed span (no wider than the band)
+function stepSpan(full, st) { return st[1] ? full / st[1] : Math.min(st[2], full); }
+// the zoom steps of a band this wide: each narrower than the one before (a 24 kHz band has no 10 kHz step)
+function zoomSteps(full) {
+  const out = [];
+  for (const st of ZOOM_STEPS) if (!out.length || stepSpan(full, st) < stepSpan(full, out[out.length - 1]) * (1 - ZOOM_MATCH)) out.push(st);
+  return out;
+}
+// the zoom step the view is at (index into zoomSteps), or -1 between steps
 function zoomStep(i) {
   const full = i.highKhz - i.lowKhz, span = wf.hi - wf.lo;
-  return ZOOM_STEPS.findIndex(([, d]) => Math.abs(span - stepSpan(full, d)) <= stepSpan(full, d) * ZOOM_MATCH);
+  return zoomSteps(full).findIndex(st => Math.abs(span - stepSpan(full, st)) <= stepSpan(full, st) * ZOOM_MATCH);
 }
-// a zoom step's span in kHz: a fraction of the band, or the deepest zoom
-function stepSpan(full, d) { return d ? full / d : Math.min(MIN_SPAN_KHZ, full); }
 
 function renderView() {
   const i = inst(), full = i ? i.highKhz - i.lowKhz : 0, span = wf.hi - wf.lo;
-  // the button names the zoom: its step (Full, Half, Quarter, Max), else how many times in (6×)
+  // the button names the zoom: its step (Full, Half, Quarter, 10 kHz, 5 kHz), else how many times in (6×)
   const k = i && full > 0 ? zoomStep(i) : 0, times = full > 0 && span > 0 ? full / span : 1;
-  $("full").textContent = k >= 0 ? ZOOM_STEPS[k][0] : `${times < 10 ? Math.round(times * 10) / 10 : Math.round(times)}\u00d7`;
+  $("full").textContent = k >= 0 ? zoomSteps(full)[k][0] : `${times < 10 ? Math.round(times * 10) / 10 : Math.round(times)}\u00d7`;
   $("range").textContent = wf.hi > wf.lo ? `${wf.lo.toFixed(1)} – ${wf.hi.toFixed(1)} kHz` : "";
   const s = $("span");
   s.max = Math.max(3, full);
@@ -1444,11 +1481,11 @@ function readings(r, mode) {
 
 function renderDetail() {
   const i = inst(), d = i && app.selectedKhz > 0 ? i.detail : null;
-  $("dTitle").textContent = d ? d.call || d.khz.toFixed(2) : "Pick a signal";
+  $("dTitle").textContent = d ? d.call || d.khz.toFixed(1) : "Pick a signal";
   const pill = $("dPill");
   pill.hidden = !d;
   if (d) { pill.textContent = d.spotted ? "SPOTTED" : "HEARD"; pill.className = "pill" + (d.spotted ? " spot" : ""); }
-  $("dKhz").textContent = d ? d.khz.toFixed(2) : "-";
+  $("dKhz").textContent = d ? d.khz.toFixed(1) : "-";  // the dialled frequency, as a spot shows it; the monitor keeps the measured one
   $("dWpm").textContent = d && d.wpm ? Math.round(d.wpm) : "-";
   $("dSnr").textContent = d && d.snr ? Math.round(d.snr) + " dB" : "-";
   $("dWhy").hidden = !(d && d.why);
@@ -1458,6 +1495,13 @@ function renderDetail() {
   // both decodes of each window: wide filter on top, narrow dimmed
   $("dShow").textContent = DECODED_LABELS[DECODED.indexOf(app.decoded)] || "Both";
   $("dCopy").hidden = !(d && d.windows.length);
+  const mon = d && i.mon;  // click to decode: the words as sent, the one being sent dimmed
+  $("dLive").hidden = !mon;
+  $("dLiveHead").hidden = !mon;
+  const live = mon ? `${i.liveMarked(mon.text)}${mon.live ? ` <span class="live">${i.liveMarked(mon.live)}</span>` : ""}` : "";
+  const sel = window.getSelection();  // a selection in the LIVE text holds it still until it is cleared
+  const held = sel && !sel.isCollapsed && $("dLiveText").contains(sel.anchorNode);
+  if (!held && $("dLiveText").innerHTML !== live) $("dLiveText").innerHTML = live;
   $("dWins").innerHTML = (d ? d.windows : []).map(r => {
     const rs = readings(r, app.decoded);
     // with both shown, the lower timing cost is marked (a tie or no fit marks neither)
@@ -2579,6 +2623,19 @@ function bindInput() {
     if (copy) copyText(copy.dataset.code).then(ok => { copy.textContent = ok ? "Copied" : "Copy failed"; });
   });
   $("dShow").onclick = () => { app.decoded = DECODED[(DECODED.indexOf(app.decoded) + 1) % DECODED.length]; save("decoded", app.decoded); renderDetail(); };
+  $("dLiveClear").onclick = () => {  // Clear closes the monitor and its pane; a pick opens it again
+    const i = inst();
+    if (i) {
+      i.mon = null; i.monClosed = true;
+      if (i.ws && i.ws.readyState === WebSocket.OPEN) i.ws.send(JSON.stringify({ type: "monitor", khz: null }));
+    }
+    $("dLiveText").innerHTML = "";
+    renderDetail();
+  };
+  $("dLiveCopy").onclick = () => copyText($("dLiveText").innerText).then(ok => {
+    $("dLiveCopy").textContent = ok ? "Copied" : "Copy failed";
+    setTimeout(() => { $("dLiveCopy").textContent = "Copy"; }, 1500);
+  });
   $("dCopy").onclick = () => copyText($("dWins").innerText).then(ok => {
     $("dCopy").textContent = ok ? "Copied" : "Copy failed";
     setTimeout(() => { $("dCopy").textContent = "Copy"; }, 1500);
@@ -2598,7 +2655,7 @@ function bindInput() {
     list.innerHTML = app.matches.map((m, n) => `<div class="match${n ? "" : " first"}" data-n="${n}">`
       + `<span class="cd" style="width:6px;height:6px;border-radius:50%;border:1px solid var(${m.spot ? "--accent" : "--faint"});background:${m.spot ? "var(--accent)" : "transparent"}"></span>`
       + `<span class="mono" style="width:90px;font-weight:600">${esc(m.label)}</span>`
-      + `<span class="mono muted" style="width:80px">${m.call ? m.khz.toFixed(2) : ""}</span>`
+      + `<span class="mono muted" style="width:80px">${m.call ? m.khz.toFixed(1) : ""}</span>`
       + `<span class="ago">${m.ago ? m.ago + " ago" : "go to"}</span></div>`).join("");
     list.hidden = !app.matches.length || document.activeElement !== search;
   };
@@ -2675,13 +2732,23 @@ function bindInput() {
   });
 
   $("span").oninput = e => zoomTo(Number(e.target.value), (wf.lo + wf.hi) / 2);
-  $("full").onclick = () => {  // the next step: Full, Half, Quarter of the band, Max, about the pick or the view's centre
+  $("full").onclick = () => {  // the next step: Full, Half, Quarter of the band, 10 kHz, 5 kHz, about the pick or the view's centre
     const i = inst();
     if (!i || !i.nBins) return;
-    const k = zoomStep(i), d = ZOOM_STEPS[k < 0 ? 0 : (k + 1) % ZOOM_STEPS.length][1];
-    if (d === 1) wf.setView(i.lowKhz, i.highKhz);
-    else zoomTo(stepSpan(i.highKhz - i.lowKhz, d), (wf.lo + wf.hi) / 2);
+    const full = i.highKhz - i.lowKhz, steps = zoomSteps(full), k = zoomStep(i), st = steps[k < 0 ? 0 : (k + 1) % steps.length];
+    if (st[1] === 1) wf.setView(i.lowKhz, i.highKhz);
+    else zoomTo(stepSpan(full, st), (wf.lo + wf.hi) / 2);
   };
+  // the frequency scale: a tap on a tick picks that kHz, else the nearest signal, else the frequency tapped
+  $("ladder").addEventListener("click", e => {
+    const i = inst(), lad = $("ladder");
+    if (!i || e.target.closest(".chip") || wf.hi <= wf.lo) return;
+    const h = lad.clientHeight, y = e.clientY - lad.getBoundingClientRect().top, span = wf.hi - wf.lo;
+    const khz = wf.hi - y / h * span, tick = Math.round(khz / tickStep(span)) * tickStep(span);
+    if (Math.abs(yOf(tick, h) - y) <= TICK_TAP_PX) { pick(tick, ""); return; }
+    const near = i.nearestSignal(khz, 10 / h * span);  // 10 px either side, as a tap on the waterfall
+    pick(near > 0 ? near : Math.round(khz * 10) / 10, "");
+  });
   window.addEventListener("resize", () => { wf.dirty = true; renderView(); });
 }
 

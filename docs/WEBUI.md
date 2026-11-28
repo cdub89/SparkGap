@@ -47,8 +47,10 @@ minutes.
 - **Search** (Ctrl+F): type a call, some text or a frequency in kHz to jump to
   it. With the ⚙ dialog open, Ctrl+F is the browser's own find instead.
 - **Zoom**: drag to move along the band; Ctrl+scroll or pinch to zoom. The
-  **Zoom** button steps through the whole band, half and a quarter. Each
-  receiver opens at the zoom you last left it at, in this browser.
+  **Zoom** button steps through the whole band, half, a quarter, 10 kHz and
+  5 kHz. Each receiver opens at the zoom you last left it at, in this browser.
+  A tap on the frequency scale picks that frequency: a tick's kHz, or the
+  signal next to where you tapped.
 - **Bottom bar**: the connection (a green dot and Live when all is well;
   **Reconnecting to radio** or **Radio not connected** when the receiver is
   running but its radio is not), how hard the computer is working, how many
@@ -111,7 +113,7 @@ A receiver's settings:
   next minute; while its RECORD file is there, it records across a restart.
   While it records, the Node card says so and the switch shows on in orange.
 - **DECODED TEXT**: SparkGap reads each signal twice, through a wide and a
-  narrow filter. **Lowest cost** (the default) shows whichever it is surer of;
+  narrow filter. **Best** (the default) shows whichever it is surer of;
   you can show both, or only one. This is for this browser, all receivers.
 - **Decoder options** (click to open): the spot rule, call validation, the
   known call list, the decode window, AFC and, under the Gated Rule, its
